@@ -1,0 +1,28 @@
+[package]
+name = "um-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "um_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "undelete-master"
+path = "src/main.rs"
+
+[dependencies]
+um-core = { workspace = true }
+um-io-common = { workspace = true }
+um-partition = { workspace = true }
+um-fs-common = { workspace = true }
+um-fs-ntfs = { workspace = true }
+um-fs-fat = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+um-fixture-builder = { workspace = true }
+tempfile = { workspace = true }

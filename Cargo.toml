@@ -8,13 +8,14 @@ members = [
     "crates/fs-ntfs",
     "crates/fs-fat",
     "crates/fixture-builder",
+    "crates/cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://example.invalid/undelete-master"
+repository = "https://github.com/Fscarpelli/Undelete-Master"
 rust-version = "1.88"
 
 [workspace.dependencies]
@@ -28,6 +29,7 @@ um-fs-exfat = { path = "crates/fs-exfat" }
 um-carving = { path = "crates/carving" }
 um-restore = { path = "crates/restore" }
 um-fixture-builder = { path = "crates/fixture-builder" }
+um-cli = { path = "crates/cli" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
