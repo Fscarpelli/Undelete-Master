@@ -1,0 +1,80 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - codex/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  documentation:
+    name: Documentation and CI safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate required SDD, requirement IDs, statuses, and links
+        run: python .github/scripts/validate_docs.py
+      - name: Prove PR workflow excludes devices and destructive tooling
+        run: python .github/scripts/validate_ci_safety.py
+
+  rust:
+    name: Rust format, lint, test, and release smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      UNDELETE_MASTER_ALLOW_REAL_DEVICES: "0"
+      UNDELETE_MASTER_DEVICE_TEST_MODE: "deny"
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.88.0
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test deterministic workspace
+        run: cargo test --workspace --locked
+      - name: Release build smoke
+        run: cargo build --workspace --release --locked
+
+  frontend:
+    name: Frontend lint, typecheck, test, and build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.1
+      - name: Activate pinned pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.12.1 --activate
+      - name: Install from lockfile
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Lint
+        working-directory: apps/desktop
+        run: pnpm lint
+      - name: Typecheck
+        working-directory: apps/desktop
+        run: pnpm typecheck
+      - name: Test
+        working-directory: apps/desktop
+        run: pnpm test
+      - name: Build
+        working-directory: apps/desktop
+        run: pnpm build
