@@ -39,6 +39,7 @@ crc32fast = "1"
 hex = "0.4"
 proptest = "1"
 tempfile = "3"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

@@ -13,7 +13,7 @@ fn write_fixture(dir: &Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
 }
 
 #[test]
-fn cli_image_ntfs_001_reports_deterministic_candidates_without_full_path() {
+fn cli_json_privacy_001_reports_ntfs_without_full_path() {
     let mut builder = NtfsImageBuilder::new("cli-ntfs");
     builder.add_file(
         NtfsParent::Root,
@@ -126,6 +126,14 @@ fn cli_image_regular_001_rejects_a_directory() {
 }
 
 #[test]
+fn cli_image_missing_001_rejects_a_missing_regular_image() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("missing.img");
+
+    assert!(matches!(scan_image_path(&path), Err(CliError::Metadata(_))));
+}
+
+#[test]
 fn cli_process_json_001_emits_machine_readable_json() {
     let mut builder = FatImageBuilder::new("cli-process", FatKind::Fat16);
     builder.add_file(
@@ -163,4 +171,21 @@ fn cli_process_help_001_prints_usage_successfully() {
     assert!(stdout.contains("scan-image"));
     assert!(stdout.contains(".img"));
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn cli_process_error_privacy_001_is_nonzero_and_redacts_missing_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("private-folder").join("missing.img");
+    let output = Command::new(env!("CARGO_BIN_EXE_undelete-master"))
+        .args(["scan-image", path.to_str().unwrap()])
+        .output()
+        .expect("run CLI error path");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("image metadata could not be read"));
+    assert!(!stderr.contains(&path.display().to_string()));
+    assert!(!stderr.contains(&temp.path().display().to_string()));
 }

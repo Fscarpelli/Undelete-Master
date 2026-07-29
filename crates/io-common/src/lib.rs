@@ -24,8 +24,31 @@ pub struct FileImageReader {
 impl FileImageReader {
     /// Opens the image strictly read-only.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let file = File::options().read(true).write(false).open(path)?;
-        let len = file.metadata()?.len();
+        let mut options = File::options();
+        options.read(true).write(false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Open the reparse point itself instead of following it. This
+            // binds the final file-type check below to the opened handle and
+            // closes the validation/open race for symlinks and junctions.
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source handle is not a regular file",
+            ));
+        }
+        let len = metadata.len();
         let label = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -357,5 +380,25 @@ mod tests {
         assert_eq!(buffer, [0; 4]);
         assert_eq!(outcome.bytes_valid, 0);
         assert_eq!(outcome.bad_ranges, vec![(0, 4)]);
+    }
+
+    #[test]
+    fn rejects_directory_as_an_image_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(FileImageReader::open(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_without_following_its_regular_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.img");
+        let link = dir.path().join("link.img");
+        File::create(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(FileImageReader::open(&link).is_err());
     }
 }
