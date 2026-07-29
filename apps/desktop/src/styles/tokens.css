@@ -1,0 +1,131 @@
+/* ============================================================
+   Undelete Master — Design tokens (master spec §19.1)
+   Midnight/navy depth, cyan/violet/green/coral state accents.
+   Every token is themable; light theme overrides at the bottom.
+   ============================================================ */
+
+:root {
+  /* Surfaces */
+  --bg: #080d18;
+  --surface-1: #0f1728;
+  --surface-2: #151f34;
+  --surface-3: #1c2942;
+  --surface-glass: rgba(21, 31, 52, 0.72);
+  --border: rgba(153, 167, 190, 0.14);
+  --border-strong: rgba(153, 167, 190, 0.28);
+
+  /* Text */
+  --text: #f4f7fc;
+  --text-muted: #99a7be;
+  --text-faint: #7b8ba5;
+
+  /* Accents */
+  --cyan: #38d5ff;
+  --violet: #806bff;
+  --green: #42dea0;
+  --amber: #ffbc55;
+  --coral: #ff647c;
+
+  /* Small badge text — distinct from decorative accent/icon colors. */
+  --cyan-badge-text: #38d5ff;
+  --violet-badge-text: #9081ff;
+  --green-badge-text: #42dea0;
+  --amber-badge-text: #ffbc55;
+  --coral-badge-text: #ff647c;
+
+  /* Accent tints for chips/badges (12% alpha over surface) */
+  --cyan-tint: rgba(56, 213, 255, 0.13);
+  --violet-tint: rgba(128, 107, 255, 0.14);
+  --green-tint: rgba(66, 222, 160, 0.13);
+  --amber-tint: rgba(255, 188, 85, 0.14);
+  --coral-tint: rgba(255, 100, 124, 0.14);
+
+  /* Recoverability labels (§16.4) */
+  --score-excellent: var(--green);
+  --score-good: var(--cyan);
+  --score-partial: var(--amber);
+  --score-low: var(--coral);
+  --score-none: var(--text-faint);
+
+  /* Typography — Segoe UI Variable first (§19.1) */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+    sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-hero: 28px;
+
+  /* Spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* Radii */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+
+  /* Elevation (soft depth, no harsh shadows) */
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border);
+  --elev-2: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--border);
+  --halo-cyan: 0 0 24px rgba(56, 213, 255, 0.18);
+
+  /* Motion (§19.2): 150–300ms, transform/opacity only */
+  --t-fast: 150ms cubic-bezier(0.3, 0.9, 0.4, 1);
+  --t-med: 240ms cubic-bezier(0.3, 0.9, 0.4, 1);
+
+  /* Focus ring (§19.9 — always visible on keyboard nav) */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--cyan);
+}
+
+[data-theme="light"] {
+  --bg: #eef2f9;
+  --surface-1: #ffffff;
+  --surface-2: #f4f7fc;
+  --surface-3: #e8edf6;
+  --surface-glass: rgba(255, 255, 255, 0.85);
+  --border: rgba(31, 45, 70, 0.12);
+  --border-strong: rgba(31, 45, 70, 0.25);
+  --text: #101828;
+  --text-muted: #4a5872;
+  --text-faint: #5e6c84;
+  --cyan: #0090c0;
+  --violet: #5b47d6;
+  --green: #0e9f6e;
+  --amber: #b45309;
+  --coral: #d6455d;
+  --cyan-badge-text: #007398;
+  --violet-badge-text: #5b47d6;
+  --green-badge-text: #087952;
+  --amber-badge-text: #ac4e06;
+  --coral-badge-text: #bd3a50;
+  --cyan-tint: rgba(0, 144, 192, 0.1);
+  --violet-tint: rgba(91, 71, 214, 0.1);
+  --green-tint: rgba(14, 159, 110, 0.1);
+  --amber-tint: rgba(180, 83, 9, 0.1);
+  --coral-tint: rgba(214, 69, 93, 0.1);
+  --elev-1: 0 1px 2px rgba(16, 24, 40, 0.08), 0 0 0 1px var(--border);
+  --elev-2: 0 6px 24px rgba(16, 24, 40, 0.12), 0 0 0 1px var(--border);
+  --halo-cyan: none;
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--violet);
+}
+
+/* Reduced motion (§19.2 / §19.9) */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms linear;
+    --t-med: 0ms linear;
+  }
+}
+[data-reduced-motion="true"] {
+  --t-fast: 0ms linear;
+  --t-med: 0ms linear;
+}

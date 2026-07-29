@@ -1,5 +1,7 @@
 # ADR-0001 — Tauri, React, TypeScript, and Rust Target
 
+Master specification topic: 1 — Tauri, React, TypeScript, and Rust target
+
 ## Status
 
 Accepted
@@ -7,8 +9,9 @@ Accepted
 ## Context
 
 The product needs native Windows access, an unelevated modern desktop UI, safe
-low-level parsers, and reusable OS-independent engines. The current UI is a Vite
-demonstration; no production Tauri shell exists.
+low-level parsers, and reusable OS-independent engines. The image-only slice now
+has a real Tauri shell; privileged device, restore and preview boundaries remain
+future work.
 
 ## Options
 
@@ -25,7 +28,7 @@ target. Filesystem engines remain independent of Tauri and the DOM.
 
 ## Consequences
 
-Tauri commands/capabilities, CSP, IPC, installer, and real-shell E2E become
-required before production. The existing browser demonstration is explicitly
-non-production and cannot satisfy desktop acceptance criteria.
-
+Tauri commands/capabilities, CSP and IPC are implemented for one path-free
+image-scan command. Browser-only execution fails closed. Installer, signing,
+device access, restore and full native E2E remain required before a production
+recovery release.

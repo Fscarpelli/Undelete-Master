@@ -1,5 +1,7 @@
 # ADR-0004 — Deterministic Synthetic Fixtures
 
+Master specification topic: 17 — fixtures and external forensic corpora
+
 ## Status
 
 Accepted
@@ -26,4 +28,3 @@ verified by SHA-256. External corpora are a separate extended gate.
 Pull requests remain safe and deterministic. Synthetic coverage is not a
 production compatibility claim; independent corpora, fuzzing, and isolated VHD
 tests remain required before release.
-

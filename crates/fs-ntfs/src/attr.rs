@@ -41,49 +41,70 @@ pub enum AttrBody<'a> {
     },
 }
 
-/// Iterates the attributes of a fixed-up record, defensively.
-pub fn iter_attributes(record: &FileRecord) -> Vec<Attribute<'_>> {
+/// Parses the attributes of a fixed-up record, defensively.
+///
+/// The boolean is true only when a valid end marker was reached without
+/// skipping any malformed attribute header, name, or body.
+pub fn iter_attributes(record: &FileRecord) -> (Vec<Attribute<'_>>, bool) {
     let data = &record.data;
     let mut out = Vec::new();
     let mut pos = record.attrs_offset as usize;
+    let mut structurally_complete = true;
     // A record can hold at most a few dozen attributes; guard against loops.
     for _ in 0..256 {
         let Some(type_id) = le::u32_at(data, pos) else {
-            break;
+            return (out, false);
         };
         if type_id == ATTR_END {
-            break;
+            return (out, structurally_complete);
         }
         let Some(attr_len) = le::u32_at(data, pos + 4) else {
-            break;
+            return (out, false);
         };
         let attr_len = attr_len as usize;
-        if attr_len < 24 || pos + attr_len > data.len() {
-            break;
+        let Some(attr_end) = pos.checked_add(attr_len) else {
+            return (out, false);
+        };
+        if attr_len < 24 || attr_end > data.len() {
+            return (out, false);
         }
-        let attr = &data[pos..pos + attr_len];
+        let attr = &data[pos..attr_end];
         let non_resident = le::u8_at(attr, 8).unwrap_or(0) != 0;
         let name_len = le::u8_at(attr, 9).unwrap_or(0) as usize;
         let name_off = le::u16_at(attr, 10).unwrap_or(0) as usize;
         let flags = le::u16_at(attr, 12).unwrap_or(0);
-        let name = if name_len > 0 && name_off + name_len * 2 <= attr.len() {
-            let units: Vec<u16> = attr[name_off..name_off + name_len * 2]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            Some(String::from_utf16_lossy(&units))
+        let name = if name_len > 0 {
+            let name_end = name_len
+                .checked_mul(2)
+                .and_then(|bytes| name_off.checked_add(bytes));
+            if let Some(name_end) = name_end.filter(|end| *end <= attr.len()) {
+                let units: Vec<u16> = attr[name_off..name_end]
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                Some(String::from_utf16_lossy(&units))
+            } else {
+                structurally_complete = false;
+                None
+            }
         } else {
             None
         };
 
         let body = if non_resident {
+            if attr.len() < 64 {
+                structurally_complete = false;
+                pos = attr_end;
+                continue;
+            }
             let starting_vcn = le::u64_at(attr, 16).unwrap_or(0);
             let run_off = le::u16_at(attr, 32).unwrap_or(0) as usize;
             let allocated_size = le::u64_at(attr, 40).unwrap_or(0);
             let data_size = le::u64_at(attr, 48).unwrap_or(0);
             let initialized_size = le::u64_at(attr, 56).unwrap_or(data_size);
-            if run_off >= attr.len() {
-                pos += attr_len;
+            if !(64..attr.len()).contains(&run_off) || initialized_size > data_size {
+                structurally_complete = false;
+                pos = attr_end;
                 continue;
             }
             AttrBody::NonResident {
@@ -96,12 +117,15 @@ pub fn iter_attributes(record: &FileRecord) -> Vec<Attribute<'_>> {
         } else {
             let value_len = le::u32_at(attr, 16).unwrap_or(0) as usize;
             let value_off = le::u16_at(attr, 20).unwrap_or(0) as usize;
-            if value_off + value_len > attr.len() {
-                pos += attr_len;
+            let value_end = value_off.checked_add(value_len);
+            if value_off < 24 || value_end.is_none_or(|end| end > attr.len()) {
+                structurally_complete = false;
+                pos = attr_end;
                 continue;
             }
+            let value_end = value_end.unwrap_or(value_off);
             AttrBody::Resident {
-                value: &data[pos + value_off..pos + value_off + value_len],
+                value: &data[pos + value_off..pos + value_end],
                 value_offset_in_record: pos + value_off,
             }
         };
@@ -112,9 +136,9 @@ pub fn iter_attributes(record: &FileRecord) -> Vec<Attribute<'_>> {
             flags,
             body,
         });
-        pos += attr_len;
+        pos = attr_end;
     }
-    out
+    (out, false)
 }
 
 /// Parsed `$STANDARD_INFORMATION`.

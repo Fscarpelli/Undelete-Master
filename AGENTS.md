@@ -26,14 +26,19 @@ cargo test --workspace
 - Add an ADR under `docs/adr/` for architecture/security deviations from the master spec
   (`UNDELETE_MASTER_CODEX_MASTER_SPEC.md`).
 - Every bug fix needs a regression test.
-- `unsafe` code is forbidden except in an audited Windows FFI boundary crate (not yet present);
-  every other crate declares `#![forbid(unsafe_code)]`.
+- `unsafe` code is forbidden except in the audited `crates/io-windows` FFI
+  boundary. That crate may use `unsafe` only for its documented, read-only
+  Windows classification call; every other crate declares
+  `#![forbid(unsafe_code)]`.
 - Fixtures are deterministic; expected recovery results are asserted by SHA-256.
 
 ## Directory ownership
 
 - `crates/core` — domain types and traits; no I/O, no OS deps.
 - `crates/io-common` — read-only file/image readers.
+- `crates/io-windows` — minimal audited Windows FFI boundary for read-only
+  locality classification; no file open, write, device-control, volume-control,
+  or process APIs.
 - `crates/partition` — MBR/GPT parsing.
 - `crates/fs-*` — filesystem scanners (buffer/image based, OS independent).
 - `crates/carving` — signature carving plugins.

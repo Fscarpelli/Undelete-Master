@@ -1,43 +1,52 @@
 # Undelete Master
 
-O Undelete Master é um projeto de recuperação local, inicialmente para Windows,
-com foco em preservar a origem e explicar a recuperabilidade com evidências.
+O Undelete Master é um projeto local de recuperação de dados, inicialmente para
+Windows, com foco em preservar a origem e apresentar resultados baseados em
+evidências.
 
-> **Estado de desenvolvimento:** endurecimento da fundação. Este repositório não
-> é uma versão de produção. Não o use como único meio para recuperar dados
-> importantes.
+> **Estado de desenvolvimento:** a análise real de imagens está implementada;
+> restauração de arquivos e acesso a disco físico não estão. Não use esta
+> pré-versão como único meio para recuperar dados importantes.
 
 [English](README.md)
 
-## O que existe
+## O que está implementado
 
 - Abstração Rust `SourceReader` sem operação de escrita.
-- Leitura somente para imagens regulares e regiões limitadas.
-- Parsing MBR/GPT e suporte parcial a NTFS e FAT12/16/32.
-- Imagens sintéticas determinísticas com comparação SHA-256.
-- Demonstração React/Vite com dados explicitamente sintéticos.
-- Incremento em andamento para CLI somente de imagens regulares, correções de
-  limites, demonstração honesta, SDD e CI determinística.
+- Acesso somente leitura a arquivos comuns `.img`, `.dd`, `.raw` e `.bin`.
+- Descoberta defensiva de MBR/GPT e análise parcial de metadados NTFS e
+  FAT12/16/32.
+- Aplicativo desktop Tauri 2 real, sem elevação, ligado diretamente ao scanner
+  Rust.
+- Seletor nativo controlado pelo Rust: o caminho escolhido nunca atravessa o
+  IPC para o WebView.
+- Relatório limitado com nome/tamanho real da origem, tipo de partição, volumes,
+  contagens de candidatos de metadados e alertas do parser.
+- CLI `undelete-master scan-image` com JSON sanitizado.
+- Testes com fixtures sintéticas determinísticas, inclusive paridade do desktop
+  e confirmação de que o SHA-256 da fixture não muda após a análise.
+- Barreiras de CI contra operações destrutivas e contra a volta de
+  comportamento fabricado no desktop.
 
-O estado exato fica na
-[matriz de rastreabilidade](docs/traceability-matrix.md). Trabalho em andamento
-não significa `Verified`.
+O estado exato está na
+[matriz de rastreabilidade](docs/traceability-matrix.md). Uma contagem de
+candidatos de metadados não garante que o conteúdo possa ser recuperado.
 
-## O que não foi entregue
+## O que está deliberadamente ausente
 
-Não foram entregues acesso a disco físico, broker elevado, shell Tauri de
-produção, restauração real, carving, worker isolado de preview/validação,
-sessões persistentes, exFAT de produção, instaladores, assinatura ou release de
-produção. Consulte as
+O aplicativo não expõe discos físicos, handles de dispositivo, elevação,
+restauração, prévia, sessões persistentes, carving, exFAT, percentuais fictícios,
+pausa/retomada ou promessa de cancelamento. Esses recursos só voltarão à
+interface depois de existir um backend real e testado. Consulte as
 [limitações conhecidas](docs/specs/015-known-limitations.md).
 
 ## Segurança
 
-- Nunca use testes para escanear um disco real.
+- Nunca use testes para analisar um disco real.
 - Nunca adicione escrita, trim, formatação, lock, dismount ou comando genérico
-  de dispositivo a uma fonte.
+  de dispositivo ao caminho de análise.
 - Use apenas imagens determinísticas do repositório, memória, arquivos regulares
-  temporários ou um futuro VHD de teste com governança e allowlist.
+  temporários ou um VHD de teste separado, governado e allowlisted.
 - Nunca execute conteúdo recuperado.
 
 Consulte [SECURITY.md](SECURITY.md) e [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -52,28 +61,46 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Frontend, dentro de `apps/desktop`:
+Qualidade do desktop:
 
 ```powershell
-npm ci
+Set-Location apps/desktop
+pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm tauri build --no-bundle
 ```
 
-`package-lock.json` é o lockfile canônico do frontend; o pnpm é usado aqui
-apenas para invocar os scripts obrigatórios do pacote.
+Execute o aplicativo nativo real com `pnpm desktop:dev`. Abrir apenas a URL do
+Vite mostra intencionalmente que o runtime desktop é necessário e nunca
+substitui dados no navegador.
 
-A CLI somente para imagens faz parte do incremento atual. Ela só deve ser
-tratada como disponível/verificada quando a matriz apontar para evidência
-aprovada do Task 8.
+O executável gerado localmente é um artefato de desenvolvimento sem assinatura.
+Um build foi removido pelo Norton em 2026-07-29; a classificação permanece
+inconclusiva. Não distribua esse binário, não desative a proteção de forma
+permanente e não trate o alerta como falso positivo sem análise independente.
+Os requisitos de assinatura e reputação estão em
+[SDD-013](docs/specs/013-build-release-and-signing.md).
 
-## Documentação
+Exemplo da CLI:
 
-- [Visão do produto](docs/specs/000-product-vision.md)
+```powershell
+cargo run -p um-cli -- scan-image C:\imagens\evidencia.img --pretty
+```
+
+A CLI e o desktop aceitam somente arquivos-imagem locais comuns. Não informe
+disco, volume, compartilhamento de rede, pipe, fluxo alternativo, symlink ou
+origem reparse.
+
+## Documentação orientada por especificação
+
+- [Especificação mestre](UNDELETE_MASTER_CODEX_MASTER_SPEC.md)
+- [SDD-017 do desktop real-only](docs/specs/017-real-only-image-desktop.md)
 - [Requisitos funcionais](docs/specs/001-functional-requirements.md)
 - [Arquitetura](docs/specs/004-architecture.md)
+- [Contrato de dados do desktop](docs/ui-data-contract.md)
 - [Segurança e privacidade](docs/specs/011-security-and-privacy.md)
 - [Plano de testes](docs/specs/012-test-and-validation-plan.md)
 - [ADRs](docs/adr/README.md)
@@ -82,7 +109,5 @@ aprovada do Task 8.
 
 ## Integração Git
 
-O histórico remoto de `main` é autoritativo e deve ser preservado. Branches de
-desenvolvimento são integradas sem force-push ou substituição de `main`. Esta
-tarefa de documentação não publica, cria tag, assina nem move referências
-remotas.
+O histórico remoto de `main` é preservado. Branches de desenvolvimento são
+integradas sem force-push nem substituição de `main`.

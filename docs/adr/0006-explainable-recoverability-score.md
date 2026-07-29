@@ -1,5 +1,7 @@
 # ADR-0006 — Explainable Recoverability Score
 
+Master specification topic: 10 — recoverability scoring
+
 ## Status
 
 Accepted
@@ -27,4 +29,3 @@ names/paths do not increase content availability.
 
 The UI needs “why this score” evidence and must avoid “100% recoverable.”
 Scoring changes require regression/property tests and traceability updates.
-

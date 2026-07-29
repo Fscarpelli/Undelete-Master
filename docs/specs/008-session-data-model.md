@@ -20,6 +20,6 @@ jobs/items, events, checkpoints, and errors.
 - Deleting a session is explicit and does not claim secure erase on SSD.
 - Normal logs and exports support path redaction.
 
-The current in-memory desktop mock and browser `localStorage` are demonstration
-mechanisms, not the session implementation.
-
+The former in-memory desktop demonstration was removed. Current browser
+`localStorage` contains only language, theme, and reduced-motion preferences;
+it is not a session store and contains no source or report data.

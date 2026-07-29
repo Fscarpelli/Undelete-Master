@@ -19,11 +19,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4.4.0, verified against the official tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Run validator regression tests
+        run: python -B -m unittest discover -s .github/scripts/tests -p "test_*.py" -v
       - name: Validate required SDD, requirement IDs, statuses, and links
-        run: python .github/scripts/validate_docs.py
-      - name: Prove PR workflow excludes devices and destructive tooling
-        run: python .github/scripts/validate_ci_safety.py
+        run: python -B .github/scripts/validate_docs.py
+      - name: Validate the real-only desktop production boundary
+        run: python -B .github/scripts/validate_real_only_desktop.py
+      - name: Run static destructive-storage guard
+        run: python -B .github/scripts/validate_ci_safety.py
 
   rust:
     name: Rust format, lint, test, and release smoke
@@ -34,7 +39,8 @@ jobs:
       UNDELETE_MASTER_DEVICE_TEST_MODE: "deny"
       RUST_BACKTRACE: "1"
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4.4.0, verified against the official tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install pinned Rust toolchain
         shell: pwsh
         run: |
@@ -50,12 +56,17 @@ jobs:
         run: cargo build --workspace --release --locked
 
   frontend:
-    name: Frontend lint, typecheck, test, and build
+    name: Frontend and native desktop build
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
+    env:
+      UNDELETE_MASTER_ALLOW_REAL_DEVICES: "0"
+      UNDELETE_MASTER_DEVICE_TEST_MODE: "deny"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # actions/checkout v4.4.0, verified against the official tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-node v4.4.0, verified against the official tag.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.17.1
       - name: Activate pinned pnpm
@@ -63,9 +74,16 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@10.12.1 --activate
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
       - name: Install from lockfile
         working-directory: apps/desktop
-        run: npm ci
+        # Dependency/project lifecycle scripts are outside the deterministic PR
+        # command allowlist. Vite uses its pinned optional platform package.
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Lint
         working-directory: apps/desktop
         run: pnpm lint
@@ -78,3 +96,6 @@ jobs:
       - name: Build
         working-directory: apps/desktop
         run: pnpm build
+      - name: Build the unelevated Tauri executable without an installer
+        working-directory: apps/desktop
+        run: pnpm tauri build --no-bundle

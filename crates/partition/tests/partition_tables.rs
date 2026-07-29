@@ -11,6 +11,45 @@ struct LayoutReader {
     layout: SectorLayout,
 }
 
+struct PrimaryHeaderFaultReader {
+    inner: MemImageReader,
+}
+
+impl SourceReader for PrimaryHeaderFaultReader {
+    fn identity(&self) -> &SourceIdentity {
+        self.inner.identity()
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.len()
+    }
+
+    fn sector_layout(&self) -> SectorLayout {
+        self.inner.sector_layout()
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> Result<(), ReadError> {
+        if offset == SECTOR as u64 && buffer.len() == SECTOR {
+            return Err(ReadError::Io {
+                offset,
+                message: "synthetic primary-header read fault".into(),
+            });
+        }
+        self.inner.read_exact_at(offset, buffer)
+    }
+
+    fn read_best_effort_at(&self, offset: u64, buffer: &mut [u8]) -> ReadOutcome {
+        if offset == SECTOR as u64 && buffer.len() == SECTOR {
+            buffer.fill(0);
+            return ReadOutcome {
+                bytes_valid: 0,
+                bad_ranges: vec![(0, SECTOR as u64)],
+            };
+        }
+        self.inner.read_best_effort_at(offset, buffer)
+    }
+}
+
 impl SourceReader for LayoutReader {
     fn identity(&self) -> &SourceIdentity {
         self.inner.identity()
@@ -150,10 +189,39 @@ fn build_gpt_image(total_sectors: u64, parts: &[(u64, u64, &str)]) -> Vec<u8> {
 }
 
 fn update_primary_gpt_header_crc(image: &mut [u8]) {
-    let header = &mut image[SECTOR..SECTOR + 92];
+    update_gpt_header_crc_at(image, 1);
+}
+
+fn update_gpt_header_crc_at(image: &mut [u8], header_lba: u64) {
+    let offset = header_lba as usize * SECTOR;
+    let header = &mut image[offset..offset + 92];
     header[16..20].fill(0);
     let crc = crc32fast::hash(header);
     header[16..20].copy_from_slice(&crc.to_le_bytes());
+}
+
+fn install_backup_gpt_at(image: &mut [u8], header_lba: u64) {
+    let table_len: usize = 128 * 128;
+    let table_sectors = table_len.div_ceil(SECTOR) as u64;
+    let backup_table_lba = header_lba - table_sectors;
+    let primary_table = image[2 * SECTOR..2 * SECTOR + table_len].to_vec();
+    let backup_table_offset = backup_table_lba as usize * SECTOR;
+    image[backup_table_offset..backup_table_offset + table_len].copy_from_slice(&primary_table);
+
+    let mut header = image[SECTOR..SECTOR + 92].to_vec();
+    header[16..20].fill(0);
+    header[24..32].copy_from_slice(&header_lba.to_le_bytes());
+    header[32..40].copy_from_slice(&1u64.to_le_bytes());
+    header[72..80].copy_from_slice(&backup_table_lba.to_le_bytes());
+    let crc = crc32fast::hash(&header);
+    header[16..20].copy_from_slice(&crc.to_le_bytes());
+
+    let backup_header_offset = header_lba as usize * SECTOR;
+    image[backup_header_offset..backup_header_offset + header.len()].copy_from_slice(&header);
+}
+
+fn install_backup_gpt(image: &mut [u8], total_sectors: u64) {
+    install_backup_gpt_at(image, total_sectors - 1);
 }
 
 #[test]
@@ -233,17 +301,97 @@ fn rejects_gpt_with_corrupt_entry_crc() {
 }
 
 #[test]
-fn corrupt_primary_header_falls_back_gracefully() {
-    let mut image = build_gpt_image(20_480, &[(2048, 10_239, "Dados")]);
-    // Destroy the primary header signature. No valid backup either -> the
-    // protective MBR should NOT be reported as a usable table with only the
-    // 0xEE entry... it is, technically, an MBR — but marked GPT protective.
-    image[SECTOR] ^= 0xFF;
-    let r = MemImageReader::new("gpt-noprimary", image);
+fn part_gpt_backup_001_uses_backup_when_primary_entry_table_is_corrupt() {
+    let total_sectors = 20_480;
+    let mut image = build_gpt_image(total_sectors, &[(2048, 10_239, "Dados")]);
+    install_backup_gpt(&mut image, total_sectors);
+    image[2 * SECTOR + 40] ^= 0xFF;
+
+    let r = MemImageReader::new("gpt-primary-table-corrupt", image);
     let t = discover(&r).unwrap();
-    // Falls back to MBR parsing and shows the protective entry honestly.
-    assert_eq!(t.kind, PartitionTableKind::Mbr);
-    assert_eq!(t.partitions[0].type_description, "GPT protective");
+
+    assert_eq!(t.kind, PartitionTableKind::Gpt);
+    assert_eq!(t.partitions.len(), 1);
+    assert_eq!(t.partitions[0].name.as_deref(), Some("Dados"));
+    assert!(t.warnings.iter().any(|warning| warning.contains("backup")));
+}
+
+#[test]
+fn part_gpt_backup_002_rejects_primary_redirect_to_interior_fake_backup() {
+    let total_sectors = 20_480;
+    let mut image = build_gpt_image(total_sectors, &[(2048, 10_239, "Dados")]);
+    let interior_backup_lba = 1024;
+    install_backup_gpt_at(&mut image, interior_backup_lba);
+    image[SECTOR + 32..SECTOR + 40].copy_from_slice(&interior_backup_lba.to_le_bytes());
+    update_primary_gpt_header_crc(&mut image);
+    image[2 * SECTOR + 40] ^= 0xFF;
+
+    let reader = MemImageReader::new("gpt-interior-backup-redirect", image);
+    assert!(discover(&reader).is_err());
+}
+
+#[test]
+fn part_gpt_backup_003_rejects_nonreciprocal_backup_header() {
+    let total_sectors = 20_480;
+    let mut image = build_gpt_image(total_sectors, &[(2048, 10_239, "Dados")]);
+    install_backup_gpt(&mut image, total_sectors);
+    image[2 * SECTOR + 40] ^= 0xFF;
+    let backup_header_lba = total_sectors - 1;
+    let backup_offset = backup_header_lba as usize * SECTOR;
+    image[backup_offset + 32..backup_offset + 40].copy_from_slice(&2u64.to_le_bytes());
+    update_gpt_header_crc_at(&mut image, backup_header_lba);
+
+    let reader = MemImageReader::new("gpt-nonreciprocal-backup", image);
+    assert!(discover(&reader).is_err());
+}
+
+#[test]
+fn part_gpt_backup_004_uses_backup_when_primary_header_is_unreadable() {
+    let total_sectors = 20_480;
+    let mut image = build_gpt_image(total_sectors, &[(2048, 10_239, "Dados")]);
+    install_backup_gpt(&mut image, total_sectors);
+    let reader = PrimaryHeaderFaultReader {
+        inner: MemImageReader::new("gpt-primary-read-fault", image),
+    };
+
+    let table = discover(&reader).expect("canonical backup should survive primary read fault");
+
+    assert_eq!(table.kind, PartitionTableKind::Gpt);
+    assert_eq!(table.partitions.len(), 1);
+    assert!(table
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("backup")));
+}
+
+#[test]
+fn part_gpt_backup_005_rejects_conflicting_valid_backup_when_primary_is_usable() {
+    let total_sectors = 20_480;
+    let mut image = build_gpt_image(total_sectors, &[(2048, 10_239, "Dados")]);
+    install_backup_gpt(&mut image, total_sectors);
+    let backup_header_lba = total_sectors - 1;
+    let backup_offset = backup_header_lba as usize * SECTOR;
+    image[backup_offset + 56] ^= 0x01;
+    update_gpt_header_crc_at(&mut image, backup_header_lba);
+
+    let reader = MemImageReader::new("gpt-conflicting-valid-backup", image);
+    let error = discover(&reader).expect_err("conflicting valid headers must fail closed");
+
+    assert!(error.to_string().contains("not reciprocal or consistent"));
+}
+
+#[test]
+fn part_gpt_protective_001_rejects_protective_mbr_when_both_gpt_copies_are_unusable() {
+    let total_sectors = 20_480;
+    let mut image = build_gpt_image(total_sectors, &[(2048, 10_239, "Dados")]);
+    install_backup_gpt(&mut image, total_sectors);
+    image[SECTOR] ^= 0xFF;
+    image[(total_sectors as usize - 1) * SECTOR] ^= 0xFF;
+
+    let r = MemImageReader::new("gpt-both-copies-unusable", image);
+    let error = discover(&r).unwrap_err();
+
+    assert!(error.to_string().contains("protective MBR"));
 }
 
 #[test]

@@ -2,13 +2,53 @@
 
 use sha2::{Digest, Sha256};
 use um_core::{
-    extract_candidate, Candidate, CandidateKind, CandidateState, MetadataConfidence,
-    RecoverabilityInputs,
+    extract_candidate, Candidate, CandidateKind, CandidateState, MetadataConfidence, ReadError,
+    ReadOutcome, RecoverabilityInputs, SectorLayout, SourceIdentity, SourceReader,
 };
 use um_fixture_builder::deterministic_bytes;
 use um_fixture_builder::fat::{FatFileOptions, FatImageBuilder, FatKind, NodeParent};
 use um_fs_fat::FatVariant;
 use um_io_common::MemImageReader;
+
+struct DeclaredLengthReader {
+    sector0: MemImageReader,
+    declared_len: u64,
+}
+
+impl SourceReader for DeclaredLengthReader {
+    fn identity(&self) -> &SourceIdentity {
+        self.sector0.identity()
+    }
+
+    fn len(&self) -> u64 {
+        self.declared_len
+    }
+
+    fn sector_layout(&self) -> SectorLayout {
+        self.sector0.sector_layout()
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> Result<(), ReadError> {
+        if offset == 0 && buffer.len() <= 512 {
+            return self.sector0.read_exact_at(offset, buffer);
+        }
+        Err(ReadError::Io {
+            offset,
+            message: "synthetic unexpected read beyond boot sector".into(),
+        })
+    }
+
+    fn read_best_effort_at(&self, offset: u64, buffer: &mut [u8]) -> ReadOutcome {
+        if offset == 0 && buffer.len() <= 512 {
+            return self.sector0.read_best_effort_at(offset, buffer);
+        }
+        buffer.fill(0);
+        ReadOutcome {
+            bytes_valid: 0,
+            bad_ranges: vec![(0, buffer.len() as u64)],
+        }
+    }
+}
 
 fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
@@ -222,6 +262,214 @@ fn fat16_basic_recovery() {
     let cand = find(&out.candidates, "antigo.doc");
     let ext = extract_candidate(&reader, cand).unwrap();
     assert_eq!(ext.bytes, content);
+}
+
+#[test]
+fn fat_completeness_001_marks_broken_directory_chain_partial() {
+    let mut builder = FatImageBuilder::new("fat32-broken-directory", FatKind::Fat32);
+    builder.add_dir(NodeParent::Root, "ARCHIVE", false);
+    let (mut image, _) = builder.build();
+    let boot = um_fs_fat::FatBoot::parse(&image[..512], image.len() as u64).unwrap();
+    let root_offset = boot.cluster_offset(boot.root_cluster as u64).unwrap() as usize;
+    let root_end = root_offset + boot.cluster_size as usize;
+    let directory_entry = image[root_offset..root_end]
+        .chunks_exact(32)
+        .find(|entry| {
+            entry[0] != 0
+                && entry[0] != 0xE5
+                && entry[0] != b'.'
+                && entry[11] & 0x10 != 0
+                && entry[11] != 0x0F
+        })
+        .expect("active directory entry");
+    let first_cluster = u32::from(u16::from_le_bytes([
+        directory_entry[20],
+        directory_entry[21],
+    ])) << 16
+        | u32::from(u16::from_le_bytes([
+            directory_entry[26],
+            directory_entry[27],
+        ]));
+    let fat_entry_offset = boot.fat_offset as usize + first_cluster as usize * 4;
+    image[fat_entry_offset..fat_entry_offset + 4].copy_from_slice(&0x0FFF_FFF7u32.to_le_bytes());
+
+    let output =
+        um_fs_fat::scan_fat(&MemImageReader::new("fat32-broken-directory", image)).unwrap();
+
+    assert!(!output.is_complete);
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("broken cluster chain")));
+}
+
+#[test]
+fn fat_completeness_002_marks_divergent_fat_copies_partial() {
+    let builder = FatImageBuilder::new("fat32-divergent-copies", FatKind::Fat32);
+    let (mut image, _) = builder.build();
+    let boot = um_fs_fat::FatBoot::parse(&image[..512], image.len() as u64).unwrap();
+    assert!(boot.num_fats > 1);
+    let fat_bytes = boot.fat_size_sectors as usize * boot.bytes_per_sector as usize;
+    let second_fat_offset = boot.fat_offset as usize + fat_bytes;
+    image[second_fat_offset + 8] ^= 0x01;
+
+    let output =
+        um_fs_fat::scan_fat(&MemImageReader::new("fat32-divergent-copies", image)).unwrap();
+
+    assert!(!output.is_complete);
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("FAT copies disagree")));
+}
+
+#[test]
+fn fat_completeness_003_marks_directory_without_start_cluster_partial() {
+    let mut builder = FatImageBuilder::new("fat32-directory-no-cluster", FatKind::Fat32);
+    builder.add_dir(NodeParent::Root, "ORPHAN", false);
+    let (mut image, _) = builder.build();
+    let boot = um_fs_fat::FatBoot::parse(&image[..512], image.len() as u64).unwrap();
+    let root_offset = boot.cluster_offset(boot.root_cluster as u64).unwrap() as usize;
+    let root_end = root_offset + boot.cluster_size as usize;
+    let directory_index = image[root_offset..root_end]
+        .chunks_exact(32)
+        .position(|entry| {
+            entry[0] != 0
+                && entry[0] != 0xE5
+                && entry[0] != b'.'
+                && entry[11] & 0x10 != 0
+                && entry[11] != 0x0F
+        })
+        .expect("active directory entry");
+    let directory_offset = root_offset + directory_index * 32;
+    image[directory_offset + 20..directory_offset + 22].fill(0);
+    image[directory_offset + 26..directory_offset + 28].fill(0);
+
+    let output =
+        um_fs_fat::scan_fat(&MemImageReader::new("fat32-directory-no-cluster", image)).unwrap();
+
+    assert!(!output.is_complete);
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("no usable start cluster")));
+}
+
+#[test]
+fn fat_completeness_004_checks_every_declared_fat_copy() {
+    let builder = FatImageBuilder::new("fat32-three-copies", FatKind::Fat32);
+    let (mut image, _) = builder.build();
+    let original_boot = um_fs_fat::FatBoot::parse(&image[..512], image.len() as u64).unwrap();
+    assert_eq!(original_boot.num_fats, 2);
+    let fat_bytes =
+        original_boot.fat_size_sectors as usize * original_boot.bytes_per_sector as usize;
+    let first_fat_offset = original_boot.fat_offset as usize;
+    let third_fat = image[first_fat_offset..first_fat_offset + fat_bytes].to_vec();
+    let data_offset = first_fat_offset + 2 * fat_bytes;
+    image.splice(data_offset..data_offset, third_fat);
+    image[16] = 3;
+    let total_sectors =
+        u32::from_le_bytes(image[32..36].try_into().unwrap()) + original_boot.fat_size_sectors;
+    image[32..36].copy_from_slice(&total_sectors.to_le_bytes());
+    let third_fat_offset = first_fat_offset + 2 * fat_bytes;
+    image[third_fat_offset + 8] ^= 0x01;
+
+    let output = um_fs_fat::scan_fat(&MemImageReader::new("fat32-three-copies", image)).unwrap();
+
+    assert!(!output.is_complete);
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("FAT copies disagree")));
+}
+
+#[test]
+fn fat_table_bound_001_rejects_oversized_table_before_allocation() {
+    let builder = FatImageBuilder::new("fat32-hostile-table-size", FatKind::Fat32);
+    let (image, _) = builder.build();
+    let mut sector0 = image[..512].to_vec();
+    let fat_sectors = (64 * 1024 * 1024 / 512 + 1) as u32;
+    let total_sectors = 1_000_000u32;
+    sector0[36..40].copy_from_slice(&fat_sectors.to_le_bytes());
+    sector0[32..36].copy_from_slice(&total_sectors.to_le_bytes());
+    let reader = DeclaredLengthReader {
+        sector0: MemImageReader::new("fat32-hostile-table-size", sector0),
+        declared_len: u64::from(total_sectors) * 512,
+    };
+
+    let error =
+        um_fs_fat::scan_fat(&reader).expect_err("oversized FAT must fail before allocation");
+
+    assert!(error.to_string().contains("FAT table exceeds"));
+}
+
+#[test]
+fn fat_depth_bound_001_marks_excessive_directory_nesting_partial() {
+    let mut builder = FatImageBuilder::new("fat32-deep-directory", FatKind::Fat32);
+    let mut parent = NodeParent::Root;
+    for depth in 0..260 {
+        let directory = builder.add_dir(parent, &format!("D{depth:03}"), false);
+        parent = NodeParent::Node(directory);
+    }
+    let (image, _) = builder.build();
+
+    let output = um_fs_fat::scan_fat(&MemImageReader::new("fat32-deep-directory", image)).unwrap();
+
+    assert!(!output.is_complete);
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("depth bound")));
+}
+
+#[test]
+fn fat_directory_chain_bound_001_caps_chain_before_directory_read() {
+    let mut builder = FatImageBuilder::new("fat32-long-directory-chain", FatKind::Fat32);
+    builder.add_dir(NodeParent::Root, "LONGDIR", false);
+    let (mut image, _) = builder.build();
+    let boot = um_fs_fat::FatBoot::parse(&image[..512], image.len() as u64).unwrap();
+    let root_offset = boot.cluster_offset(boot.root_cluster as u64).unwrap() as usize;
+    let root_end = root_offset + boot.cluster_size as usize;
+    let directory_entry = image[root_offset..root_end]
+        .chunks_exact(32)
+        .find(|entry| {
+            entry[0] != 0
+                && entry[0] != 0xE5
+                && entry[0] != b'.'
+                && entry[11] & 0x10 != 0
+                && entry[11] != 0x0F
+        })
+        .expect("active directory entry");
+    let first_cluster = u32::from(u16::from_le_bytes([
+        directory_entry[20],
+        directory_entry[21],
+    ])) << 16
+        | u32::from(u16::from_le_bytes([
+            directory_entry[26],
+            directory_entry[27],
+        ]));
+    let chain_clusters = (8 * 1024 * 1024 / boot.cluster_size) as u32 + 1;
+    let fat_bytes = boot.fat_size_sectors as usize * boot.bytes_per_sector as usize;
+    for copy_index in 0..boot.num_fats as usize {
+        let copy_offset = boot.fat_offset as usize + copy_index * fat_bytes;
+        for index in 0..chain_clusters {
+            let cluster = first_cluster + index;
+            let entry_offset = copy_offset + cluster as usize * 4;
+            image[entry_offset..entry_offset + 4].copy_from_slice(&(cluster + 1).to_le_bytes());
+        }
+        let last_cluster = first_cluster + chain_clusters;
+        let last_offset = copy_offset + last_cluster as usize * 4;
+        image[last_offset..last_offset + 4].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
+    }
+
+    let output =
+        um_fs_fat::scan_fat(&MemImageReader::new("fat32-long-directory-chain", image)).unwrap();
+
+    assert!(!output.is_complete);
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("chain reached the scan bound")));
 }
 
 #[test]

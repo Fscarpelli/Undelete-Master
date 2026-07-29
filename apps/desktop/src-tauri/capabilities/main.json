@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The main window can invoke only application-owned commands. Native file selection remains inside Rust.",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": []
+}

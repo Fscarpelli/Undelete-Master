@@ -19,6 +19,19 @@ const ROOT_RECORD: u64 = 5;
 const BITMAP_RECORD: u64 = 6;
 const FIRST_USER_RECORD: u64 = 16;
 const MAX_PATH_DEPTH: usize = 255;
+// Defense-in-depth record ceiling. The byte budget below is normally stricter,
+// but retaining both bounds protects unusual record geometries.
+const MAX_MFT_RECORDS: u64 = 1_000_000;
+// At most 64 MiB of physically backed MFT records are parsed per scan. This
+// bounds aggregate allocation/parsing work independently of record size.
+const MAX_MFT_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+// Allocation metadata is advisory for recoverability classification. Retaining
+// the first 64 MiB covers 536,870,912 cluster states while bounding both the
+// source read and the backing Vec for hostile or unusually large volumes.
+// Clusters whose bits fall beyond this prefix remain Unknown.
+const MAX_BITMAP_READ_BYTES: u64 = 64 * 1024 * 1024;
+// Hostile metadata must not retain one formatted warning per attempted record.
+const MAX_MFT_DETAILED_WARNINGS: usize = 16;
 
 /// Output of an NTFS metadata scan.
 #[derive(Debug)]
@@ -26,6 +39,9 @@ pub struct NtfsScanOutput {
     pub boot: NtfsBoot,
     pub candidates: Vec<Candidate>,
     pub warnings: Vec<String>,
+    /// `false` when metadata bounds or skipped corrupt/unreadable records mean
+    /// the scanner cannot claim it enumerated every possible MFT candidate.
+    pub is_complete: bool,
 }
 
 struct ParsedEntry {
@@ -48,15 +64,24 @@ fn read_stream_range(
     logical_offset: u64,
     len: u64,
 ) -> Result<Vec<u8>, ScanError> {
-    let mut out = vec![0u8; len as usize];
+    let output_len = usize::try_from(len)
+        .map_err(|_| ScanError::Corrupt("stream read length does not fit address space".into()))?;
+    let mut out = vec![0u8; output_len];
     let mut filled = 0u64;
     let mut stream_pos = 0u64;
     for run in runs {
-        let run_len = run.cluster_count * cluster_size;
+        let run_len = run
+            .cluster_count
+            .checked_mul(cluster_size)
+            .ok_or_else(|| ScanError::Corrupt("stream run length overflow".into()))?;
         let run_start = stream_pos;
-        let run_end = stream_pos + run_len;
+        let run_end = stream_pos
+            .checked_add(run_len)
+            .ok_or_else(|| ScanError::Corrupt("stream logical range overflow".into()))?;
         stream_pos = run_end;
-        let want_start = logical_offset + filled;
+        let want_start = logical_offset
+            .checked_add(filled)
+            .ok_or_else(|| ScanError::Corrupt("stream requested range overflow".into()))?;
         if want_start >= run_end || filled >= len {
             continue;
         }
@@ -71,11 +96,22 @@ fn read_stream_range(
                     .checked_mul(cluster_size)
                     .and_then(|v| v.checked_add(within))
                     .ok_or_else(|| ScanError::Corrupt("stream offset overflow".into()))?;
-                reader.read_exact_at(phys, &mut out[filled as usize..(filled + take) as usize])?;
+                let output_start = usize::try_from(filled).map_err(|_| {
+                    ScanError::Corrupt("stream output offset does not fit address space".into())
+                })?;
+                let output_end_u64 = filled
+                    .checked_add(take)
+                    .ok_or_else(|| ScanError::Corrupt("stream output range overflow".into()))?;
+                let output_end = usize::try_from(output_end_u64).map_err(|_| {
+                    ScanError::Corrupt("stream output end does not fit address space".into())
+                })?;
+                reader.read_exact_at(phys, &mut out[output_start..output_end])?;
             }
             None => { /* sparse: already zero */ }
         }
-        filled += take;
+        filled = filled
+            .checked_add(take)
+            .ok_or_else(|| ScanError::Corrupt("stream filled length overflow".into()))?;
         if filled >= len {
             break;
         }
@@ -93,35 +129,174 @@ fn stream_phys_offset(runs: &[RunElement], cluster_size: u64, logical_offset: u6
     let mut stream_pos = 0u64;
     for run in runs {
         let run_len = run.cluster_count.checked_mul(cluster_size)?;
-        if logical_offset < stream_pos + run_len {
+        let run_end = stream_pos.checked_add(run_len)?;
+        if logical_offset < run_end {
             let within = logical_offset - stream_pos;
             return run.lcn?.checked_mul(cluster_size)?.checked_add(within);
         }
-        stream_pos += run_len;
+        stream_pos = run_end;
     }
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrustedStreamPrefix {
+    len: u64,
+    stopped_at_untrusted_run: bool,
+    stopped_at_sparse_run: bool,
+}
+
+fn trusted_physical_stream_prefix_len(
+    runs: &[RunElement],
+    cluster_size: u64,
+    source_len: u64,
+    data_size: u64,
+    initialized_size: u64,
+) -> Result<TrustedStreamPrefix, ScanError> {
+    if cluster_size == 0 {
+        return Err(ScanError::Corrupt("zero stream cluster size".into()));
+    }
+    let logical_limit = data_size.min(initialized_size);
+    let mut trusted_len = 0u64;
+    for run in runs {
+        if trusted_len >= logical_limit {
+            break;
+        }
+        let run_len = run
+            .cluster_count
+            .checked_mul(cluster_size)
+            .ok_or_else(|| ScanError::Corrupt("stream run coverage overflow".into()))?;
+        let take = run_len.min(logical_limit - trusted_len);
+        let Some(lcn) = run.lcn else {
+            return Ok(TrustedStreamPrefix {
+                len: trusted_len,
+                stopped_at_untrusted_run: true,
+                stopped_at_sparse_run: true,
+            });
+        };
+        let physical_start = lcn
+            .checked_mul(cluster_size)
+            .ok_or_else(|| ScanError::Corrupt("stream physical offset overflow".into()))?;
+        let physical_end = physical_start
+            .checked_add(take)
+            .ok_or_else(|| ScanError::Corrupt("stream physical range overflow".into()))?;
+        if physical_end > source_len {
+            return Ok(TrustedStreamPrefix {
+                len: trusted_len,
+                stopped_at_untrusted_run: true,
+                stopped_at_sparse_run: false,
+            });
+        }
+        trusted_len = trusted_len
+            .checked_add(take)
+            .ok_or_else(|| ScanError::Corrupt("trusted stream prefix overflow".into()))?;
+    }
+    Ok(TrustedStreamPrefix {
+        len: trusted_len,
+        stopped_at_untrusted_run: trusted_len < logical_limit,
+        stopped_at_sparse_run: false,
+    })
+}
+
+fn bounded_mft_record_count(
+    initialized_stream_len: u64,
+    record_size: u64,
+    warnings: &mut Vec<String>,
+) -> Result<u64, ScanError> {
+    if record_size == 0 {
+        return Err(ScanError::Corrupt("zero MFT record size".into()));
+    }
+    let available_records = initialized_stream_len / record_size;
+    let byte_budget_records = MAX_MFT_SCAN_BYTES / record_size;
+    let bounded = available_records
+        .min(MAX_MFT_RECORDS)
+        .min(byte_budget_records);
+    if bounded < available_records {
+        warnings.push(format!(
+            "MFT scan work budget capped parsing at {bounded} of {available_records} records \
+             ({MAX_MFT_SCAN_BYTES} bytes maximum)"
+        ));
+    }
+    Ok(bounded)
+}
+
+fn bounded_bitmap_read_len(
+    expected_bytes: u64,
+    trusted_bytes: u64,
+    warnings: &mut Vec<String>,
+) -> u64 {
+    let available = expected_bytes.min(trusted_bytes);
+    let bounded = available.min(MAX_BITMAP_READ_BYTES);
+    if bounded < available {
+        warnings.push(format!(
+            "$Bitmap read budget capped data at {MAX_BITMAP_READ_BYTES} of {expected_bytes} \
+             expected bytes; later bits unknown"
+        ));
+    }
+    bounded
+}
+
+#[derive(Debug, Default)]
+struct MftWarningBudget {
+    retained: usize,
+    suppressed: u64,
+}
+
+impl MftWarningBudget {
+    fn push(&mut self, warnings: &mut Vec<String>, warning: String) {
+        if self.retained < MAX_MFT_DETAILED_WARNINGS {
+            warnings.push(warning);
+            self.retained = self.retained.saturating_add(1);
+        } else {
+            self.suppressed = self.suppressed.saturating_add(1);
+        }
+    }
+
+    fn finish(self, warnings: &mut Vec<String>) {
+        if self.suppressed > 0 {
+            warnings.push(format!(
+                "MFT record warnings suppressed: {} additional record error(s)",
+                self.suppressed
+            ));
+        }
+    }
+}
+
 /// Parses a resident `$ATTRIBUTE_LIST` value, returning referenced extension
 /// record numbers (excluding the base record itself).
-fn attribute_list_extensions(value: &[u8], base_record: u64) -> Vec<u64> {
+fn attribute_list_extensions(value: &[u8], base_record: u64) -> (Vec<u64>, bool) {
     let mut refs = Vec::new();
     let mut pos = 0usize;
     for _ in 0..1024 {
-        if pos + 26 > value.len() {
-            break;
+        if pos == value.len() {
+            return (refs, true);
         }
-        let entry_len = le::u16_at(value, pos + 4).unwrap_or(0) as usize;
-        if entry_len < 26 || pos + entry_len > value.len() {
-            break;
+        let Some(header_end) = pos.checked_add(26) else {
+            return (refs, false);
+        };
+        if header_end > value.len() {
+            return (refs, false);
         }
-        let file_ref = le::u64_at(value, pos + 16).unwrap_or(0) & 0x0000_FFFF_FFFF_FFFF;
+        let Some(entry_len_offset) = pos.checked_add(4) else {
+            return (refs, false);
+        };
+        let entry_len = le::u16_at(value, entry_len_offset).unwrap_or(0) as usize;
+        let Some(entry_end) = pos.checked_add(entry_len) else {
+            return (refs, false);
+        };
+        if entry_len < 26 || entry_end > value.len() {
+            return (refs, false);
+        }
+        let Some(file_ref_offset) = pos.checked_add(16) else {
+            return (refs, false);
+        };
+        let file_ref = le::u64_at(value, file_ref_offset).unwrap_or(0) & 0x0000_FFFF_FFFF_FFFF;
         if file_ref != base_record && !refs.contains(&file_ref) {
             refs.push(file_ref);
         }
-        pos += entry_len;
+        pos = entry_end;
     }
-    refs
+    (refs, false)
 }
 
 fn pick_best_name(names: &[FileNameAttr]) -> Option<FileNameAttr> {
@@ -140,55 +315,137 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
     let record_size = boot.file_record_size as u64;
 
     // Bootstrap: record 0 describes the MFT itself.
-    let mft_start = boot.mft_lcn * cluster_size;
-    let rec0_raw = reader.read_vec_at(mft_start, record_size as usize)?;
+    let mft_start = boot
+        .mft_lcn
+        .checked_mul(cluster_size)
+        .ok_or_else(|| ScanError::Corrupt("MFT byte offset overflow".into()))?;
+    let record_size_usize = usize::try_from(record_size)
+        .map_err(|_| ScanError::Corrupt("MFT record size does not fit address space".into()))?;
+    let rec0_raw = reader.read_vec_at(mft_start, record_size_usize)?;
     let rec0 = parse_file_record(&rec0_raw, boot.bytes_per_sector)
         .map_err(|e| ScanError::Corrupt(format!("MFT record 0 unusable: {e:?}")))?;
-    let attrs0 = iter_attributes(&rec0);
+    let (attrs0, attrs0_complete) = iter_attributes(&rec0);
+    if !attrs0_complete {
+        return Err(ScanError::Corrupt(
+            "MFT record 0 has malformed attributes".into(),
+        ));
+    }
     let mut w0 = Vec::new();
     let streams0 = extract_data_streams(&attrs0, boot.total_clusters, &mut w0);
     warnings.extend(w0);
-    let (mft_runs, mft_size) = match streams0.iter().find(|s| s.name.is_none()) {
-        Some(DataStream {
-            kind: DataStreamKind::NonResident {
-                data_size, runs, ..
-            },
-            ..
-        }) => (runs.clone(), *data_size),
-        _ => {
-            return Err(ScanError::Corrupt(
-                "MFT record 0 has no usable non-resident $DATA".into(),
-            ))
-        }
-    };
-    let record_count = mft_size / record_size;
+    let (mft_runs, mft_data_size, mft_initialized_size) =
+        match streams0.iter().find(|s| s.name.is_none()) {
+            Some(DataStream {
+                kind:
+                    DataStreamKind::NonResident {
+                        data_size,
+                        initialized_size,
+                        runs,
+                    },
+                ..
+            }) => (runs.clone(), *data_size, *initialized_size),
+            _ => {
+                return Err(ScanError::Corrupt(
+                    "MFT record 0 has no usable non-resident $DATA".into(),
+                ))
+            }
+        };
+    if mft_data_size % record_size != 0 {
+        return Err(ScanError::Corrupt(format!(
+            "$MFT data size {mft_data_size} is not aligned to the {record_size}-byte file record size"
+        )));
+    }
+    let minimum_mft_size = FIRST_USER_RECORD
+        .checked_mul(record_size)
+        .ok_or_else(|| ScanError::Corrupt("minimum $MFT size overflow".into()))?;
+    if mft_data_size < minimum_mft_size {
+        return Err(ScanError::Corrupt(format!(
+            "$MFT data size {mft_data_size} does not cover the {FIRST_USER_RECORD} reserved file records"
+        )));
+    }
+    let trusted_mft_prefix = trusted_physical_stream_prefix_len(
+        &mft_runs,
+        cluster_size,
+        reader.len(),
+        mft_data_size,
+        mft_initialized_size,
+    )?;
+    let mut is_complete = trusted_mft_prefix.len >= mft_data_size;
+    if trusted_mft_prefix.stopped_at_sparse_run {
+        warnings.push(format!(
+            "MFT trusted prefix stopped before sparse run at {} bytes; remaining records ignored",
+            trusted_mft_prefix.len
+        ));
+    } else if trusted_mft_prefix.stopped_at_untrusted_run {
+        warnings.push(format!(
+            "MFT trusted prefix stopped at {} source-bounded bytes; remaining records ignored",
+            trusted_mft_prefix.len
+        ));
+    } else if trusted_mft_prefix.len < mft_data_size {
+        warnings.push(format!(
+            "MFT scan bounded to {} initialized bytes from declared {mft_data_size}",
+            trusted_mft_prefix.len
+        ));
+    }
+    let record_count =
+        bounded_mft_record_count(trusted_mft_prefix.len, record_size, &mut warnings)?;
+    if record_count < trusted_mft_prefix.len / record_size {
+        is_complete = false;
+    }
 
     // Allocation bitmap from record 6 ($Bitmap).
-    let allocation = load_allocation_map(reader, &boot, &mft_runs, &mut warnings);
+    let allocation = load_allocation_map(
+        reader,
+        &boot,
+        &mft_runs,
+        trusted_mft_prefix.len,
+        &mut warnings,
+    );
 
     // Pass 1: parse all records.
     let mut entries: HashMap<u64, ParsedEntry> = HashMap::new();
     let mut extension_data: HashMap<u64, Vec<u64>> = HashMap::new(); // base -> ext record nos
+    let mut mft_warning_budget = MftWarningBudget::default();
     for record_no in 0..record_count {
-        let logical = record_no * record_size;
+        let logical = record_no
+            .checked_mul(record_size)
+            .ok_or_else(|| ScanError::Corrupt("MFT record offset overflow".into()))?;
         let raw = match read_stream_range(reader, &mft_runs, cluster_size, logical, record_size) {
             Ok(b) => b,
             Err(_) => {
-                warnings.push(format!("MFT record {record_no} unreadable; skipped"));
+                is_complete = false;
+                mft_warning_budget.push(
+                    &mut warnings,
+                    format!("MFT record {record_no} unreadable; skipped"),
+                );
                 continue;
             }
         };
         let rec = match parse_file_record(&raw, boot.bytes_per_sector) {
             Ok(r) => r,
-            Err(RecordParseError::NotAFileRecord) => continue,
+            Err(RecordParseError::NotAFileRecord) if raw.iter().all(|byte| *byte == 0) => continue,
+            Err(RecordParseError::NotAFileRecord) => {
+                is_complete = false;
+                mft_warning_budget.push(
+                    &mut warnings,
+                    format!("MFT record {record_no} has no FILE signature; skipped"),
+                );
+                continue;
+            }
             Err(RecordParseError::FixupMismatch) => {
-                warnings.push(format!(
-                    "MFT record {record_no} has torn sectors (fixup mismatch); skipped"
-                ));
+                is_complete = false;
+                mft_warning_budget.push(
+                    &mut warnings,
+                    format!("MFT record {record_no} has torn sectors (fixup mismatch); skipped"),
+                );
                 continue;
             }
             Err(RecordParseError::Corrupt(msg)) => {
-                warnings.push(format!("MFT record {record_no} corrupt: {msg}"));
+                is_complete = false;
+                mft_warning_budget.push(
+                    &mut warnings,
+                    format!("MFT record {record_no} corrupt: {msg}"),
+                );
                 continue;
             }
         };
@@ -201,9 +458,18 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
             continue;
         }
         let phys = stream_phys_offset(&mft_runs, cluster_size, logical).unwrap_or(0);
-        entries.insert(record_no, parse_entry(&rec, &boot, phys));
+        let (entry, attributes_complete) = parse_entry(&rec, &boot, phys);
+        if !attributes_complete {
+            is_complete = false;
+            mft_warning_budget.push(
+                &mut warnings,
+                format!(
+                    "MFT record {record_no} has incomplete or unresolved attributes; metadata may be incomplete"
+                ),
+            );
+        }
+        entries.insert(record_no, entry);
     }
-
     // Pass 2: merge $DATA streams from extension records referenced by
     // resident attribute lists.
     let mut merged: Vec<(u64, Vec<DataStream>)> = Vec::new();
@@ -218,14 +484,50 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         let mut extra = Vec::new();
         if let Some(ext_recs) = extension_data.get(&record_no) {
             for &ext_no in ext_recs {
-                let logical = ext_no * record_size;
-                if let Ok(raw) =
-                    read_stream_range(reader, &mft_runs, cluster_size, logical, record_size)
-                {
-                    if let Ok(rec) = parse_file_record(&raw, boot.bytes_per_sector) {
-                        let attrs = iter_attributes(&rec);
-                        let mut w = Vec::new();
-                        extra.extend(extract_data_streams(&attrs, boot.total_clusters, &mut w));
+                let Some(logical) = ext_no.checked_mul(record_size) else {
+                    is_complete = false;
+                    mft_warning_budget.push(
+                        &mut warnings,
+                        format!(
+                            "MFT extension record {ext_no} offset overflow; data streams may be incomplete"
+                        ),
+                    );
+                    continue;
+                };
+                match read_stream_range(reader, &mft_runs, cluster_size, logical, record_size) {
+                    Ok(raw) => match parse_file_record(&raw, boot.bytes_per_sector) {
+                        Ok(rec) => {
+                            let (attrs, attrs_complete) = iter_attributes(&rec);
+                            if !attrs_complete {
+                                is_complete = false;
+                                mft_warning_budget.push(
+                                    &mut warnings,
+                                    format!(
+                                        "MFT extension record {ext_no} has incomplete or unresolved attributes; data streams may be incomplete"
+                                    ),
+                                );
+                            }
+                            let mut w = Vec::new();
+                            extra.extend(extract_data_streams(&attrs, boot.total_clusters, &mut w));
+                        }
+                        Err(_) => {
+                            is_complete = false;
+                            mft_warning_budget.push(
+                                &mut warnings,
+                                format!(
+                                    "MFT extension record {ext_no} corrupt on merge; data streams may be incomplete"
+                                ),
+                            );
+                        }
+                    },
+                    Err(_) => {
+                        is_complete = false;
+                        mft_warning_budget.push(
+                            &mut warnings,
+                            format!(
+                                "MFT extension record {ext_no} unreadable on merge; data streams may be incomplete"
+                            ),
+                        );
                     }
                 }
             }
@@ -239,6 +541,7 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
             e.streams.extend(extra);
         }
     }
+    mft_warning_budget.finish(&mut warnings);
 
     // Pass 3: build candidates from records marked free.
     let mut candidates = Vec::new();
@@ -294,11 +597,12 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         boot,
         candidates,
         warnings,
+        is_complete,
     })
 }
 
-fn parse_entry(rec: &FileRecord, boot: &NtfsBoot, record_phys_offset: u64) -> ParsedEntry {
-    let attrs = iter_attributes(rec);
+fn parse_entry(rec: &FileRecord, boot: &NtfsBoot, record_phys_offset: u64) -> (ParsedEntry, bool) {
+    let (attrs, mut attributes_complete) = iter_attributes(rec);
     let mut warnings = Vec::new();
     let mut names = Vec::new();
     let mut std_info = StandardInformation::default();
@@ -307,49 +611,91 @@ fn parse_entry(rec: &FileRecord, boot: &NtfsBoot, record_phys_offset: u64) -> Pa
             (crate::attr::ATTR_STANDARD_INFORMATION, AttrBody::Resident { value, .. }) => {
                 if let Some(si) = parse_standard_information(value) {
                     std_info = si;
+                } else {
+                    attributes_complete = false;
                 }
             }
             (crate::attr::ATTR_FILE_NAME, AttrBody::Resident { value, .. }) => {
                 if let Some(fn_attr) = parse_file_name(value) {
                     names.push(fn_attr);
+                } else {
+                    attributes_complete = false;
                 }
             }
             (ATTR_ATTRIBUTE_LIST, AttrBody::Resident { value, .. }) => {
-                let exts = attribute_list_extensions(value, 0);
+                let (exts, list_complete) = attribute_list_extensions(value, 0);
+                // The current merge pass uses extension records only for
+                // additional data streams and does not prove that every
+                // referenced record or candidate-defining attribute was
+                // resolved. Preserve the references, but never claim an
+                // exhaustive scan for a record that depends on a list.
+                attributes_complete = false;
+                if !list_complete {
+                    warnings.push("attribute list value is malformed".to_string());
+                }
                 warnings.push(format!(
                     "has attribute list with {} extension reference(s)",
                     exts.len()
                 ));
             }
             (ATTR_ATTRIBUTE_LIST, AttrBody::NonResident { .. }) => {
+                attributes_complete = false;
                 warnings
                     .push("has non-resident attribute list; extents may be incomplete".to_string());
+            }
+            (crate::attr::ATTR_FILE_NAME | crate::attr::ATTR_STANDARD_INFORMATION, _) => {
+                attributes_complete = false;
             }
             _ => {}
         }
     }
     let streams = extract_data_streams(&attrs, boot.total_clusters, &mut warnings);
-    ParsedEntry {
-        sequence: rec.sequence,
-        in_use: rec.in_use,
-        is_directory: rec.is_directory,
-        best_name: pick_best_name(&names),
-        std_info,
-        streams,
-        record_phys_offset,
-        warnings,
-    }
+    (
+        ParsedEntry {
+            sequence: rec.sequence,
+            in_use: rec.in_use,
+            is_directory: rec.is_directory,
+            best_name: pick_best_name(&names),
+            std_info,
+            streams,
+            record_phys_offset,
+            warnings,
+        },
+        attributes_complete,
+    )
 }
 
 fn load_allocation_map(
     reader: &dyn SourceReader,
     boot: &NtfsBoot,
     mft_runs: &[RunElement],
+    trusted_mft_prefix_len: u64,
     warnings: &mut Vec<String>,
 ) -> Option<AllocationMap> {
     let record_size = boot.file_record_size as u64;
-    let logical = BITMAP_RECORD * record_size;
-    let raw = read_stream_range(reader, mft_runs, boot.cluster_size, logical, record_size).ok()?;
+    let bitmap_record_end = BITMAP_RECORD
+        .checked_add(1)
+        .and_then(|record| record.checked_mul(record_size));
+    if bitmap_record_end
+        .map(|end| end > trusted_mft_prefix_len)
+        .unwrap_or(true)
+    {
+        warnings.push(
+            "$Bitmap record lies beyond trusted MFT prefix; extent availability unknown".into(),
+        );
+        return None;
+    }
+    let Some(logical) = BITMAP_RECORD.checked_mul(record_size) else {
+        warnings.push("$Bitmap record offset overflow; extent availability unknown".into());
+        return None;
+    };
+    let raw = match read_stream_range(reader, mft_runs, boot.cluster_size, logical, record_size) {
+        Ok(raw) => raw,
+        Err(_) => {
+            warnings.push("$Bitmap record unreadable; extent availability unknown".into());
+            return None;
+        }
+    };
     let rec = match parse_file_record(&raw, boot.bytes_per_sector) {
         Ok(r) => r,
         Err(_) => {
@@ -357,18 +703,57 @@ fn load_allocation_map(
             return None;
         }
     };
-    let attrs = iter_attributes(&rec);
+    let (attrs, attrs_complete) = iter_attributes(&rec);
+    if !attrs_complete {
+        warnings
+            .push("$Bitmap record has malformed attributes; extent availability unknown".into());
+        return None;
+    }
     let mut w = Vec::new();
     let streams = extract_data_streams(&attrs, boot.total_clusters, &mut w);
     let expected = boot.total_clusters.div_ceil(8);
     match streams.iter().find(|s| s.name.is_none()) {
         Some(DataStream {
-            kind: DataStreamKind::NonResident {
-                data_size, runs, ..
-            },
+            kind:
+                DataStreamKind::NonResident {
+                    data_size,
+                    initialized_size,
+                    runs,
+                },
             ..
         }) => {
-            let take = expected.min(*data_size);
+            let trusted_bitmap_prefix = match trusted_physical_stream_prefix_len(
+                runs,
+                boot.cluster_size,
+                reader.len(),
+                *data_size,
+                *initialized_size,
+            ) {
+                Ok(prefix) => prefix,
+                Err(_) => {
+                    warnings
+                        .push("$Bitmap stream bounds invalid; extent availability unknown".into());
+                    return None;
+                }
+            };
+            if trusted_bitmap_prefix.len == 0 && expected > 0 {
+                warnings.push(
+                    "$Bitmap has no trusted physical data; extent availability unknown".into(),
+                );
+                return None;
+            }
+            if trusted_bitmap_prefix.stopped_at_sparse_run {
+                warnings.push(format!(
+                    "$Bitmap trusted prefix stopped before sparse run at {} bytes; later bits unknown",
+                    trusted_bitmap_prefix.len
+                ));
+            } else if trusted_bitmap_prefix.stopped_at_untrusted_run {
+                warnings.push(format!(
+                    "$Bitmap trusted prefix stopped at {} source-bounded bytes; later bits unknown",
+                    trusted_bitmap_prefix.len
+                ));
+            }
+            let take = bounded_bitmap_read_len(expected, trusted_bitmap_prefix.len, warnings);
             match read_stream_range(reader, runs, boot.cluster_size, 0, take) {
                 Ok(bits) => Some(allocation_map_from_bytes(
                     bits,
@@ -391,8 +776,8 @@ fn load_allocation_map(
             ..
         }) => {
             let phys = stream_phys_offset(mft_runs, boot.cluster_size, logical)?
-                + *value_offset_in_record as u64;
-            let take = expected.min(*len) as usize;
+                .checked_add(*value_offset_in_record as u64)?;
+            let take = usize::try_from(bounded_bitmap_read_len(expected, *len, warnings)).ok()?;
             match reader.read_vec_at(phys, take) {
                 Ok(bits) => Some(allocation_map_from_bytes(
                     bits,
@@ -765,5 +1150,110 @@ mod tests {
         assert!(extraction.bytes[..4608].iter().all(|&byte| byte == 0xAA));
         assert!(extraction.bytes[4608..].iter().all(|&byte| byte == 0));
         assert!(extraction.missing_ranges.is_empty());
+    }
+
+    #[test]
+    fn ntfs_internal_init_002_bounds_bitmap_and_mft_to_initialized_run_coverage() {
+        let runs = vec![RunElement {
+            cluster_count: 2,
+            lcn: Some(0),
+        }];
+
+        assert_eq!(
+            trusted_physical_stream_prefix_len(&runs, 4096, 8192, u64::MAX, 1024)
+                .unwrap()
+                .len,
+            1024
+        );
+        assert_eq!(
+            trusted_physical_stream_prefix_len(&runs, 4096, 8192, u64::MAX, u64::MAX)
+                .unwrap()
+                .len,
+            8192
+        );
+
+        let mut warnings = Vec::new();
+        let map = allocation_map_from_bytes(vec![0xFF], 2, 16, &mut warnings);
+        assert_eq!(map.is_allocated(7), Some(true));
+        assert_eq!(map.is_allocated(8), None);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("$Bitmap data truncated")));
+    }
+
+    #[test]
+    fn ntfs_mft_bound_003_caps_record_iteration() {
+        let mut warnings = Vec::new();
+        let available_bytes = MAX_MFT_SCAN_BYTES + 1024;
+
+        let count = bounded_mft_record_count(available_bytes, 1024, &mut warnings).unwrap();
+
+        assert_eq!(count, MAX_MFT_SCAN_BYTES / 1024);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("MFT scan work budget")));
+    }
+
+    #[test]
+    fn ntfs_bitmap_bound_004_caps_hostile_declared_length_before_allocation() {
+        let mut warnings = Vec::new();
+
+        let read_len = bounded_bitmap_read_len(u64::MAX, u64::MAX, &mut warnings);
+
+        assert_eq!(read_len, MAX_BITMAP_READ_BYTES);
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "$Bitmap read budget capped data at {MAX_BITMAP_READ_BYTES} of {} expected bytes; later bits unknown",
+                u64::MAX
+            )]
+        );
+    }
+
+    #[test]
+    fn ntfs_sparse_mft_005_stops_trust_at_first_sparse_run() {
+        let runs = vec![
+            RunElement {
+                cluster_count: 2,
+                lcn: Some(4),
+            },
+            RunElement {
+                cluster_count: 100,
+                lcn: None,
+            },
+            RunElement {
+                cluster_count: 2,
+                lcn: Some(20),
+            },
+        ];
+
+        let prefix =
+            trusted_physical_stream_prefix_len(&runs, 4096, 1024 * 4096, u64::MAX, u64::MAX)
+                .unwrap();
+
+        assert_eq!(prefix.len, 8192);
+        assert!(prefix.stopped_at_untrusted_run);
+    }
+
+    #[test]
+    fn ntfs_fragmented_mft_006_keeps_non_sparse_runs_trusted() {
+        let runs = vec![
+            RunElement {
+                cluster_count: 2,
+                lcn: Some(4),
+            },
+            RunElement {
+                cluster_count: 3,
+                lcn: Some(20),
+            },
+        ];
+
+        let stream_len = 5 * 4096;
+        let prefix =
+            trusted_physical_stream_prefix_len(&runs, 4096, 1024 * 4096, stream_len, stream_len)
+                .unwrap();
+
+        assert_eq!(prefix.len, stream_len);
+        assert!(!prefix.stopped_at_untrusted_run);
     }
 }

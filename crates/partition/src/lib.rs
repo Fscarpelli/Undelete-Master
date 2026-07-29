@@ -2,7 +2,7 @@
 //!
 //! Parsing is defensive: every offset is validated against the source size,
 //! EBR chains are loop-protected and GPT header/entry CRCs are verified with
-//! automatic fallback to the backup header.
+//! automatic fallback to the complete backup GPT copy.
 
 #![forbid(unsafe_code)]
 
@@ -62,7 +62,9 @@ pub fn discover(reader: &dyn SourceReader) -> Result<PartitionTable, ScanError> 
         ));
     }
 
-    // GPT has priority: a protective MBR is still a valid MBR.
+    // GPT has priority. MBR parsing rejects a protective 0xEE entry when no
+    // usable GPT copy exists, so the protective container is never scanned as
+    // an ordinary partition.
     match gpt::parse_gpt(reader) {
         Ok(table) => return Ok(table),
         Err(ScanError::NotRecognized(_)) => {}

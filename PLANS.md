@@ -1,21 +1,22 @@
-# Foundation Hardening and Safe Image CLI Implementation Plan
+# Foundation Hardening, Safe Image CLI, and Real-only Desktop Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` or `superpowers:executing-plans` to
 > implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Remove the known parser correctness hazards, add a real read-only
-image scan entry point, make the desktop demonstration truthful and more
-accessible, and establish repeatable SDD/CI evidence.
+**Goal:** Remove known parser correctness hazards, provide a real read-only
+image scan entry point, replace the desktop demonstration with a narrow
+real-only Tauri application, and establish repeatable SDD/CI evidence.
 
-**Architecture:** Parser fixes remain inside their owning crates. A new
+**Architecture:** Parser fixes remain inside their owning crates. The
 image-only CLI composes the existing read-only reader, partition discovery, and
-NTFS/FAT scanners without adding privilege or write behavior. The frontend
-retains its current design system while provider runtime metadata controls
-truthful demo/verification states.
+NTFS/FAT scanners without privilege or write behavior. The unelevated Tauri 2
+desktop calls that real library through `spawn_blocking`, exposes only its
+bounded report, and fails closed outside Tauri. Production contains no
+synthetic provider, data, progress, restore, session, or fallback path.
 
-**Tech Stack:** Rust 1.88, Cargo workspace, React 18, TypeScript 5.7, Vite 6,
-Vitest, Testing Library, ESLint, GitHub Actions.
+**Tech Stack:** Rust 1.88, Cargo workspace, Tauri 2, React 18, TypeScript 5.7,
+Vite 8, Vitest, Testing Library, ESLint, GitHub Actions.
 
 ## Global constraints
 
@@ -28,7 +29,30 @@ Vitest, Testing Library, ESLint, GitHub Actions.
 - Fixtures are deterministic and byte recovery assertions use SHA-256.
 - No production TODOs, stubs, fake data, skipped critical tests, or unsupported
   completion claims.
+- No mock/demo provider or fabricated domain behavior in production; browser
+  runtime fails closed.
+- No restore, preview, sessions, raw devices, broker, carving, or exFAT desktop
+  surface until a real safe backend exists.
 - Update `docs/traceability-matrix.md` for every behavior change.
+
+---
+
+## Task 0 — Real-only specification gate (must precede desktop code)
+
+**Files**
+
+- Create: `docs/specs/017-real-only-image-desktop.md`
+- Create: `docs/adr/0021-real-only-image-desktop.md`
+- Supersede: `docs/adr/0007-demo-provider-trust-state.md`
+- Update traceability, risks, limitations, ADR index, and this plan.
+
+- [x] Define the runtime, IPC, privacy, limits, exclusions, acceptance IDs,
+  phases, and revisit triggers.
+- [x] Record SDD-REAL requirements as `Not started`.
+- [x] Prohibit synthetic fallback and candidate rows not emitted by the real
+  scanner.
+- [ ] Pass documentation validation and independent R0 review before desktop
+  implementation begins.
 
 ---
 
@@ -123,60 +147,66 @@ Vitest, Testing Library, ESLint, GitHub Actions.
 - [ ] Add a minimal argument parser for `scan-image <path> [--pretty]`.
 - [ ] Run focused tests and one process-level JSON smoke test.
 
-## Task 5 — Truthful desktop runtime state
+## Task 5 — Real-only Tauri desktop runtime
 
 **Files**
 
-- Modify: `apps/desktop/src/api/provider.ts`
-- Modify: `apps/desktop/src/api/mock.ts`
-- Modify: `apps/desktop/src/api/index.ts`
-- Modify: `apps/desktop/src/App.tsx`
-- Modify: `apps/desktop/src/state/AppContext.tsx`
-- Modify: `apps/desktop/src/views/ResultsView.tsx`
-- Modify: `apps/desktop/src/views/RestoreView.tsx`
-- Modify: `apps/desktop/src/i18n/pt-BR.ts`
-- Modify: `apps/desktop/src/i18n/en-US.ts`
-- Add focused component tests under `apps/desktop/src/`.
+- Create: `apps/desktop/src-tauri/` Tauri 2 shell/configuration.
+- Create: the real Tauri command and TypeScript boundary.
+- Delete: production mock/demo provider and fabricated datasets.
+- Reduce production views/routes to image selection and real report.
+- Add focused Rust and component tests.
 
 **Interfaces**
 
-- Produces: `DataProvider.runtime: ProviderRuntime`
 - Produces:
-  `ProviderRuntime { mode: "demo" | "tauri"; readOnlyVerified: boolean }`
+  `select_and_scan_image(requestId) ->
+  Result<Option<DesktopScanReport>, DesktopCommandError>`.
+- Consumes: `um_cli::scan_image_path` through `spawn_blocking`.
 
-- [ ] Write failing tests for the demo banner, absent verified seal, and
-  no-session Results/Restore behavior.
-- [ ] Verify provider queries are not invoked without an active session.
-- [ ] Add runtime metadata and localized explicit demo state.
-- [ ] Remove implicit `sess-0001` fallbacks and add empty-state actions.
-- [ ] Run focused Vitest suites.
+- [ ] Write failing tests for Tauri-only fail-closed runtime, Rust-owned native
+  dialog filters/cancel, path-free IPC, backend path rejection, real CLI
+  parity, sanitized errors, exact `u64` transport, and report limits.
+- [ ] Add the unelevated shell, minimal CSP/capabilities, and one allowlisted
+  command.
+- [ ] Remove every production mock/demo import, dataset, timer, unsupported
+  route, and fallback.
+- [ ] Render only real MBR/GPT, NTFS/FAT, candidate-count, and warning values.
+- [ ] Prove browser-only runtime produces no data and run focused gates.
 
-## Task 6 — Keyboard, status, layout, and lint gates
+## Task 6 — Real image workflow robustness and accessibility
 
 **Files**
 
-- Modify: `apps/desktop/src/views/ResultsView.tsx`
-- Modify: `apps/desktop/src/views/LiveScanView.tsx`
-- Modify: `apps/desktop/src/views/RestoreView.tsx`
+- Modify real image selection/report views and state.
 - Modify: `apps/desktop/src/styles/global.css`
 - Modify: `apps/desktop/src/styles/tokens.css`
 - Modify: `apps/desktop/package.json`
 - Modify lockfile selected by the repository
-- Create: `apps/desktop/eslint.config.js`
 - Add focused component tests.
 
 **Interfaces**
 
-- Preserves current visible information architecture and data contracts.
-- Produces keyboard-operable sort/row actions and named progress semantics.
+- Preserves the SDD-017 real-only command/report contract.
+- Produces a truthful pending state, duplicate-submit guard, and monotonic
+  stale-response guard.
 
-- [ ] Write failing keyboard and progress-role tests.
-- [ ] Convert sort actions to native buttons and add row keyboard activation.
-- [ ] Add accessible live/progress semantics and AA small-text token values.
+- [ ] Write failing duplicate-submit, stale-response, runtime-loss, keyboard,
+  error, preference, and pending-status tests.
+- [ ] Keep image selection and report navigation keyboard operable.
+- [ ] Expose a named busy status without invented percentage or scan phase.
+- [ ] Retain only preferences with tested immediate effect.
 - [ ] Keep primary controls reachable at the 1100 px desktop minimum.
-- [ ] Add a zero-warning `pnpm lint` command and run frontend focused checks.
+- [ ] Run zero-warning lint, typecheck, tests, build, and production bundle
+  inspection.
 
 ## Task 7 — SDD, CI, traceability, and evidence
+
+**Current state (2026-07-29):** The documents, ADRs, matrices, risk records,
+workflow/validator definitions, and bounded security-review record exist.
+This is documentation/implementation completion, not final acceptance. The
+documentation and safety validators passed after the parallel code changes
+settled; remote CI remains a Task 8 gate.
 
 **Files**
 
@@ -196,29 +226,47 @@ Vitest, Testing Library, ESLint, GitHub Actions.
   `Not started`, `Partial`, `Implemented-unverified`, `Verified`.
 - Maps each delivered requirement to design, code, tests, and evidence.
 
-- [ ] Record the S0 discovery inventory and baseline failures.
-- [ ] Create concise normative specs that explicitly distinguish implemented,
+- [x] Record the S0 discovery inventory and baseline failures.
+- [x] Create concise normative specs that explicitly distinguish implemented,
   partial, and excluded behavior.
-- [ ] Record architecture/security decisions without weakening the master spec.
-- [ ] Add deterministic PR quality gates that cannot access real devices.
-- [ ] Update traceability and risk status after implementation verification.
+- [x] Record architecture/security decisions without weakening the master spec,
+  including the audited `io-windows` boundary and residual pathname TOCTOU.
+- [x] Add deterministic PR quality-gate definitions that cannot access real
+  devices. Their final local execution and GitHub run remain pending.
+- [x] Record the sealed Codex Security snapshot with `34/34` unique receipts,
+  three technically valid candidates decided `ignore`, and zero reportable
+  findings without treating that result as proof of absence.
+- [x] Update traceability and risk status to `Implemented-unverified` or lower
+  for the currently visible implementation.
+- [x] Re-run documentation and safety validators on the final locked tree and
+  retain the exact results before Task 7 is treated as fully closed.
 
 ## Task 8 — Final verification and GitHub integration
+
+**Current state (2026-07-29):** In progress. The frozen-code Rust/frontend
+gates, final local validators, deterministic CLI process smoke, and an unsigned
+local native-launch smoke passed. Packaged fixture acceptance, native visual
+and assistive-technology review, remote CI, signing, clean-machine release
+acceptance, and the unresolved Norton classification remain open.
 
 **Files**
 
 - No new behavior files; update evidence documents with final command results.
 
-- [ ] Run `cargo fmt --all -- --check`.
-- [ ] Run `cargo clippy --workspace --all-targets -- -D warnings`.
-- [ ] Run `cargo test --workspace`.
-- [ ] Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` in
+- [x] Run `cargo fmt --all -- --check`.
+- [x] Run `cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] Run `cargo test --workspace`.
+- [x] Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build` in
   `apps/desktop`.
-- [ ] Re-run the image-only CLI smoke against deterministic fixtures.
+- [x] Run the documentation, CI-safety, and real-only validators on the same
+  final revision.
+- [x] Re-run the image-only CLI smoke against deterministic fixtures.
 - [ ] Re-capture the desktop flow in the in-app browser, inspect screenshots,
   test 1440 × 900 and 1100 × 700, and check console errors.
-- [ ] Review `git diff`, confirm no secrets/generated caches/real-disk artifacts,
+- [x] Review `git diff`, confirm no secrets/generated caches/real-disk artifacts,
   and update evidence.
+- [x] Record the final development artifact hash and Authenticode state;
+  do not redistribute the unsigned build or classify the Norton event without
+  vendor/security evidence.
 - [ ] Preserve the GitHub `main` commit through a non-force integration, commit
   the verified tree, push, and report the exact branch/commit.
-

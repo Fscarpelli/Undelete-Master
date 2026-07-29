@@ -19,6 +19,5 @@ Restore is a destination write operation, never a source mutation.
 - Same-physical-disk restore is blocked in guided mode and requires post-scan
   advanced confirmation and audit evidence.
 
-The desktop restore screen and mock progress are not an implementation of these
-semantics.
-
+No restore screen, progress simulation, or restore command is present in the
+real-only desktop. Restore remains entirely unimplemented.

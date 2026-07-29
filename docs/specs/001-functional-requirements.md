@@ -23,8 +23,9 @@ fields:
   imported metadata are untrusted; paths and secrets are redacted.
 - **Observability:** record phase, session/source/item IDs, result, and bounded
   error codes without file content.
-- **Test IDs:** `FR-<number>-TBD` until replaced by a named acceptance test in
-  `docs/traceability-matrix.md`.
+- **Test IDs or formal justification:** the canonical traceability row supplies
+  executable test IDs or a `JUST-*` record defined in
+  `docs/test-justifications.md`.
 - **Implementation links:** the traceability matrix is the canonical code/test
   link and must be updated with behavior changes.
 
@@ -35,29 +36,29 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-001 | Consent and authorization | Require explicit authorization before the first scan; start is impossible without consent. | Partial |
-| FR-002 | Preservation warning | Explain that continued use may overwrite data and recommend another disk/image-first workflow. | Partial |
+| FR-001 | Consent and authorization | Require explicit authorization before the first scan; start is impossible without consent. | Not started |
+| FR-002 | Preservation warning | Explain that continued use may overwrite data and recommend another disk/image-first workflow. | Not started |
 | FR-003 | No source writes | Expose a verified read-only seal only after proof; architecture and runtime tests show no write operation. | Partial |
-| FR-004 | Guided and advanced modes | Guided mode limits risk; advanced mode exposes bounded controls without weakening safeguards. | Partial |
+| FR-004 | Guided and advanced modes | Guided mode limits risk; advanced mode exposes bounded controls without weakening safeguards. | Not started |
 
 ## Source inventory
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-010 | Enumerate sources | Enumerate real disks, volumes, and added images; synthetic cards are not acceptance evidence. | Partial |
-| FR-011 | Device cards | Show identity, capacity, media/bus, volumes, filesystem, encryption, and warnings from real inventory. | Partial |
-| FR-012 | Stable identity | Identity survives drive-letter changes and prevents resume on a substituted source. | Partial |
+| FR-010 | Enumerate sources | Enumerate real disks, volumes, and added images; synthetic cards are not acceptance evidence. | Not started |
+| FR-011 | Device cards | Show identity, capacity, media/bus, volumes, filesystem, encryption, and warnings from real inventory. | Not started |
+| FR-012 | Stable identity | Identity survives drive-letter changes and prevents resume on a substituted source. | Not started |
 | FR-013 | Refresh and disconnect | Refresh hot-plug state, pause on removal, and resume only after identity match. | Not started |
 
 ## Scan preparation
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-020 | Select disk/volume | Require a source and permit bounded recognized partition selection. | Partial |
-| FR-021 | Working folder | Select a working location for DB, checkpoints, thumbnails, temporary files, and reports. | Partial |
+| FR-020 | Select disk/volume | Require a source and permit bounded recognized partition selection. | Not started |
+| FR-021 | Working folder | Select a working location for DB, checkpoints, thumbnails, temporary files, and reports. | Not started |
 | FR-022 | Physical destination mapping | Resolve working/restore paths to physical disks, not drive letters alone. | Not started |
-| FR-023 | Overwrite prevention | Block same-physical-disk work by default and apply the post-scan advanced override policy. | Partial |
-| FR-024 | System disk | Detect the active Windows disk, explain inconsistency risk, and require another destination. | Partial |
+| FR-023 | Overwrite prevention | Block same-physical-disk work by default and apply the post-scan advanced override policy. | Not started |
+| FR-024 | System disk | Detect the active Windows disk, explain inconsistency risk, and require another destination. | Not started |
 
 ## Scan modes
 
@@ -73,10 +74,10 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-040 | Live dashboard | Show phase, bytes, throughput, candidate quality, errors, elapsed time, and honest ETA. | Partial |
-| FR-041 | Pause/resume/cancel | Cooperatively pause, checkpoint, resume without duplication, and cancel safely. | Partial |
-| FR-042 | Results during scan | Query already persisted results without blocking the pipeline. | Partial |
-| FR-043 | Resource profiles | Provide economy, balanced, maximum, and gentle bounded profiles. | Partial |
+| FR-040 | Live dashboard | Show phase, bytes, throughput, candidate quality, errors, elapsed time, and honest ETA. | Not started |
+| FR-041 | Pause/resume/cancel | Cooperatively pause, checkpoint, resume without duplication, and cancel safely. | Not started |
+| FR-042 | Results during scan | Query already persisted results without blocking the pipeline. | Not started |
+| FR-043 | Resource profiles | Provide economy, balanced, maximum, and gentle bounded profiles. | Not started |
 
 ## Discovery
 
@@ -93,20 +94,20 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-060 | Scale | Virtualize and query backend pages; never send millions of rows to the UI. | Partial |
-| FR-061 | Columns | Provide configurable evidence, path, size, dates, method, score, validation, and conflict columns. | Partial |
-| FR-062 | Extension filter | Build multi-select extension facets dynamically with counts. | Partial |
-| FR-063 | Other filters | Combine category, quality, method, size/date/path, validation, partial, preview, and selection filters. | Partial |
-| FR-064 | Search | Search name, path, extension, type, record ID, and available hashes. | Partial |
-| FR-065 | Persistent selection | Preserve selection across pages, sorting, filters, and session resume. | Partial |
-| FR-066 | Selection bar | Show exact count, estimated/readable size, space, partial count, and conflicts. | Partial |
-| FR-067 | Tree and list | Offer coherent tree/list navigation without fabricating parent relationships. | Partial |
+| FR-060 | Scale | Virtualize and query backend pages; never send millions of rows to the UI. | Not started |
+| FR-061 | Columns | Provide configurable evidence, path, size, dates, method, score, validation, and conflict columns. | Not started |
+| FR-062 | Extension filter | Build multi-select extension facets dynamically with counts. | Not started |
+| FR-063 | Other filters | Combine category, quality, method, size/date/path, validation, partial, preview, and selection filters. | Not started |
+| FR-064 | Search | Search name, path, extension, type, record ID, and available hashes. | Not started |
+| FR-065 | Persistent selection | Preserve selection across pages, sorting, filters, and session resume. | Not started |
+| FR-066 | Selection bar | Show exact count, estimated/readable size, space, partial count, and conflicts. | Not started |
+| FR-067 | Tree and list | Offer coherent tree/list navigation without fabricating parent relationships. | Not started |
 
 ## Details, validation, and preview
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-070 | Details panel | Explain discovery, extents, allocation, score factors, metadata confidence, and warnings. | Partial |
+| FR-070 | Details panel | Explain discovery, extents, allocation, score factors, metadata confidence, and warnings. | Not started |
 | FR-071 | Safe preview | Generate bounded preview only in a restricted, networkless, unprivileged worker. | Not started |
 | FR-072 | No execution | Never execute, macro-enable, import, or privileged-open recovered content. | Not started |
 | FR-073 | Validation | Support explicit single/batch structural validation with bounded reports. | Not started |
@@ -116,12 +117,12 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-080 | Destinations | Recommend another physical disk and offer preserve-tree, flatten, or by-type layouts. | Partial |
+| FR-080 | Destinations | Recommend another physical disk and offer preserve-tree, flatten, or by-type layouts. | Not started |
 | FR-081 | Minimal ancestors | Create only ancestors required by explicitly selected items. | Not started |
 | FR-082 | Folder alone | Selecting only a folder restores an empty folder and no historical content. | Not started |
-| FR-083 | Name collisions | Default to rename; never silently replace an active destination file. | Partial |
+| FR-083 | Name collisions | Default to rename; never silently replace an active destination file. | Not started |
 | FR-084 | Transactional operation | Use `.umrecovering`, stream/hash, flush/verify, atomic rename, and journal. | Not started |
-| FR-085 | Partial files | Require consent and record zero-fill/truncate/segment policy and missing ranges. | Partial |
+| FR-085 | Partial files | Require consent and record zero-fill/truncate/segment policy and missing ranges. | Not started |
 | FR-086 | Destination metadata | Preserve safe supported metadata; ACL/EFS/ADS are opt-in. | Not started |
 | FR-087 | Recovery manifest | Emit versioned JSON and optional CSV with source, evidence, ranges, hashes, errors, and provenance. | Not started |
 | FR-088 | Restore resume | Resume large restores after size/hash verification without duplicating completed files. | Not started |
@@ -131,7 +132,7 @@ criteria**, and **Status** fields.
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
 | FR-090 | Persistent session | Store versioned SQLite sessions only on a working disk different from the source. | Not started |
-| FR-091 | Open session | List real sessions with source identity, status, checkpoint, and availability. | Partial |
+| FR-091 | Open session | List real sessions with source identity, status, checkpoint, and availability. | Not started |
 | FR-092 | Export/import | Version `.umscan`, exclude recovered content by default, and reject malformed/traversal input. | Not started |
 | FR-093 | Final report | Export source, mode, duration, bytes, errors, candidates, quality, restore results, hashes, and limitations. | Partial |
 
@@ -141,6 +142,5 @@ criteria**, and **Status** fields.
 | --- | --- | --- | --- |
 | FR-100 | Local operation | Scan, supported preview, and restore function with network disabled and no required account. | Partial |
 | FR-101 | Redacted logs | Normal logs contain no content/secrets and can mask full paths/names. | Partial |
-| FR-102 | Session cleanup | Explicitly delete session/thumbnails without claiming guaranteed SSD secure erase. | Partial |
-| FR-103 | Languages | Complete typed pt-BR/en-US catalogs with fallback and no principal hard-coded UI strings. | Partial |
-
+| FR-102 | Session cleanup | Explicitly delete session/thumbnails without claiming guaranteed SSD secure erase. | Not started |
+| FR-103 | Languages | Complete typed pt-BR/en-US catalogs with fallback and no principal hard-coded UI strings. | Not started |

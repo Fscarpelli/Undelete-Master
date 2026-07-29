@@ -9,7 +9,15 @@ pub struct RecoverabilityInputs {
     pub allocated_conflict_bytes: u64,
     pub missing_bytes: u64,
     pub read_error_bytes: u64,
+    /// Cleanly readable bytes observed as zeroed.
     pub zeroed_bytes: u64,
+    /// Union of all zeroed evidence, including overlaps with worse evidence.
+    ///
+    /// This is separate from `zeroed_bytes` so contradictory extents cannot
+    /// make unreadable/conflicted bytes look readable while still preserving
+    /// the mandatory majority-zero risk cap.
+    #[serde(default)]
+    pub zeroed_risk_bytes: u64,
     pub resident_bytes: u64,
     pub sparse_bytes: u64,
     /// The extent chain was inferred (e.g. FAT chain cleared, contiguity assumed).
@@ -47,31 +55,20 @@ pub fn score_label(value: u8) -> ScoreLabel {
     }
 }
 
-fn availability_risk(availability: ExtentAvailability) -> usize {
+fn availability_index(availability: ExtentAvailability) -> usize {
     match availability {
-        ExtentAvailability::OutOfVolume => 8,
-        ExtentAvailability::ReadFailed => 7,
-        ExtentAvailability::CurrentlyAllocated => 6,
-        ExtentAvailability::Unknown => 5,
-        ExtentAvailability::Zeroed => 4,
-        ExtentAvailability::FreeInSnapshot => 3,
-        ExtentAvailability::Resident => 2,
-        ExtentAvailability::Sparse => 1,
+        ExtentAvailability::Sparse => 0,
+        ExtentAvailability::Resident => 1,
+        ExtentAvailability::FreeInSnapshot => 2,
+        ExtentAvailability::Zeroed => 3,
+        ExtentAvailability::Unknown => 4,
+        ExtentAvailability::CurrentlyAllocated => 5,
+        ExtentAvailability::ReadFailed => 6,
+        ExtentAvailability::OutOfVolume => 7,
     }
 }
 
-fn classified_logical_segments(candidate: &Candidate) -> Vec<(u64, u64, ExtentAvailability)> {
-    const BY_RISK: [ExtentAvailability; 8] = [
-        ExtentAvailability::Sparse,
-        ExtentAvailability::Resident,
-        ExtentAvailability::FreeInSnapshot,
-        ExtentAvailability::Zeroed,
-        ExtentAvailability::Unknown,
-        ExtentAvailability::CurrentlyAllocated,
-        ExtentAvailability::ReadFailed,
-        ExtentAvailability::OutOfVolume,
-    ];
-
+fn classified_logical_segments(candidate: &Candidate) -> Vec<(u64, u64, [bool; 8])> {
     let mut events = Vec::with_capacity(candidate.extents.len().saturating_mul(2));
     for extent in &candidate.extents {
         let start = extent.logical_offset.min(candidate.size);
@@ -80,9 +77,9 @@ fn classified_logical_segments(candidate: &Candidate) -> Vec<(u64, u64, ExtentAv
             .saturating_add(extent.len)
             .min(candidate.size);
         if start < end {
-            let risk = availability_risk(extent.availability) - 1;
-            events.push((start, true, risk));
-            events.push((end, false, risk));
+            let class = availability_index(extent.availability);
+            events.push((start, true, class));
+            events.push((end, false, class));
         }
     }
     events.sort_unstable_by_key(|event| event.0);
@@ -97,17 +94,19 @@ fn classified_logical_segments(candidate: &Candidate) -> Vec<(u64, u64, ExtentAv
 
     while event_index < events.len() {
         let position = events[event_index].0;
-        if previous < position {
-            if let Some(risk) = active.iter().rposition(|count| *count > 0) {
-                segments.push((previous, position, BY_RISK[risk]));
-            }
+        if previous < position && active.iter().any(|count| *count > 0) {
+            segments.push((
+                previous,
+                position,
+                active.map(|active_count| active_count > 0),
+            ));
         }
         while event_index < events.len() && events[event_index].0 == position {
-            let (_, starts, risk) = events[event_index];
+            let (_, starts, class) = events[event_index];
             if starts {
-                active[risk] = active[risk].saturating_add(1);
+                active[class] = active[class].saturating_add(1);
             } else {
-                active[risk] = active[risk].saturating_sub(1);
+                active[class] = active[class].saturating_sub(1);
             }
             event_index += 1;
         }
@@ -124,31 +123,43 @@ impl RecoverabilityInputs {
             total_len: c.size,
             ..Default::default()
         };
-        for (start, end, availability) in classified_logical_segments(c) {
+        for (start, end, active) in classified_logical_segments(c) {
             let len = end - start;
-            match availability {
-                ExtentAvailability::FreeInSnapshot => {
-                    inp.free_bytes = inp.free_bytes.saturating_add(len)
-                }
-                ExtentAvailability::CurrentlyAllocated => {
-                    inp.allocated_conflict_bytes = inp.allocated_conflict_bytes.saturating_add(len)
-                }
-                ExtentAvailability::OutOfVolume => {
-                    inp.missing_bytes = inp.missing_bytes.saturating_add(len)
-                }
-                ExtentAvailability::ReadFailed => {
-                    inp.read_error_bytes = inp.read_error_bytes.saturating_add(len)
-                }
-                ExtentAvailability::Zeroed => {
-                    inp.zeroed_bytes = inp.zeroed_bytes.saturating_add(len)
-                }
-                ExtentAvailability::Resident => {
-                    inp.resident_bytes = inp.resident_bytes.saturating_add(len)
-                }
-                ExtentAvailability::Sparse => {
-                    inp.sparse_bytes = inp.sparse_bytes.saturating_add(len)
-                }
-                ExtentAvailability::Unknown => {}
+            let has = |availability| active[availability_index(availability)];
+            let out_of_volume = has(ExtentAvailability::OutOfVolume);
+            let read_failed = has(ExtentAvailability::ReadFailed);
+            let allocated_conflict = has(ExtentAvailability::CurrentlyAllocated);
+            let unknown = has(ExtentAvailability::Unknown);
+            let zeroed = has(ExtentAvailability::Zeroed);
+
+            // Adverse evidence is cumulative: contradictory extents must never
+            // erase a stricter score cap.
+            if out_of_volume {
+                inp.missing_bytes = inp.missing_bytes.saturating_add(len);
+            }
+            if read_failed {
+                inp.read_error_bytes = inp.read_error_bytes.saturating_add(len);
+            }
+            if allocated_conflict {
+                inp.allocated_conflict_bytes = inp.allocated_conflict_bytes.saturating_add(len);
+            }
+            if zeroed {
+                inp.zeroed_risk_bytes = inp.zeroed_risk_bytes.saturating_add(len);
+            }
+
+            // Only evidence without a conflicting/unreadable/unknown class
+            // contributes to clean readable-byte accounting.
+            if out_of_volume || read_failed || allocated_conflict || unknown {
+                continue;
+            }
+            if zeroed {
+                inp.zeroed_bytes = inp.zeroed_bytes.saturating_add(len);
+            } else if has(ExtentAvailability::FreeInSnapshot) {
+                inp.free_bytes = inp.free_bytes.saturating_add(len);
+            } else if has(ExtentAvailability::Resident) {
+                inp.resident_bytes = inp.resident_bytes.saturating_add(len);
+            } else if has(ExtentAvailability::Sparse) {
+                inp.sparse_bytes = inp.sparse_bytes.saturating_add(len);
             }
         }
         let covered = normalized_logical_intervals(&c.extents, c.size)
@@ -234,7 +245,8 @@ impl RecoverabilityInputs {
                 self.allocated_conflict_bytes
             ));
         }
-        if self.zeroed_bytes > self.total_len / 2 {
+        let zeroed_risk_bytes = self.zeroed_risk_bytes.max(self.zeroed_bytes);
+        if zeroed_risk_bytes > self.total_len / 2 {
             cap = cap.min(10);
             expl.push("majority of content observed zeroed: capped at 10".into());
         }
@@ -359,6 +371,99 @@ mod tests {
         assert_eq!(inputs.free_bytes, 50);
         assert_eq!(inputs.missing_bytes, 50);
         assert!(inputs.score().value <= 69);
+    }
+
+    #[test]
+    fn core_score_overlap_conflict_002_preserves_strictest_cap() {
+        let candidate = Candidate {
+            id: 2,
+            kind: crate::CandidateKind::File,
+            method: crate::DiscoveryMethod::NtfsMetadata,
+            state: crate::CandidateState::Conflicted,
+            name: "conflicting-overlap.bin".into(),
+            name_certain: true,
+            parent_path: Vec::new(),
+            metadata_confidence: crate::MetadataConfidence::High,
+            size: 100,
+            timestamps: crate::Timestamps::default(),
+            extents: vec![
+                crate::ExtentRun {
+                    logical_offset: 0,
+                    physical_offset: Some(4096),
+                    len: 90,
+                    availability: ExtentAvailability::FreeInSnapshot,
+                },
+                crate::ExtentRun {
+                    logical_offset: 90,
+                    physical_offset: Some(8192),
+                    len: 10,
+                    availability: ExtentAvailability::CurrentlyAllocated,
+                },
+                crate::ExtentRun {
+                    logical_offset: 90,
+                    physical_offset: Some(8192),
+                    len: 10,
+                    availability: ExtentAvailability::ReadFailed,
+                },
+            ],
+            record_ref: 2,
+            sequence: Some(1),
+            warnings: Vec::new(),
+        };
+
+        let inputs = RecoverabilityInputs::from_candidate(&candidate);
+
+        assert_eq!(inputs.allocated_conflict_bytes, 10);
+        assert_eq!(inputs.read_error_bytes, 10);
+        assert!(inputs.score().value <= 49);
+    }
+
+    #[test]
+    fn core_score_overlap_zeroed_003_preserves_majority_zero_cap() {
+        let candidate = Candidate {
+            id: 3,
+            kind: crate::CandidateKind::File,
+            method: crate::DiscoveryMethod::NtfsMetadata,
+            state: crate::CandidateState::ZeroedOrTrimmed,
+            name: "zeroed-unknown-overlap.bin".into(),
+            name_certain: true,
+            parent_path: Vec::new(),
+            metadata_confidence: crate::MetadataConfidence::High,
+            size: 100,
+            timestamps: crate::Timestamps::default(),
+            extents: vec![
+                crate::ExtentRun {
+                    logical_offset: 0,
+                    physical_offset: Some(4096),
+                    len: 40,
+                    availability: ExtentAvailability::FreeInSnapshot,
+                },
+                crate::ExtentRun {
+                    logical_offset: 40,
+                    physical_offset: Some(8192),
+                    len: 60,
+                    availability: ExtentAvailability::Zeroed,
+                },
+                crate::ExtentRun {
+                    logical_offset: 40,
+                    physical_offset: Some(8192),
+                    len: 60,
+                    availability: ExtentAvailability::Unknown,
+                },
+            ],
+            record_ref: 3,
+            sequence: Some(1),
+            warnings: Vec::new(),
+        };
+
+        let mut inputs = RecoverabilityInputs::from_candidate(&candidate);
+        inputs.validated = true;
+
+        assert_eq!(inputs.free_bytes, 40);
+        assert_eq!(inputs.zeroed_bytes, 0);
+        assert_eq!(inputs.zeroed_risk_bytes, 60);
+        assert_eq!(inputs.missing_bytes, 0);
+        assert!(inputs.score().value <= 10);
     }
 
     #[test]

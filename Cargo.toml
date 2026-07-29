@@ -9,6 +9,8 @@ members = [
     "crates/fs-fat",
     "crates/fixture-builder",
     "crates/cli",
+    "crates/io-windows",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
@@ -30,6 +32,7 @@ um-carving = { path = "crates/carving" }
 um-restore = { path = "crates/restore" }
 um-fixture-builder = { path = "crates/fixture-builder" }
 um-cli = { path = "crates/cli" }
+um-io-windows = { path = "crates/io-windows" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

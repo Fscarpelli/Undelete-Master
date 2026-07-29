@@ -1,5 +1,7 @@
 # ADR-0002 — Read-only Source Invariant
 
+Master specification topic: 3 — read-only source invariant
+
 ## Status
 
 Accepted
@@ -27,4 +29,3 @@ logical candidate streams and a destination, never a mutable source handle.
 Some workflows require a separate working/destination disk and explicit image
 creation. Architecture and runtime tests must prove absence of source writes;
 UI seals require verified runtime state, not configuration or mock data.
-

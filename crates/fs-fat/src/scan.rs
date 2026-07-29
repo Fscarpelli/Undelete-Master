@@ -11,7 +11,9 @@ use crate::dir::{parse_directory, DirEntry};
 use crate::fat::{FatEntry, FatTable};
 
 const MAX_DIRS: usize = 10_000;
+const MAX_DIR_DEPTH: usize = 256;
 const MAX_DIR_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_FAT_READ_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Output of a FAT metadata scan.
 #[derive(Debug)]
@@ -19,6 +21,9 @@ pub struct FatScanOutput {
     pub boot: FatBoot,
     pub candidates: Vec<Candidate>,
     pub warnings: Vec<String>,
+    /// True only when every reachable directory stream was enumerated without
+    /// hitting a safety bound, corrupt chain, cycle, or read failure.
+    pub is_complete: bool,
 }
 
 struct ScanCtx<'a> {
@@ -30,6 +35,7 @@ struct ScanCtx<'a> {
     visited_dir_clusters: HashSet<u32>,
     dirs_processed: usize,
     next_id: u64,
+    is_complete: bool,
 }
 
 /// Scans a FAT12/16/32 volume region for deleted candidates.
@@ -38,18 +44,45 @@ pub fn scan_fat(reader: &dyn SourceReader) -> Result<FatScanOutput, ScanError> {
     let boot = FatBoot::parse(&sector0, reader.len())?;
 
     let fat_bytes = boot.fat_size_sectors as u64 * boot.bytes_per_sector as u64;
-    let raw_fat = reader.read_vec_at(boot.fat_offset, fat_bytes as usize)?;
-    let fat = FatTable::from_boot(&boot, raw_fat);
+    if fat_bytes > MAX_FAT_READ_BYTES {
+        return Err(ScanError::Corrupt(format!(
+            "FAT table exceeds the {MAX_FAT_READ_BYTES}-byte scan bound"
+        )));
+    }
+    let fat_len = usize::try_from(fat_bytes)
+        .map_err(|_| ScanError::Corrupt("FAT size does not fit address space".into()))?;
+    let raw_fat = reader.read_vec_at(boot.fat_offset, fat_len)?;
 
-    // Compare FAT copies and warn on divergence (first copy remains authoritative).
+    // Compare every declared FAT copy and warn on divergence (the first copy
+    // remains authoritative). The BPB bounds this loop to at most four copies.
     let mut warnings = Vec::new();
-    if boot.num_fats > 1 {
-        let second = reader.read_vec_at(boot.fat_offset + fat_bytes, fat_bytes as usize)?;
-        let first = reader.read_vec_at(boot.fat_offset, fat_bytes as usize)?;
-        if first != second {
-            warnings.push("FAT copies disagree; using the first copy".into());
+    let mut is_complete = true;
+    for copy_index in 1..boot.num_fats {
+        let copy_offset = fat_bytes
+            .checked_mul(u64::from(copy_index))
+            .and_then(|relative| boot.fat_offset.checked_add(relative))
+            .ok_or_else(|| ScanError::Corrupt("FAT copy offset overflow".into()))?;
+        match reader.read_vec_at(copy_offset, fat_len) {
+            Ok(copy) if raw_fat != copy => {
+                is_complete = false;
+                if !warnings
+                    .iter()
+                    .any(|warning| warning == "FAT copies disagree; using the first copy")
+                {
+                    warnings.push("FAT copies disagree; using the first copy".into());
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                is_complete = false;
+                warnings.push(format!(
+                    "FAT copy {} unreadable; using the first copy",
+                    copy_index + 1
+                ));
+            }
         }
     }
+    let fat = FatTable::from_boot(&boot, raw_fat);
 
     let mut ctx = ScanCtx {
         reader,
@@ -60,6 +93,7 @@ pub fn scan_fat(reader: &dyn SourceReader) -> Result<FatScanOutput, ScanError> {
         visited_dir_clusters: HashSet::new(),
         dirs_processed: 0,
         next_id: 1,
+        is_complete,
     };
 
     // Root directory.
@@ -70,6 +104,7 @@ pub fn scan_fat(reader: &dyn SourceReader) -> Result<FatScanOutput, ScanError> {
         boot,
         mut candidates,
         warnings,
+        is_complete,
         ..
     } = ctx;
     candidates.sort_by_key(|c| c.record_ref);
@@ -77,7 +112,18 @@ pub fn scan_fat(reader: &dyn SourceReader) -> Result<FatScanOutput, ScanError> {
         boot,
         candidates,
         warnings,
+        is_complete,
     })
+}
+
+impl ScanCtx<'_> {
+    fn mark_incomplete(&mut self, warning: impl Into<String>) {
+        self.is_complete = false;
+        let warning = warning.into();
+        if !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
+        }
+    }
 }
 
 fn read_root_dir(ctx: &mut ScanCtx<'_>) -> Result<Vec<u8>, ScanError> {
@@ -86,23 +132,41 @@ fn read_root_dir(ctx: &mut ScanCtx<'_>) -> Result<Vec<u8>, ScanError> {
             .reader
             .read_vec_at(ctx.boot.root_dir_offset, ctx.boot.root_dir_bytes as usize)?),
         FatVariant::Fat32 => {
-            let (clusters, complete) = ctx.fat.chain(ctx.boot.root_cluster, ctx.boot.cluster_count);
+            let chain_limit = directory_chain_limit(ctx);
+            let (clusters, complete) = ctx.fat.chain(ctx.boot.root_cluster, chain_limit);
             if !complete {
-                ctx.warnings
-                    .push("FAT32 root directory chain incomplete".into());
+                let warning = if clusters.len() as u64 >= chain_limit {
+                    "FAT32 root directory chain reached the scan bound"
+                } else {
+                    "FAT32 root directory chain incomplete"
+                };
+                ctx.mark_incomplete(warning);
             }
             read_clusters(ctx, &clusters)
         }
     }
 }
 
-fn read_clusters(ctx: &ScanCtx<'_>, clusters: &[u32]) -> Result<Vec<u8>, ScanError> {
+fn directory_chain_limit(ctx: &ScanCtx<'_>) -> u64 {
+    (MAX_DIR_BYTES / ctx.boot.cluster_size)
+        .max(1)
+        .min(ctx.boot.cluster_count)
+}
+
+fn read_clusters(ctx: &mut ScanCtx<'_>, clusters: &[u32]) -> Result<Vec<u8>, ScanError> {
     let mut out = Vec::new();
     for &c in clusters {
-        if out.len() as u64 > MAX_DIR_BYTES {
+        let next_len = (out.len() as u64).checked_add(ctx.boot.cluster_size);
+        if next_len.is_none_or(|len| len > MAX_DIR_BYTES) {
+            ctx.mark_incomplete(format!(
+                "directory stream exceeded the {MAX_DIR_BYTES}-byte scan bound"
+            ));
             break;
         }
         let Some(off) = ctx.boot.cluster_offset(c as u64) else {
+            ctx.mark_incomplete(format!(
+                "directory cluster {c} lies outside the FAT volume; skipped"
+            ));
             continue;
         };
         out.extend(
@@ -116,7 +180,16 @@ fn read_clusters(ctx: &ScanCtx<'_>, clusters: &[u32]) -> Result<Vec<u8>, ScanErr
 /// Recursively walks a directory stream, emitting candidates for deleted
 /// entries and descending into both active and deleted subdirectories.
 fn walk_directory(ctx: &mut ScanCtx<'_>, data: &[u8], path: &[String], parent_active: bool) {
+    if path.len() >= MAX_DIR_DEPTH {
+        ctx.mark_incomplete(format!(
+            "directory traversal stopped at the {MAX_DIR_DEPTH}-level depth bound"
+        ));
+        return;
+    }
     if ctx.dirs_processed >= MAX_DIRS {
+        ctx.mark_incomplete(format!(
+            "directory traversal stopped at the {MAX_DIRS}-directory scan bound"
+        ));
         return;
     }
     ctx.dirs_processed += 1;
@@ -171,10 +244,14 @@ fn handle_directory(ctx: &mut ScanCtx<'_>, entry: &DirEntry, path: &[String], pa
     // Descend. For active dirs follow the chain; for deleted dirs the chain
     // is usually cleared, so read the first cluster only while it is free.
     if entry.first_cluster < 2 {
+        ctx.mark_incomplete(format!(
+            "directory '{}' has no usable start cluster; skipped",
+            entry.name
+        ));
         return;
     }
     if ctx.visited_dir_clusters.contains(&entry.first_cluster) {
-        ctx.warnings.push(format!(
+        ctx.mark_incomplete(format!(
             "directory cycle at cluster {}; skipped",
             entry.first_cluster
         ));
@@ -182,12 +259,15 @@ fn handle_directory(ctx: &mut ScanCtx<'_>, entry: &DirEntry, path: &[String], pa
     }
 
     let clusters: Vec<u32> = if !entry.is_deleted {
-        let (chain, complete) = ctx.fat.chain(entry.first_cluster, ctx.boot.cluster_count);
+        let chain_limit = directory_chain_limit(ctx);
+        let (chain, complete) = ctx.fat.chain(entry.first_cluster, chain_limit);
         if !complete {
-            ctx.warnings.push(format!(
-                "directory '{}' has a broken cluster chain",
-                entry.name
-            ));
+            let warning = if chain.len() as u64 >= chain_limit {
+                format!("directory '{}' chain reached the scan bound", entry.name)
+            } else {
+                format!("directory '{}' has a broken cluster chain", entry.name)
+            };
+            ctx.mark_incomplete(warning);
         }
         chain
     } else {
@@ -195,9 +275,31 @@ fn handle_directory(ctx: &mut ScanCtx<'_>, entry: &DirEntry, path: &[String], pa
             Some(FatEntry::Free) => vec![entry.first_cluster],
             Some(FatEntry::Next(_)) | Some(FatEntry::EndOfChain) => {
                 // Chain unexpectedly retained: follow it.
-                ctx.fat.chain(entry.first_cluster, ctx.boot.cluster_count).0
+                let chain_limit = directory_chain_limit(ctx);
+                let (chain, complete) = ctx.fat.chain(entry.first_cluster, chain_limit);
+                if !complete {
+                    let warning = if chain.len() as u64 >= chain_limit {
+                        format!(
+                            "directory '{}' retained chain reached the scan bound",
+                            entry.name
+                        )
+                    } else {
+                        format!(
+                            "directory '{}' has a broken retained cluster chain",
+                            entry.name
+                        )
+                    };
+                    ctx.mark_incomplete(warning);
+                }
+                chain
             }
-            _ => return,
+            _ => {
+                ctx.mark_incomplete(format!(
+                    "directory '{}' starts at an unusable cluster; skipped",
+                    entry.name
+                ));
+                return;
+            }
         }
     };
     for &c in &clusters {
@@ -205,9 +307,7 @@ fn handle_directory(ctx: &mut ScanCtx<'_>, entry: &DirEntry, path: &[String], pa
     }
     match read_clusters(ctx, &clusters) {
         Ok(data) => walk_directory(ctx, &data, &child_path, parent_active && !entry.is_deleted),
-        Err(_) => ctx
-            .warnings
-            .push(format!("directory '{}' unreadable", entry.name)),
+        Err(_) => ctx.mark_incomplete(format!("directory '{}' unreadable", entry.name)),
     }
 }
 

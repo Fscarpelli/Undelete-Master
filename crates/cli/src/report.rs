@@ -28,6 +28,18 @@ pub struct VolumeReport {
     pub length_bytes: u64,
     /// One of `ntfs`, `fat12`, `fat16`, `fat32`, or `unrecognized`.
     pub file_system: String,
+    /// Whether candidate enumeration covered the complete recognized metadata
+    /// region, stopped at an explicit safety bound, or found no supported
+    /// filesystem.
+    pub scan_status: VolumeScanStatus,
     pub candidate_count: usize,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VolumeScanStatus {
+    Complete,
+    Partial,
+    Unrecognized,
 }

@@ -67,6 +67,7 @@ fn recovers_deleted_files_byte_exact() {
     let (image, manifest) = b.build();
     let reader = MemImageReader::new("ntfs-basic", image);
     let out = um_fs_ntfs::scan_ntfs(&reader).expect("scan must succeed");
+    assert!(out.is_complete);
 
     // Only the 3 deleted entries become candidates.
     assert_eq!(out.candidates.len(), 3, "candidates: {:?}", out.candidates);

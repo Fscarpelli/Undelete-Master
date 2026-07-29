@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use um_cli::{scan_image_path, CliError};
+use um_cli::{scan_image_path, CliError, VolumeScanStatus};
 use um_fixture_builder::fat::{FatFileOptions, FatImageBuilder, FatKind, NodeParent as FatParent};
 use um_fixture_builder::ntfs::{FileOptions, NodeParent as NtfsParent, NtfsImageBuilder};
 
@@ -27,11 +27,12 @@ fn cli_json_privacy_001_reports_ntfs_without_full_path() {
     let path = write_fixture(temp.path(), "fixture.img", &image);
 
     let report = scan_image_path(&path).expect("scan NTFS fixture");
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.source.label, "fixture.img");
     assert_eq!(report.source.size_bytes, image.len() as u64);
     assert_eq!(report.volumes.len(), 1);
     assert_eq!(report.volumes[0].file_system, "ntfs");
+    assert_eq!(report.volumes[0].scan_status, VolumeScanStatus::Complete);
     assert_eq!(
         report.volumes[0].candidate_count,
         manifest.expected_candidates.len()
@@ -62,10 +63,32 @@ fn cli_image_fat_001_reports_deterministic_candidates() {
     let report = scan_image_path(&path).expect("scan FAT fixture");
     assert_eq!(report.volumes.len(), 1);
     assert_eq!(report.volumes[0].file_system, "fat16");
+    assert_eq!(report.volumes[0].scan_status, VolumeScanStatus::Complete);
     assert_eq!(
         report.volumes[0].candidate_count,
         manifest.expected_candidates.len()
     );
+}
+
+#[test]
+fn cli_image_fat_partial_001_preserves_incomplete_enumeration_status() {
+    let builder = FatImageBuilder::new("cli-fat-partial", FatKind::Fat32);
+    let (mut image, _) = builder.build();
+    let boot = um_fs_fat::FatBoot::parse(&image[..512], image.len() as u64).unwrap();
+    let fat_bytes = boot.fat_size_sectors as usize * boot.bytes_per_sector as usize;
+    let second_fat_offset = boot.fat_offset as usize + fat_bytes;
+    image[second_fat_offset + 8] ^= 0x01;
+    let temp = tempfile::tempdir().unwrap();
+    let path = write_fixture(temp.path(), "partial-fat.img", &image);
+
+    let report = scan_image_path(&path).expect("scan partial FAT fixture");
+
+    assert_eq!(report.volumes[0].file_system, "fat32");
+    assert_eq!(report.volumes[0].scan_status, VolumeScanStatus::Partial);
+    assert!(report.volumes[0]
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("FAT copies disagree")));
 }
 
 #[test]
@@ -154,8 +177,9 @@ fn cli_process_json_001_emits_machine_readable_json() {
 
     assert!(output.status.success(), "{output:?}");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["schemaVersion"], 2);
     assert_eq!(json["volumes"][0]["fileSystem"], "fat16");
+    assert_eq!(json["volumes"][0]["scanStatus"], "complete");
     assert!(output.stderr.is_empty());
 }
 

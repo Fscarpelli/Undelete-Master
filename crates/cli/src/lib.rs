@@ -7,17 +7,16 @@
 
 mod report;
 
-use std::fs;
 use std::io;
 use std::path::Path;
 
-pub use report::{ImageScanReport, SourceReport, VolumeReport};
+pub use report::{ImageScanReport, SourceReport, VolumeReport, VolumeScanStatus};
 use thiserror::Error;
 use um_core::{Region, SourceReader};
 use um_fs_common::ScanError;
 use um_fs_fat::{scan_fat, FatVariant};
 use um_fs_ntfs::scan_ntfs;
-use um_io_common::{FileImageReader, RegionReader};
+use um_io_common::{validate_local_regular_file, FileImageReader, RegionReader, SourcePathError};
 use um_partition::{discover, PartitionTableKind};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["img", "dd", "raw", "bin"];
@@ -40,6 +39,13 @@ pub enum CliError {
     Partition(ScanError),
     #[error("partition {index} is outside the image bounds")]
     InvalidRegion { index: u32 },
+    #[error("{file_system} scan failed safely for volume {index}")]
+    VolumeScan {
+        index: u32,
+        file_system: &'static str,
+        #[source]
+        source: ScanError,
+    },
 }
 
 /// Scans one ordinary image file and returns a sanitized metadata report.
@@ -47,13 +53,17 @@ pub fn scan_image_path(path: &Path) -> Result<ImageScanReport, CliError> {
     if path_is_forbidden_source(path) {
         return Err(CliError::ForbiddenSourcePath);
     }
-    let metadata = fs::symlink_metadata(path).map_err(CliError::Metadata)?;
-    if !metadata.file_type().is_file() {
-        return Err(CliError::NotRegularFile);
+    let path = validate_local_regular_file(path).map_err(|error| match error {
+        SourcePathError::Forbidden => CliError::ForbiddenSourcePath,
+        SourcePathError::NotRegular => CliError::NotRegularFile,
+        SourcePathError::Metadata(error) => CliError::Metadata(error),
+    })?;
+    if path_is_forbidden_source(&path) {
+        return Err(CliError::ForbiddenSourcePath);
     }
-    validate_extension(path)?;
+    validate_extension(&path)?;
 
-    let reader = FileImageReader::open(path).map_err(CliError::Open)?;
+    let reader = FileImageReader::open(&path).map_err(CliError::Open)?;
     if reader.len() == 0 {
         return Err(CliError::EmptyImage);
     }
@@ -93,12 +103,12 @@ pub fn scan_image_path(path: &Path) -> Result<ImageScanReport, CliError> {
         .map(|(index, region)| {
             let bounded =
                 RegionReader::new(&reader, region).ok_or(CliError::InvalidRegion { index })?;
-            Ok(scan_volume(index, region, &bounded))
+            scan_volume(index, region, &bounded)
         })
         .collect::<Result<Vec<_>, CliError>>()?;
 
     Ok(ImageScanReport {
-        schema_version: 1,
+        schema_version: 2,
         source,
         partition_table,
         volumes,
@@ -177,65 +187,127 @@ fn component_is_reserved_windows_name(component: &str) -> bool {
     false
 }
 
-fn scan_volume(index: u32, region: Region, reader: &dyn SourceReader) -> VolumeReport {
+fn scan_volume(
+    index: u32,
+    region: Region,
+    reader: &dyn SourceReader,
+) -> Result<VolumeReport, CliError> {
     match scan_ntfs(reader) {
-        Ok(output) => VolumeReport {
+        Ok(output) => Ok(VolumeReport {
             index,
             offset_bytes: region.offset,
             length_bytes: region.len,
             file_system: "ntfs".to_string(),
+            scan_status: if output.is_complete {
+                VolumeScanStatus::Complete
+            } else {
+                VolumeScanStatus::Partial
+            },
             candidate_count: output.candidates.len(),
             warnings: output.warnings,
-        },
-        Err(ntfs_error) => match scan_fat(reader) {
-            Ok(output) => {
+        }),
+        Err(ScanError::NotRecognized(_)) => match scan_fat(reader) {
+            Ok(output) => Ok({
                 let file_system = match output.boot.variant {
                     FatVariant::Fat12 => "fat12",
                     FatVariant::Fat16 => "fat16",
                     FatVariant::Fat32 => "fat32",
                 };
-                let mut warnings = output.warnings;
-                if !matches!(ntfs_error, ScanError::NotRecognized(_)) {
-                    warnings.push(format!("NTFS probe failed safely: {ntfs_error}"));
-                }
                 VolumeReport {
                     index,
                     offset_bytes: region.offset,
                     length_bytes: region.len,
                     file_system: file_system.to_string(),
+                    scan_status: if output.is_complete {
+                        VolumeScanStatus::Complete
+                    } else {
+                        VolumeScanStatus::Partial
+                    },
                     candidate_count: output.candidates.len(),
-                    warnings,
+                    warnings: output.warnings,
                 }
-            }
-            Err(fat_error) => {
-                let mut warnings = Vec::new();
-                if !matches!(ntfs_error, ScanError::NotRecognized(_)) {
-                    warnings.push(format!("NTFS probe failed safely: {ntfs_error}"));
-                }
-                if !matches!(fat_error, ScanError::NotRecognized(_)) {
-                    warnings.push(format!("FAT probe failed safely: {fat_error}"));
-                }
-                unrecognized_volume(index, region, warnings)
-            }
+            }),
+            Err(ScanError::NotRecognized(_)) => Ok(unrecognized_volume(index, region)),
+            Err(source) => Err(CliError::VolumeScan {
+                index,
+                file_system: "FAT",
+                source,
+            }),
         },
+        Err(source) => Err(CliError::VolumeScan {
+            index,
+            file_system: "NTFS",
+            source,
+        }),
     }
 }
 
-fn unrecognized_volume(index: u32, region: Region, warnings: Vec<String>) -> VolumeReport {
+fn unrecognized_volume(index: u32, region: Region) -> VolumeReport {
     VolumeReport {
         index,
         offset_bytes: region.offset,
         length_bytes: region.len,
         file_system: "unrecognized".to_string(),
+        scan_status: VolumeScanStatus::Unrecognized,
         candidate_count: 0,
-        warnings,
+        warnings: Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::path_is_forbidden_source;
+    use super::{path_is_forbidden_source, scan_volume, CliError};
     use std::path::Path;
+    use um_core::{
+        ReadError, ReadOutcome, Region, SectorLayout, SourceIdentity, SourceKind, SourceReader,
+    };
+    use um_fs_common::ScanError;
+
+    struct MarkerErrorReader {
+        identity: SourceIdentity,
+    }
+
+    impl MarkerErrorReader {
+        fn new() -> Self {
+            Self {
+                identity: SourceIdentity {
+                    id: "synthetic-marker-reader".to_string(),
+                    kind: SourceKind::ImageFile,
+                    label: "synthetic.img".to_string(),
+                    size: 4096,
+                },
+            }
+        }
+    }
+
+    impl SourceReader for MarkerErrorReader {
+        fn identity(&self) -> &SourceIdentity {
+            &self.identity
+        }
+
+        fn len(&self) -> u64 {
+            self.identity.size
+        }
+
+        fn sector_layout(&self) -> SectorLayout {
+            SectorLayout::DEFAULT_512
+        }
+
+        fn read_exact_at(&self, offset: u64, _buffer: &mut [u8]) -> Result<(), ReadError> {
+            Err(ReadError::Io {
+                offset,
+                message: "UNIQUE-SECRET-IO-MARKER".to_string(),
+            })
+        }
+
+        fn read_best_effort_at(&self, _offset: u64, buffer: &mut [u8]) -> ReadOutcome {
+            buffer.fill(0);
+            ReadOutcome {
+                bytes_valid: 0,
+                bad_ranges: vec![(0, buffer.len() as u64)],
+            }
+        }
+    }
 
     #[test]
     fn cli_image_device_path_001_rejects_windows_device_spellings_without_opening() {
@@ -246,14 +318,22 @@ mod tests {
             r"C:\images\CON.txt.img",
             r"C:\images\NUL .img",
             r"C:\images\COM¹.dd",
-            r"\\.\PhysicalDrive0.img",
-            r"\\?\GLOBALROOT\Device\Harddisk0\Partition0.img",
-            r"\??\PhysicalDrive0.img",
-            r"\GLOBALROOT\Device\Harddisk0\Partition0.img",
-            r"\\server\pipe\source.img",
         ] {
             assert!(
                 path_is_forbidden_source(Path::new(path)),
+                "device spelling was accepted: {path}"
+            );
+        }
+
+        for path in [
+            [r"\\", ".", r"\Physical", "Drive0.img"].concat(),
+            [r"\\", "?", r"\GLOBALROOT\Device\Harddisk0\Partition0.img"].concat(),
+            [r"\?", "?", r"\Physical", "Drive0.img"].concat(),
+            [r"\GLOBAL", r"ROOT\Device\Harddisk0\Partition0.img"].concat(),
+            [r"\\server", r"\pipe\source.img"].concat(),
+        ] {
+            assert!(
+                path_is_forbidden_source(Path::new(&path)),
                 "device spelling was accepted: {path}"
             );
         }
@@ -271,5 +351,22 @@ mod tests {
                 "ordinary path was rejected: {path}"
             );
         }
+    }
+
+    #[test]
+    fn cli_probe_error_privacy_001_never_masks_or_interpolates_raw_scan_errors() {
+        let reader = MarkerErrorReader::new();
+        let region = Region::new(0, reader.len()).unwrap();
+
+        let error = scan_volume(0, region, &reader).expect_err("read failure must not be a report");
+        assert!(matches!(
+            &error,
+            CliError::VolumeScan {
+                index: 0,
+                file_system: "NTFS",
+                source: ScanError::Read(_)
+            }
+        ));
+        assert!(!error.to_string().contains("UNIQUE-SECRET-IO-MARKER"));
     }
 }

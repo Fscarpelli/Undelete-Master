@@ -28,8 +28,9 @@ recreate overwritten, trimmed, securely erased, or unavailable encrypted data.
 ## Current increment
 
 The `codex/foundation-hardening` increment is not a production release. It is
-limited to bounded parser hardening, regular image-file scanning, a truthful
-desktop demonstration, documentation, and deterministic CI. Physical disks,
+limited to bounded parser hardening, regular image-file scanning, visual audit
+assets for a synthetic desktop concept, documentation, and deterministic CI.
+The frontend source is not present in the versioned revision. Physical disks,
 Tauri integration, restore, carving, production exFAT, installers, and signing
 remain excluded.
 
@@ -44,4 +45,3 @@ remain excluded.
 
 Status is requirement-specific. A passing component test never implies that the
 whole product or a broader requirement is verified.
-

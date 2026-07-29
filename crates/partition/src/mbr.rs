@@ -47,11 +47,22 @@ fn parse_entries(sector_buf: &[u8]) -> Option<Vec<RawEntry>> {
     Some(out)
 }
 
+fn bounded_sector_offset(lba: u64, sector: u64, read_len: u64, source_len: u64) -> Option<u64> {
+    let offset = lba.checked_mul(sector)?;
+    let end = offset.checked_add(read_len)?;
+    (end <= source_len).then_some(offset)
+}
+
 pub(crate) fn parse_mbr(reader: &dyn SourceReader) -> Result<PartitionTable, ScanError> {
     let sector = reader.sector_layout().logical as u64;
     let buf = reader.read_vec_at(0, sector.max(512) as usize)?;
     let entries =
         parse_entries(&buf).ok_or_else(|| ScanError::NotRecognized("no MBR signature".into()))?;
+    if entries.iter().any(|entry| entry.part_type == 0xEE) {
+        return Err(ScanError::Corrupt(
+            "protective MBR present without a usable GPT copy".into(),
+        ));
+    }
 
     let mut warnings = Vec::new();
     let mut partitions = Vec::new();
@@ -119,8 +130,8 @@ pub(crate) fn parse_mbr(reader: &dyn SourceReader) -> Result<PartitionTable, Sca
                 warnings.push("EBR chain loop detected; chain truncated".into());
                 break;
             }
-            let ebr_off = match current.checked_mul(sector) {
-                Some(v) if v + 512 <= source_len => v,
+            let ebr_off = match bounded_sector_offset(current, sector, 512, source_len) {
+                Some(offset) => offset,
                 _ => {
                     warnings.push("EBR outside source bounds; chain truncated".into());
                     break;
@@ -168,4 +179,22 @@ pub(crate) fn parse_mbr(reader: &dyn SourceReader) -> Result<PartitionTable, Sca
         partitions,
         warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_sector_offset;
+
+    #[test]
+    fn part_ebr_overflow_002_rejects_end_offset_wraparound() {
+        let lba = u64::from(u32::MAX) + 2;
+        let sector = u64::from(u32::MAX);
+
+        assert_eq!(
+            lba.checked_mul(sector),
+            Some(u64::MAX),
+            "fixture must reach the largest representable byte offset"
+        );
+        assert_eq!(bounded_sector_offset(lba, sector, 512, u64::MAX), None);
+    }
 }
