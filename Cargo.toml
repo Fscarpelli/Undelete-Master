@@ -6,6 +6,7 @@ members = [
     "crates/partition",
     "crates/fs-common",
     "crates/fs-ntfs",
+    "crates/fs-fat",
     "crates/fixture-builder",
 ]
 

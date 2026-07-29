@@ -460,6 +460,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "um-fs-fat"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "proptest",
+ "sha2",
+ "um-core",
+ "um-fixture-builder",
+ "um-fs-common",
+ "um-io-common",
+]
+
+[[package]]
 name = "um-fs-ntfs"
 version = "0.1.0"
 dependencies = [
