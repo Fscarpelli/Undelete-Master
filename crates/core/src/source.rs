@@ -34,6 +34,13 @@ impl SectorLayout {
         logical: 512,
         physical: 512,
     };
+
+    pub const fn new(logical: u32, physical: u32) -> Option<Self> {
+        if logical == 0 || physical == 0 || physical < logical {
+            return None;
+        }
+        Some(Self { logical, physical })
+    }
 }
 
 /// Read-only access to a scan source.
@@ -65,5 +72,24 @@ pub trait SourceReader: Send + Sync {
         let mut buf = vec![0u8; len];
         self.read_exact_at(offset, &mut buf)?;
         Ok(buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SectorLayout;
+
+    #[test]
+    fn core_sector_valid_001_rejects_invalid_sector_relationships() {
+        assert_eq!(
+            SectorLayout::new(512, 4096),
+            Some(SectorLayout {
+                logical: 512,
+                physical: 4096,
+            })
+        );
+        assert_eq!(SectorLayout::new(0, 4096), None);
+        assert_eq!(SectorLayout::new(512, 0), None);
+        assert_eq!(SectorLayout::new(4096, 512), None);
     }
 }

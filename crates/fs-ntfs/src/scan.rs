@@ -71,10 +71,7 @@ fn read_stream_range(
                     .checked_mul(cluster_size)
                     .and_then(|v| v.checked_add(within))
                     .ok_or_else(|| ScanError::Corrupt("stream offset overflow".into()))?;
-                reader.read_exact_at(
-                    phys,
-                    &mut out[filled as usize..(filled + take) as usize],
-                )?;
+                reader.read_exact_at(phys, &mut out[filled as usize..(filled + take) as usize])?;
             }
             None => { /* sparse: already zero */ }
         }
@@ -325,9 +322,8 @@ fn parse_entry(rec: &FileRecord, boot: &NtfsBoot, record_phys_offset: u64) -> Pa
                 ));
             }
             (ATTR_ATTRIBUTE_LIST, AttrBody::NonResident { .. }) => {
-                warnings.push(
-                    "has non-resident attribute list; extents may be incomplete".to_string(),
-                );
+                warnings
+                    .push("has non-resident attribute list; extents may be incomplete".to_string());
             }
             _ => {}
         }
@@ -374,7 +370,12 @@ fn load_allocation_map(
         }) => {
             let take = expected.min(*data_size);
             match read_stream_range(reader, runs, boot.cluster_size, 0, take) {
-                Ok(bits) => Some(AllocationMap::from_raw(bits, boot.total_clusters)),
+                Ok(bits) => Some(allocation_map_from_bytes(
+                    bits,
+                    expected,
+                    boot.total_clusters,
+                    warnings,
+                )),
                 Err(_) => {
                     warnings.push("$Bitmap data unreadable; extent availability unknown".into());
                     None
@@ -382,17 +383,23 @@ fn load_allocation_map(
             }
         }
         Some(DataStream {
-            kind: DataStreamKind::Resident {
-                value_offset_in_record,
-                len,
-            },
+            kind:
+                DataStreamKind::Resident {
+                    value_offset_in_record,
+                    len,
+                },
             ..
         }) => {
             let phys = stream_phys_offset(mft_runs, boot.cluster_size, logical)?
                 + *value_offset_in_record as u64;
             let take = expected.min(*len) as usize;
             match reader.read_vec_at(phys, take) {
-                Ok(bits) => Some(AllocationMap::from_raw(bits, boot.total_clusters)),
+                Ok(bits) => Some(allocation_map_from_bytes(
+                    bits,
+                    expected,
+                    boot.total_clusters,
+                    warnings,
+                )),
                 Err(_) => None,
             }
         }
@@ -401,6 +408,21 @@ fn load_allocation_map(
             None
         }
     }
+}
+
+fn allocation_map_from_bytes(
+    bits: Vec<u8>,
+    expected_bytes: u64,
+    total_clusters: u64,
+    warnings: &mut Vec<String>,
+) -> AllocationMap {
+    if (bits.len() as u64) < expected_bytes {
+        warnings.push(format!(
+            "$Bitmap data truncated: expected {expected_bytes} bytes, read {}",
+            bits.len()
+        ));
+    }
+    AllocationMap::from_raw(bits, total_clusters)
 }
 
 /// Walks parent references to rebuild the original path.
@@ -447,7 +469,9 @@ fn reconstruct_path(
         }
         if !parent.in_use && confidence == MetadataConfidence::High {
             confidence = MetadataConfidence::Medium;
-            warnings.push(format!("ancestor directory (record {parent_no}) is deleted"));
+            warnings.push(format!(
+                "ancestor directory (record {parent_no}) is deleted"
+            ));
         }
         let Some(parent_name) = &parent.best_name else {
             warnings.push(format!(
@@ -484,10 +508,14 @@ fn build_extents(
         return (0, Vec::new());
     };
     if main.flags & ATTR_FLAG_ENCRYPTED != 0 {
-        warnings.push("content is EFS-encrypted; bytes are recoverable but unusable without the key".into());
+        warnings.push(
+            "content is EFS-encrypted; bytes are recoverable but unusable without the key".into(),
+        );
     }
     if main.flags & ATTR_FLAG_COMPRESSED != 0 {
-        warnings.push("content is NTFS-compressed; transparent decompression is not yet supported".into());
+        warnings.push(
+            "content is NTFS-compressed; transparent decompression is not yet supported".into(),
+        );
         // Compressed runs cannot be materialized byte-for-byte without
         // LZNT1 decompression, so report metadata only.
         let size = match &main.kind {
@@ -546,18 +574,48 @@ fn build_extents(
                 }
                 logical += take;
             }
-            // Bytes past initialized_size are logically zero.
-            if initialized_size < data_size {
-                for e in &mut extents {
-                    if e.logical_offset >= *initialized_size {
-                        e.availability = ExtentAvailability::Sparse;
-                        e.physical_offset = None;
-                    }
-                }
-            }
+            let extents = split_at_initialized_size(extents, *initialized_size, *data_size);
             (*data_size, extents)
         }
     }
+}
+
+/// Clips extents to the logical data size and represents every byte after the
+/// initialized boundary as a logical sparse range.
+fn split_at_initialized_size(
+    extents: Vec<ExtentRun>,
+    initialized_size: u64,
+    data_size: u64,
+) -> Vec<ExtentRun> {
+    let initialized_end = initialized_size.min(data_size);
+    let mut split = Vec::with_capacity(extents.len().saturating_add(1));
+
+    for extent in extents {
+        let start = extent.logical_offset;
+        let end = start.saturating_add(extent.len).min(data_size);
+        if start >= end {
+            continue;
+        }
+
+        let initialized_extent_end = end.min(initialized_end);
+        if start < initialized_extent_end {
+            let mut initialized = extent.clone();
+            initialized.len = initialized_extent_end - start;
+            split.push(initialized);
+        }
+
+        let tail_start = start.max(initialized_end);
+        if tail_start < end {
+            split.push(ExtentRun {
+                logical_offset: tail_start,
+                physical_offset: None,
+                len: end - tail_start,
+                availability: ExtentAvailability::Sparse,
+            });
+        }
+    }
+
+    split
 }
 
 /// Splits a physical run into extents grouped by cluster-allocation status.
@@ -632,5 +690,80 @@ fn derive_state(kind: CandidateKind, size: u64, extents: &[ExtentRun]) -> Candid
         CandidateState::Partial
     } else {
         CandidateState::CompleteUnvalidated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use um_core::{extract_candidate, MetadataConfidence, Timestamps};
+    use um_io_common::MemImageReader;
+
+    #[test]
+    fn ntfs_bitmap_trunc_001_warns_and_keeps_missing_bits_unknown() {
+        let mut warnings = Vec::new();
+
+        let map = allocation_map_from_bytes(vec![0xFF], 2, 16, &mut warnings);
+
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("$Bitmap data truncated")));
+        assert_eq!(map.is_allocated(7), Some(true));
+        assert_eq!(map.is_allocated(8), None);
+    }
+
+    #[test]
+    fn ntfs_init_tail_001_splits_and_zero_fills_uninitialized_tail() {
+        let extents = vec![ExtentRun {
+            logical_offset: 0,
+            physical_offset: Some(0),
+            len: 8192,
+            availability: ExtentAvailability::FreeInSnapshot,
+        }];
+
+        let extents = split_at_initialized_size(extents, 4608, 8192);
+
+        assert_eq!(
+            extents,
+            vec![
+                ExtentRun {
+                    logical_offset: 0,
+                    physical_offset: Some(0),
+                    len: 4608,
+                    availability: ExtentAvailability::FreeInSnapshot,
+                },
+                ExtentRun {
+                    logical_offset: 4608,
+                    physical_offset: None,
+                    len: 3584,
+                    availability: ExtentAvailability::Sparse,
+                },
+            ]
+        );
+
+        let mut source = vec![0xAA; 4608];
+        source.extend(vec![0xCC; 3584]);
+        let reader = MemImageReader::new("initialized-tail", source);
+        let candidate = Candidate {
+            id: 1,
+            kind: CandidateKind::File,
+            method: DiscoveryMethod::NtfsMetadata,
+            state: CandidateState::CompleteUnvalidated,
+            name: "tail.bin".into(),
+            name_certain: true,
+            parent_path: Vec::new(),
+            metadata_confidence: MetadataConfidence::High,
+            size: 8192,
+            timestamps: Timestamps::default(),
+            extents,
+            record_ref: 1,
+            sequence: Some(1),
+            warnings: Vec::new(),
+        };
+
+        let extraction = extract_candidate(&reader, &candidate).unwrap();
+        assert!(extraction.bytes[..4608].iter().all(|&byte| byte == 0xAA));
+        assert!(extraction.bytes[4608..].iter().all(|&byte| byte == 0));
+        assert!(extraction.missing_ranges.is_empty());
     }
 }

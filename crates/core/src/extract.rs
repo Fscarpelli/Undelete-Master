@@ -51,8 +51,7 @@ pub fn extract_candidate(
             _ => match extent.physical_offset {
                 Some(phys) => {
                     let read_len = hi - lo;
-                    let outcome =
-                        reader.read_best_effort_at(phys, &mut bytes[lo_u..hi_u]);
+                    let outcome = reader.read_best_effort_at(phys, &mut bytes[lo_u..hi_u]);
                     if outcome.is_complete() {
                         covered[lo_u..hi_u].iter_mut().for_each(|c| *c = true);
                     } else {

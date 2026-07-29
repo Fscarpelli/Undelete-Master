@@ -88,19 +88,15 @@ impl NtfsBoot {
                 "MFT LCN {mft_lcn} outside volume ({total_clusters} clusters)"
             )));
         }
-        let file_record_size = size_from_clusters_field(
-            le::i8_at(sector0, 64).unwrap_or(0),
-            cluster_size,
-        )
-        .filter(|&s| (256..=65536).contains(&s) && s.is_power_of_two())
-        .ok_or_else(|| ScanError::Corrupt("implausible file record size".into()))?
-            as u32;
-        let index_record_size = size_from_clusters_field(
-            le::i8_at(sector0, 68).unwrap_or(0),
-            cluster_size,
-        )
-        .filter(|&s| (256..=65536).contains(&s) && s.is_power_of_two())
-        .unwrap_or(4096) as u32;
+        let file_record_size =
+            size_from_clusters_field(le::i8_at(sector0, 64).unwrap_or(0), cluster_size)
+                .filter(|&s| (256..=65536).contains(&s) && s.is_power_of_two())
+                .ok_or_else(|| ScanError::Corrupt("implausible file record size".into()))?
+                as u32;
+        let index_record_size =
+            size_from_clusters_field(le::i8_at(sector0, 68).unwrap_or(0), cluster_size)
+                .filter(|&s| (256..=65536).contains(&s) && s.is_power_of_two())
+                .unwrap_or(4096) as u32;
         let volume_serial = le::u64_at(sector0, 72).unwrap_or(0);
 
         Ok(NtfsBoot {

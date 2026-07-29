@@ -117,10 +117,44 @@ pub enum MetadataConfidence {
     Low,
 }
 
+pub(crate) fn normalized_logical_intervals(
+    extents: &[ExtentRun],
+    logical_size: u64,
+) -> Vec<(u64, u64)> {
+    let mut intervals: Vec<(u64, u64)> = extents
+        .iter()
+        .filter_map(|extent| {
+            let start = extent.logical_offset.min(logical_size);
+            let end = extent
+                .logical_offset
+                .saturating_add(extent.len)
+                .min(logical_size);
+            (start < end).then_some((start, end))
+        })
+        .collect();
+    intervals.sort_unstable();
+
+    let mut normalized: Vec<(u64, u64)> = Vec::with_capacity(intervals.len());
+    for (start, end) in intervals {
+        if let Some(last) = normalized.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        normalized.push((start, end));
+    }
+    normalized
+}
+
 impl Candidate {
     /// Total bytes covered by extents (logical content coverage).
     pub fn covered_len(&self) -> u64 {
-        self.extents.iter().map(|e| e.len).sum()
+        normalized_logical_intervals(&self.extents, self.size)
+            .into_iter()
+            .fold(0u64, |covered, (start, end)| {
+                covered.saturating_add(end - start)
+            })
     }
 
     /// True when some logical range of the file has no extent at all.
@@ -132,5 +166,43 @@ impl Candidate {
         let mut parts = self.parent_path.clone();
         parts.push(self.name.clone());
         parts.join("/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate_with_extents(size: u64, extents: Vec<ExtentRun>) -> Candidate {
+        Candidate {
+            id: 1,
+            kind: CandidateKind::File,
+            method: DiscoveryMethod::NtfsMetadata,
+            state: CandidateState::CompleteUnvalidated,
+            name: "overlap.bin".into(),
+            name_certain: true,
+            parent_path: Vec::new(),
+            metadata_confidence: MetadataConfidence::High,
+            size,
+            timestamps: Timestamps::default(),
+            extents,
+            record_ref: 1,
+            sequence: Some(1),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn core_coverage_union_001_duplicate_extents_do_not_hide_gap() {
+        let duplicate = ExtentRun {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            len: 50,
+            availability: ExtentAvailability::FreeInSnapshot,
+        };
+        let candidate = candidate_with_extents(100, vec![duplicate.clone(), duplicate]);
+
+        assert_eq!(candidate.covered_len(), 50);
+        assert!(candidate.has_missing_ranges());
     }
 }

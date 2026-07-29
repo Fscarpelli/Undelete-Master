@@ -10,7 +10,7 @@ mod gpt;
 mod mbr;
 
 use serde::{Deserialize, Serialize};
-use um_core::{Region, SourceReader};
+use um_core::{Region, SectorLayout, SourceReader};
 use um_fs_common::ScanError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,9 +49,17 @@ pub struct PartitionTable {
 /// Returns `ScanError::NotRecognized` when no valid MBR/GPT is present; the
 /// caller should then treat the whole source as a single volume region.
 pub fn discover(reader: &dyn SourceReader) -> Result<PartitionTable, ScanError> {
-    let sector = reader.sector_layout().logical as u64;
-    if reader.len() < sector * 2 {
-        return Err(ScanError::NotRecognized("source smaller than two sectors".into()));
+    let supplied_layout = reader.sector_layout();
+    let layout = SectorLayout::new(supplied_layout.logical, supplied_layout.physical)
+        .ok_or_else(|| ScanError::Corrupt("invalid sector layout".into()))?;
+    let sector = layout.logical as u64;
+    let minimum_len = sector
+        .checked_mul(2)
+        .ok_or_else(|| ScanError::Corrupt("minimum source size overflow".into()))?;
+    if reader.len() < minimum_len {
+        return Err(ScanError::NotRecognized(
+            "source smaller than two sectors".into(),
+        ));
     }
 
     // GPT has priority: a protective MBR is still a valid MBR.

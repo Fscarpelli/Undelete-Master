@@ -51,7 +51,9 @@ pub fn parse_file_record(
     for i in 1..usa_count {
         let sector_end = i * sector;
         if sector_end > data.len() {
-            return Err(RecordParseError::Corrupt("USA covers more than record".into()));
+            return Err(RecordParseError::Corrupt(
+                "USA covers more than record".into(),
+            ));
         }
         let check = &data[sector_end - 2..sector_end];
         if check != usn {
@@ -70,7 +72,9 @@ pub fn parse_file_record(
     let base_record = le::u64_at(&data, 32).unwrap_or(0) & 0x0000_FFFF_FFFF_FFFF;
 
     if attrs_offset as usize >= data.len() || bytes_used as usize > data.len() {
-        return Err(RecordParseError::Corrupt("header offsets out of bounds".into()));
+        return Err(RecordParseError::Corrupt(
+            "header offsets out of bounds".into(),
+        ));
     }
 
     Ok(FileRecord {
@@ -101,7 +105,7 @@ mod tests {
         r[22..24].copy_from_slice(&flags.to_le_bytes());
         r[24..28].copy_from_slice(&64u32.to_le_bytes()); // bytes used
         r[56..60].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // end marker
-        // Fixups: USN = 0x0001, originals captured from sector ends.
+                                                                  // Fixups: USN = 0x0001, originals captured from sector ends.
         let usn = 0x0001u16.to_le_bytes();
         let orig1 = [r[510], r[511]];
         let orig2 = [r[1022], r[1023]];

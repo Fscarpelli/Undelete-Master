@@ -5,7 +5,11 @@ use thiserror::Error;
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadError {
     #[error("read out of bounds: offset {offset} len {len} source size {source_len}")]
-    OutOfBounds { offset: u64, len: u64, source_len: u64 },
+    OutOfBounds {
+        offset: u64,
+        len: u64,
+        source_len: u64,
+    },
     #[error("I/O failure at offset {offset}: {message}")]
     Io { offset: u64, message: String },
     #[error("source disappeared or identity changed")]

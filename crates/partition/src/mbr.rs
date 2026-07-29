@@ -101,7 +101,13 @@ pub(crate) fn parse_mbr(reader: &dyn SourceReader) -> Result<PartitionTable, Sca
         if e.part_type == 0x05 || e.part_type == 0x0F {
             extended_chains.push(e.lba_start);
         } else {
-            push_partition(e.lba_start, e.sectors, e.part_type, &mut warnings, &mut index);
+            push_partition(
+                e.lba_start,
+                e.sectors,
+                e.part_type,
+                &mut warnings,
+                &mut index,
+            );
         }
     }
 

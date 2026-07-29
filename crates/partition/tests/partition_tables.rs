@@ -1,10 +1,37 @@
 //! MBR/GPT discovery tests over synthetic in-memory disk images.
 
-use um_core::SourceReader;
+use um_core::{ReadError, ReadOutcome, SectorLayout, SourceIdentity, SourceReader};
 use um_io_common::MemImageReader;
 use um_partition::{discover, PartitionTableKind};
 
 const SECTOR: usize = 512;
+
+struct LayoutReader {
+    inner: MemImageReader,
+    layout: SectorLayout,
+}
+
+impl SourceReader for LayoutReader {
+    fn identity(&self) -> &SourceIdentity {
+        self.inner.identity()
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.len()
+    }
+
+    fn sector_layout(&self) -> SectorLayout {
+        self.layout
+    }
+
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> Result<(), ReadError> {
+        self.inner.read_exact_at(offset, buffer)
+    }
+
+    fn read_best_effort_at(&self, offset: u64, buffer: &mut [u8]) -> ReadOutcome {
+        self.inner.read_best_effort_at(offset, buffer)
+    }
+}
 
 fn mbr_entry(buf: &mut [u8], slot: usize, part_type: u8, lba: u32, sectors: u32) {
     let base = 446 + slot * 16;
@@ -122,9 +149,67 @@ fn build_gpt_image(total_sectors: u64, parts: &[(u64, u64, &str)]) -> Vec<u8> {
     image
 }
 
+fn update_primary_gpt_header_crc(image: &mut [u8]) {
+    let header = &mut image[SECTOR..SECTOR + 92];
+    header[16..20].fill(0);
+    let crc = crc32fast::hash(header);
+    header[16..20].copy_from_slice(&crc.to_le_bytes());
+}
+
+#[test]
+fn part_gpt_overflow_001_rejects_entry_table_end_overflow() {
+    let mut image = build_gpt_image(20_480, &[(2048, 10_239, "Dados")]);
+    let overflowing_lba = u64::MAX / SECTOR as u64;
+    image[SECTOR + 72..SECTOR + 80].copy_from_slice(&overflowing_lba.to_le_bytes());
+    update_primary_gpt_header_crc(&mut image);
+
+    let reader = MemImageReader::new("gpt-table-overflow", image);
+    assert!(discover(&reader).is_err());
+}
+
+#[test]
+fn part_gpt_range_001_rejects_partition_length_overflow() {
+    let mut image = build_gpt_image(20_480, &[(2048, 10_239, "Dados")]);
+    image[2 * SECTOR + 32..2 * SECTOR + 40].copy_from_slice(&0u64.to_le_bytes());
+    image[2 * SECTOR + 40..2 * SECTOR + 48].copy_from_slice(&u64::MAX.to_le_bytes());
+
+    let table_crc = crc32fast::hash(&image[2 * SECTOR..2 * SECTOR + 128 * 128]);
+    image[SECTOR + 40..SECTOR + 48].copy_from_slice(&0u64.to_le_bytes());
+    image[SECTOR + 48..SECTOR + 56].copy_from_slice(&u64::MAX.to_le_bytes());
+    image[SECTOR + 88..SECTOR + 92].copy_from_slice(&table_crc.to_le_bytes());
+    update_primary_gpt_header_crc(&mut image);
+
+    let reader = MemImageReader::new("gpt-range-overflow", image);
+    assert!(discover(&reader).is_err());
+}
+
+#[test]
+fn part_sector_zero_001_rejects_invalid_logical_sector() {
+    let zero_logical = LayoutReader {
+        inner: MemImageReader::new("zero-sector", vec![0u8; 2 * SECTOR]),
+        layout: SectorLayout {
+            logical: 0,
+            physical: 512,
+        },
+    };
+    assert!(discover(&zero_logical).is_err());
+
+    let physical_smaller_than_logical = LayoutReader {
+        inner: MemImageReader::new("invalid-sector-order", vec![0u8; 16 * SECTOR]),
+        layout: SectorLayout {
+            logical: 4096,
+            physical: 512,
+        },
+    };
+    assert!(discover(&physical_smaller_than_logical).is_err());
+}
+
 #[test]
 fn parses_gpt_with_names_and_guids() {
-    let image = build_gpt_image(20_480, &[(2048, 10_239, "Dados"), (10_240, 18_431, "Backup")]);
+    let image = build_gpt_image(
+        20_480,
+        &[(2048, 10_239, "Dados"), (10_240, 18_431, "Backup")],
+    );
     let r = MemImageReader::new("gpt", image);
     let t = discover(&r).unwrap();
     assert_eq!(t.kind, PartitionTableKind::Gpt);

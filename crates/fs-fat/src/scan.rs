@@ -86,9 +86,7 @@ fn read_root_dir(ctx: &mut ScanCtx<'_>) -> Result<Vec<u8>, ScanError> {
             .reader
             .read_vec_at(ctx.boot.root_dir_offset, ctx.boot.root_dir_bytes as usize)?),
         FatVariant::Fat32 => {
-            let (clusters, complete) = ctx
-                .fat
-                .chain(ctx.boot.root_cluster, ctx.boot.cluster_count);
+            let (clusters, complete) = ctx.fat.chain(ctx.boot.root_cluster, ctx.boot.cluster_count);
             if !complete {
                 ctx.warnings
                     .push("FAT32 root directory chain incomplete".into());
@@ -107,7 +105,10 @@ fn read_clusters(ctx: &ScanCtx<'_>, clusters: &[u32]) -> Result<Vec<u8>, ScanErr
         let Some(off) = ctx.boot.cluster_offset(c as u64) else {
             continue;
         };
-        out.extend(ctx.reader.read_vec_at(off, ctx.boot.cluster_size as usize)?);
+        out.extend(
+            ctx.reader
+                .read_vec_at(off, ctx.boot.cluster_size as usize)?,
+        );
     }
     Ok(out)
 }
@@ -132,12 +133,7 @@ fn walk_directory(ctx: &mut ScanCtx<'_>, data: &[u8], path: &[String], parent_ac
     }
 }
 
-fn handle_directory(
-    ctx: &mut ScanCtx<'_>,
-    entry: &DirEntry,
-    path: &[String],
-    parent_active: bool,
-) {
+fn handle_directory(ctx: &mut ScanCtx<'_>, entry: &DirEntry, path: &[String], parent_active: bool) {
     let mut child_path = path.to_vec();
     child_path.push(entry.name.clone());
 
@@ -199,9 +195,7 @@ fn handle_directory(
             Some(FatEntry::Free) => vec![entry.first_cluster],
             Some(FatEntry::Next(_)) | Some(FatEntry::EndOfChain) => {
                 // Chain unexpectedly retained: follow it.
-                ctx.fat
-                    .chain(entry.first_cluster, ctx.boot.cluster_count)
-                    .0
+                ctx.fat.chain(entry.first_cluster, ctx.boot.cluster_count).0
             }
             _ => return,
         }
@@ -210,9 +204,7 @@ fn handle_directory(
         ctx.visited_dir_clusters.insert(c);
     }
     match read_clusters(ctx, &clusters) {
-        Ok(data) => {
-            walk_directory(ctx, &data, &child_path, parent_active && !entry.is_deleted)
-        }
+        Ok(data) => walk_directory(ctx, &data, &child_path, parent_active && !entry.is_deleted),
         Err(_) => ctx
             .warnings
             .push(format!("directory '{}' unreadable", entry.name)),
@@ -250,8 +242,6 @@ fn emit_file_candidate(
 
     let mut confidence = if parent_active && entry.name_certain {
         MetadataConfidence::High
-    } else if entry.name_certain {
-        MetadataConfidence::Medium
     } else {
         MetadataConfidence::Medium
     };

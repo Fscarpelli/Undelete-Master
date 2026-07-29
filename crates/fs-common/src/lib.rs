@@ -111,7 +111,9 @@ impl AllocationMap {
         if cluster >= self.cluster_count {
             return None;
         }
-        Some(self.bits[(cluster / 8) as usize] & (1 << (cluster % 8)) != 0)
+        self.bits
+            .get((cluster / 8) as usize)
+            .map(|byte| byte & (1 << (cluster % 8)) != 0)
     }
 }
 
@@ -122,7 +124,10 @@ mod tests {
     #[test]
     fn filetime_conversion() {
         // 2020-01-01 00:00:00 UTC = 132223104000000000 in FILETIME
-        assert_eq!(filetime_to_unix_ms(132_223_104_000_000_000), Some(1_577_836_800_000));
+        assert_eq!(
+            filetime_to_unix_ms(132_223_104_000_000_000),
+            Some(1_577_836_800_000)
+        );
         assert_eq!(filetime_to_unix_ms(0), None);
     }
 
@@ -147,5 +152,14 @@ mod tests {
         assert_eq!(m.is_allocated(9), Some(true));
         assert_eq!(m.is_allocated(19), Some(true));
         assert_eq!(m.is_allocated(20), None);
+    }
+
+    #[test]
+    fn fs_map_trunc_001_returns_unknown_for_missing_bitmap_bits() {
+        let map = AllocationMap::from_raw(vec![0b1000_0000], 64);
+
+        assert_eq!(map.is_allocated(7), Some(true));
+        assert_eq!(map.is_allocated(8), None);
+        assert_eq!(map.is_allocated(63), None);
     }
 }

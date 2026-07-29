@@ -44,7 +44,13 @@ fn recovers_deleted_files_byte_exact() {
     );
     // Deleted non-resident contiguous file (~3 clusters).
     let big = deterministic_bytes(42, 12_000);
-    b.add_file(NodeParent::Root, "photo.jpg", big.clone(), true, FileOptions::default());
+    b.add_file(
+        NodeParent::Root,
+        "photo.jpg",
+        big.clone(),
+        true,
+        FileOptions::default(),
+    );
     // Deleted non-resident fragmented file.
     let frag = deterministic_bytes(77, 20_000);
     b.add_file(
@@ -100,7 +106,10 @@ fn reconstructs_paths_through_deleted_directories() {
     let out = um_fs_ntfs::scan_ntfs(&reader).unwrap();
 
     let file = find(&out.candidates, "Contrato.docx");
-    assert_eq!(file.parent_path, vec!["Projetos".to_string(), "2024".to_string()]);
+    assert_eq!(
+        file.parent_path,
+        vec!["Projetos".to_string(), "2024".to_string()]
+    );
     // Ancestors are deleted, so confidence drops to Medium — not Low.
     assert_eq!(file.metadata_confidence, MetadataConfidence::Medium);
     assert_eq!(file.kind, CandidateKind::File);
@@ -156,7 +165,13 @@ fn partial_overwrite_is_reported_not_hidden() {
 #[test]
 fn zero_length_and_unicode_names() {
     let mut b = NtfsImageBuilder::new("ntfs-edge");
-    b.add_file(NodeParent::Root, "vazio.dat", Vec::new(), true, FileOptions::default());
+    b.add_file(
+        NodeParent::Root,
+        "vazio.dat",
+        Vec::new(),
+        true,
+        FileOptions::default(),
+    );
     b.add_file(
         NodeParent::Root,
         "relatório-ção-😀.txt",

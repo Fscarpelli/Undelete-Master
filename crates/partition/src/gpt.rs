@@ -116,13 +116,21 @@ pub(crate) fn parse_gpt(reader: &dyn SourceReader) -> Result<PartitionTable, Sca
     let _ = header.header_size;
     let _ = (header.current_lba, header.backup_lba);
 
-    let table_len = header.num_entries as u64 * header.entry_size as u64;
+    let table_len = (header.num_entries as u64)
+        .checked_mul(header.entry_size as u64)
+        .ok_or_else(|| ScanError::Corrupt("GPT entry table length overflow".into()))?;
     let table_off = header
         .entry_lba
         .checked_mul(sector)
-        .filter(|off| off + table_len <= source_len)
+        .filter(|off| {
+            off.checked_add(table_len)
+                .map(|end| end <= source_len)
+                .unwrap_or(false)
+        })
         .ok_or_else(|| ScanError::Corrupt("GPT entry table out of bounds".into()))?;
-    let table = reader.read_vec_at(table_off, table_len as usize)?;
+    let table_len = usize::try_from(table_len)
+        .map_err(|_| ScanError::Corrupt("GPT entry table does not fit address space".into()))?;
+    let table = reader.read_vec_at(table_off, table_len)?;
     if crc32fast::hash(&table) != header.entries_crc {
         return Err(ScanError::Corrupt("GPT entry table CRC mismatch".into()));
     }
@@ -148,11 +156,23 @@ pub(crate) fn parse_gpt(reader: &dyn SourceReader) -> Result<PartitionTable, Sca
         }
         let offset = match first_lba.checked_mul(sector) {
             Some(v) => v,
-            None => continue,
+            None => {
+                return Err(ScanError::Corrupt(format!(
+                    "GPT entry {i} byte offset overflows"
+                )))
+            }
         };
-        let len = match (last - first_lba + 1).checked_mul(sector) {
+        let len = match last
+            .checked_sub(first_lba)
+            .and_then(|span| span.checked_add(1))
+            .and_then(|sectors| sectors.checked_mul(sector))
+        {
             Some(v) => v,
-            None => continue,
+            None => {
+                return Err(ScanError::Corrupt(format!(
+                    "GPT entry {i} byte length overflows"
+                )))
+            }
         };
         let Some(region) = Region::new(offset, len).filter(|r| r.end() <= source_len) else {
             warnings.push(format!("GPT entry {i} exceeds source bounds; ignored"));

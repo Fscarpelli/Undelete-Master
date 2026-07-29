@@ -9,7 +9,9 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-use um_core::{ReadError, ReadOutcome, Region, SectorLayout, SourceIdentity, SourceKind, SourceReader};
+use um_core::{
+    ReadError, ReadOutcome, Region, SectorLayout, SourceIdentity, SourceKind, SourceReader,
+};
 
 /// Read-only reader over a raw image file (`.img`, `.dd`, `.raw`).
 pub struct FileImageReader {
@@ -117,6 +119,13 @@ impl SourceReader for FileImageReader {
             Err(_) => {
                 // Retry sector by sector, zero-filling failures.
                 let sector = self.sector_layout.logical as usize;
+                if sector == 0 {
+                    buffer.fill(0);
+                    return ReadOutcome {
+                        bytes_valid: 0,
+                        bad_ranges: vec![(0, buffer.len() as u64)],
+                    };
+                }
                 let mut bad = Vec::new();
                 let mut valid = 0u64;
                 let mut pos = 0usize;
@@ -260,14 +269,11 @@ impl SourceReader for RegionReader<'_> {
 
     fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> Result<(), ReadError> {
         let len = buffer.len() as u64;
-        let sub = self
-            .region
-            .sub(offset, len)
-            .ok_or(ReadError::OutOfBounds {
-                offset,
-                len,
-                source_len: self.region.len,
-            })?;
+        let sub = self.region.sub(offset, len).ok_or(ReadError::OutOfBounds {
+            offset,
+            len,
+            source_len: self.region.len,
+        })?;
         self.inner.read_exact_at(sub.offset, buffer)
     }
 
@@ -333,5 +339,23 @@ mod tests {
         assert_eq!(rr.len(), 50);
         assert_eq!(rr.read_vec_at(0, 4).unwrap(), &data[100..104]);
         assert!(rr.read_vec_at(48, 4).is_err());
+    }
+
+    #[test]
+    fn io_sector_zero_001_fails_best_effort_closed() {
+        let (_d, path) = temp_image(&[0xAA; 16]);
+        let reader = FileImageReader::open(&path)
+            .unwrap()
+            .with_sector_layout(SectorLayout {
+                logical: 0,
+                physical: 512,
+            });
+        let mut buffer = [0xFF; 4];
+
+        let outcome = reader.read_best_effort_at(32, &mut buffer);
+
+        assert_eq!(buffer, [0; 4]);
+        assert_eq!(outcome.bytes_valid, 0);
+        assert_eq!(outcome.bad_ranges, vec![(0, 4)]);
     }
 }
