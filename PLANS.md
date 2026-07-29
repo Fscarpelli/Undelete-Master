@@ -268,5 +268,5 @@ acceptance, and the unresolved Norton classification remain open.
 - [x] Record the final development artifact hash and Authenticode state;
   do not redistribute the unsigned build or classify the Norton event without
   vendor/security evidence.
-- [ ] Preserve the GitHub `main` commit through a non-force integration, commit
+- [x] Preserve the GitHub `main` commit through a non-force integration, commit
   the verified tree, push, and report the exact branch/commit.
