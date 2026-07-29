@@ -151,8 +151,7 @@ impl FatImageBuilder {
         let mut image = vec![0u8; image_len];
 
         let fat_offset = geo.reserved as usize * SECTOR;
-        let root_dir_offset =
-            fat_offset + (geo.num_fats * geo.fat_sectors) as usize * SECTOR;
+        let root_dir_offset = fat_offset + (geo.num_fats * geo.fat_sectors) as usize * SECTOR;
         let root_dir_bytes = geo.root_entries as usize * 32;
         let data_offset = root_dir_offset + root_dir_bytes.div_ceil(SECTOR) * SECTOR;
 
@@ -172,8 +171,7 @@ impl FatImageBuilder {
         if self.kind == FatKind::Fat32 {
             fat[2] = eoc; // root directory: single cluster
         }
-        let cluster_off =
-            |c: u32| -> usize { data_offset + (c as usize - 2) * CLUSTER };
+        let cluster_off = |c: u32| -> usize { data_offset + (c as usize - 2) * CLUSTER };
 
         // --- allocate content clusters ---
         struct Placement {

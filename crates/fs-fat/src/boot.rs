@@ -55,7 +55,9 @@ impl FatBoot {
         let reserved_sectors = le::u16_at(sector0, 14).unwrap_or(0) as u32;
         let num_fats = le::u8_at(sector0, 16).unwrap_or(0) as u32;
         if reserved_sectors == 0 || num_fats == 0 || num_fats > 4 {
-            return Err(ScanError::NotRecognized("implausible reserved/FAT count".into()));
+            return Err(ScanError::NotRecognized(
+                "implausible reserved/FAT count".into(),
+            ));
         }
         let root_entries = le::u16_at(sector0, 17).unwrap_or(0) as u32;
         let total16 = le::u16_at(sector0, 19).unwrap_or(0) as u64;
@@ -74,7 +76,11 @@ impl FatBoot {
             )));
         }
         let fat_size32 = le::u32_at(sector0, 36).unwrap_or(0);
-        let fat_size_sectors = if fat_size16 != 0 { fat_size16 } else { fat_size32 };
+        let fat_size_sectors = if fat_size16 != 0 {
+            fat_size16
+        } else {
+            fat_size32
+        };
         if fat_size_sectors == 0 {
             return Err(ScanError::NotRecognized("zero FAT size".into()));
         }
@@ -82,11 +88,13 @@ impl FatBoot {
         let fat_offset = reserved_sectors as u64 * bytes_per_sector as u64;
         let fats_bytes = num_fats as u64 * fat_size_sectors as u64 * bytes_per_sector as u64;
         let root_dir_offset = fat_offset + fats_bytes;
-        let root_dir_bytes = (root_entries as u64 * 32).div_ceil(bytes_per_sector as u64)
-            * bytes_per_sector as u64;
+        let root_dir_bytes =
+            (root_entries as u64 * 32).div_ceil(bytes_per_sector as u64) * bytes_per_sector as u64;
         let data_offset = root_dir_offset + root_dir_bytes;
         if data_offset >= fs_bytes {
-            return Err(ScanError::Corrupt("data region starts past volume end".into()));
+            return Err(ScanError::Corrupt(
+                "data region starts past volume end".into(),
+            ));
         }
         let cluster_size = bytes_per_sector as u64 * sectors_per_cluster as u64;
         let cluster_count = (fs_bytes - data_offset) / cluster_size;
@@ -113,7 +121,9 @@ impl FatBoot {
                 return Err(ScanError::Corrupt("FAT32 root cluster out of range".into()));
             }
         } else if root_entries == 0 {
-            return Err(ScanError::Corrupt("FAT12/16 volume without root entries".into()));
+            return Err(ScanError::Corrupt(
+                "FAT12/16 volume without root entries".into(),
+            ));
         }
 
         Ok(FatBoot {

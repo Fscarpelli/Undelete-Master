@@ -36,7 +36,11 @@ pub fn lfn_checksum(short_name_bytes: &[u8; 11]) -> u8 {
 
 fn decode_short_name(raw: &[u8; 11], deleted: bool) -> (String, bool) {
     let mut base: Vec<u8> = raw[..8].to_vec();
-    let ext: Vec<u8> = raw[8..11].iter().copied().take_while(|&b| b != b' ').collect();
+    let ext: Vec<u8> = raw[8..11]
+        .iter()
+        .copied()
+        .take_while(|&b| b != b' ')
+        .collect();
     while base.last() == Some(&b' ') {
         base.pop();
     }
@@ -261,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn never_panics_on_garbage(){
+    fn never_panics_on_garbage() {
         let junk: Vec<u8> = (0..4096).map(|i| (i * 31 % 251) as u8).collect();
         let _ = parse_directory(&junk, 0);
     }

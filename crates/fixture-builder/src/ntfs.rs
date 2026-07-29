@@ -238,7 +238,13 @@ impl NtfsImageBuilder {
                 false,
                 &[
                     attr_std_info(),
-                    attr_file_name(ROOT_RECORD, 5, "$MFT", false, MFT_RECORDS * RECORD_SIZE as u64),
+                    attr_file_name(
+                        ROOT_RECORD,
+                        5,
+                        "$MFT",
+                        false,
+                        MFT_RECORDS * RECORD_SIZE as u64,
+                    ),
                     attr_data_nonresident(
                         &[(MFT_LCN, MFT_CLUSTERS)],
                         MFT_RECORDS * RECORD_SIZE as u64,
@@ -247,7 +253,12 @@ impl NtfsImageBuilder {
             ),
         );
         // Records 1-4: minimal in-use system records.
-        for (no, name) in [(1u64, "$MFTMirr"), (2, "$LogFile"), (3, "$Volume"), (4, "$AttrDef")] {
+        for (no, name) in [
+            (1u64, "$MFTMirr"),
+            (2, "$LogFile"),
+            (3, "$Volume"),
+            (4, "$AttrDef"),
+        ] {
             write_record(
                 no,
                 build_record(
@@ -269,7 +280,10 @@ impl NtfsImageBuilder {
                 5,
                 true,
                 true,
-                &[attr_std_info(), attr_file_name(ROOT_RECORD, 5, ".", true, 0)],
+                &[
+                    attr_std_info(),
+                    attr_file_name(ROOT_RECORD, 5, ".", true, 0),
+                ],
             ),
         );
         // Record 6: $Bitmap.

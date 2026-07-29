@@ -7,8 +7,8 @@ use um_core::{
 };
 use um_fixture_builder::deterministic_bytes;
 use um_fixture_builder::fat::{FatFileOptions, FatImageBuilder, FatKind, NodeParent};
-use um_io_common::MemImageReader;
 use um_fs_fat::FatVariant;
+use um_io_common::MemImageReader;
 
 fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
@@ -18,8 +18,12 @@ fn find<'a>(candidates: &'a [Candidate], name: &str) -> &'a Candidate {
     candidates
         .iter()
         .find(|c| c.name == name)
-        .unwrap_or_else(|| panic!("candidate {name} not found in {:?}",
-            candidates.iter().map(|c| &c.name).collect::<Vec<_>>()))
+        .unwrap_or_else(|| {
+            panic!(
+                "candidate {name} not found in {:?}",
+                candidates.iter().map(|c| &c.name).collect::<Vec<_>>()
+            )
+        })
 }
 
 #[test]
@@ -58,7 +62,11 @@ fn fat32_recovers_deleted_files_byte_exact() {
     // Chain was cleared: contiguity assumption must be flagged and capped.
     assert!(cand.warnings.iter().any(|w| w.contains("assumed")));
     let score = RecoverabilityInputs::from_candidate(cand).score();
-    assert!(score.value <= 74, "inferred chain must cap score, got {}", score.value);
+    assert!(
+        score.value <= 74,
+        "inferred chain must cap score, got {}",
+        score.value
+    );
 }
 
 #[test]
@@ -133,9 +141,15 @@ fn fat32_fragmented_with_retained_chain_recovers_exactly() {
     let reader = MemImageReader::new("fat32-frag-chain", image);
     let out = um_fs_fat::scan_fat(&reader).unwrap();
     let cand = find(&out.candidates, "planilha.xlsx");
-    assert!(cand.warnings.iter().any(|w| w.contains("chain still present")));
+    assert!(cand
+        .warnings
+        .iter()
+        .any(|w| w.contains("chain still present")));
     let ext = extract_candidate(&reader, cand).unwrap();
-    assert_eq!(ext.bytes, content, "retained chain must recover fragmented file");
+    assert_eq!(
+        ext.bytes, content,
+        "retained chain must recover fragmented file"
+    );
 }
 
 #[test]
