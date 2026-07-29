@@ -1,0 +1,11 @@
+[package]
+name = "um-io-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+um-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

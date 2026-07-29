@@ -1,0 +1,12 @@
+[package]
+name = "um-fs-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+um-core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

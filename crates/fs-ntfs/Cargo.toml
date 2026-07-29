@@ -1,0 +1,16 @@
+[package]
+name = "um-fs-ntfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+um-core = { workspace = true }
+um-fs-common = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+um-fixture-builder = { workspace = true }
+um-io-common = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
