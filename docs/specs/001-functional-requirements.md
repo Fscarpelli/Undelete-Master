@@ -45,10 +45,10 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-010 | Enumerate sources | Enumerate real disks, volumes, and added images; synthetic cards are not acceptance evidence. | Not started |
-| FR-011 | Device cards | Show identity, capacity, media/bus, volumes, filesystem, encryption, and warnings from real inventory. | Not started |
-| FR-012 | Stable identity | Identity survives drive-letter changes and prevents resume on a substituted source. | Not started |
-| FR-013 | Refresh and disconnect | Refresh hot-plug state, pause on removal, and resume only after identity match. | Not started |
+| FR-010 | Enumerate sources | Enumerate real disks, volumes, and added images; synthetic cards are not acceptance evidence. Mounted local volume inventory is implemented; added-image inventory is absent. | Partial |
+| FR-011 | Device cards | Show identity, capacity, media/bus, volumes, filesystem, encryption, and warnings from real inventory. Disk grouping, capacity, volume, filesystem and warnings are implemented; richer media/encryption metadata is incomplete. | Partial |
+| FR-012 | Stable identity | Identity survives drive-letter changes and prevents resume on a substituted source. Opaque multi-property mounted-volume identity and broker revalidation exist; resume is absent. | Partial |
+| FR-013 | Refresh and disconnect | Refresh hot-plug state, pause on removal, and resume only after identity match. Explicit refresh and fail-closed source loss exist; subscription, pause and resume are absent. | Partial |
 
 ## Scan preparation
 

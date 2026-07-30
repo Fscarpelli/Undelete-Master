@@ -126,6 +126,88 @@ class CiSafetyValidatorTests(unittest.TestCase):
         self.assertTrue(any("windows-raw-device" in error for error in errors), errors)
         self.assertTrue(any("apps/desktop/src/device.ts" in error for error in errors))
 
+    def test_ci_safety_audited_windows_001_allows_production_raw_selector(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.parent.mkdir(parents=True)
+        device = "\\\\.\\" + "Physical" + "Drive7"
+        boundary.write_text(
+            f'const QUERY_ONLY_SELECTOR: &str = r"{device}";\n',
+            encoding="utf-8",
+        )
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertEqual(errors, [])
+
+    def test_ci_safety_audited_windows_002_raw_selector_elsewhere_is_rejected(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        source = root / "crates" / "other" / "src" / "windows.rs"
+        source.parent.mkdir(parents=True)
+        device = "\\\\.\\" + "Physical" + "Drive7"
+        source.write_text(f'const DEVICE: &str = r"{device}";\n', encoding="utf-8")
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertTrue(any("windows-raw-device" in error for error in errors), errors)
+        self.assertTrue(any("crates/other/src/windows.rs" in error for error in errors))
+
+    def test_ci_safety_audited_windows_003_raw_selector_in_test_is_rejected(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        source = root / "crates" / "io-windows" / "tests" / "device.rs"
+        source.parent.mkdir(parents=True)
+        device = "\\\\.\\" + "Physical" + "Drive7"
+        source.write_text(f'const DEVICE: &str = r"{device}";\n', encoding="utf-8")
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertTrue(any("windows-raw-device" in error for error in errors), errors)
+        self.assertTrue(any("crates/io-windows/tests/device.rs" in error for error in errors))
+
+    def test_ci_safety_audited_windows_004_allows_pipe_write_transport_only(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.parent.mkdir(parents=True)
+        write_access = "GENERIC_" + "WRITE"
+        boundary.write_text(
+            f"use windows_sys::Win32::Foundation::{write_access};\n"
+            "fn connect_broker_pipe() {\n"
+            f"  let access = {write_access};\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertEqual(errors, [])
+
+    def test_ci_safety_audited_windows_005_rejects_source_write_access(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.parent.mkdir(parents=True)
+        write_access = "GENERIC_" + "WRITE"
+        boundary.write_text(
+            f"use windows_sys::Win32::Foundation::{write_access};\n"
+            f"fn open_raw_volume() {{ let access = {write_access}; }}\n",
+            encoding="utf-8",
+        )
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertTrue(any("windows-write-access" in error for error in errors), errors)
+        self.assertTrue(any("crates/io-windows/src/windows.rs" in error for error in errors))
+
     def test_ci_safety_shebang_001_extensionless_helper_is_scanned(self) -> None:
         temporary, root = self.make_repo()
         self.addCleanup(temporary.cleanup)
@@ -457,6 +539,52 @@ class CiSafetyValidatorTests(unittest.TestCase):
 
         self.assertEqual(workflow_count, 0)
         self.assertTrue(any("no YAML workflow" in error for error in errors), errors)
+
+    def test_ci_safety_release_pair_001_requires_broker_before_desktop(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "apps" / "desktop" / "package.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            '{"scripts":{"broker:release":"cargo build --release -p '
+            'um-elevated-broker","desktop:build":"pnpm broker:release && '
+            'tauri build"}}',
+            encoding="utf-8",
+        )
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertTrue(
+            any("CI must build the broker before" in error for error in errors),
+            errors,
+        )
+
+    def test_ci_safety_release_pair_002_accepts_verified_siblings(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "apps" / "desktop" / "package.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            '{"scripts":{"broker:release":"cargo build --release -p '
+            'um-elevated-broker","desktop:build":"pnpm broker:release && '
+            'tauri build"}}',
+            encoding="utf-8",
+        )
+        workflow = root / ".github" / "workflows" / "quality.yml"
+        workflow.write_text(
+            "jobs:\n  safe:\n    runs-on: windows-latest\n    steps:\n"
+            "      - run: pnpm broker:release\n"
+            "      - run: pnpm tauri build --no-bundle\n"
+            "      - shell: pwsh\n"
+            "        run: |\n"
+            "          Test-Path 'target\\release\\undelete-master-broker.exe'\n"
+            "          Test-Path 'target\\release\\undelete-master-desktop.exe'\n",
+            encoding="utf-8",
+        )
+
+        errors, _, _ = validator.validate_repository(root)
+
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

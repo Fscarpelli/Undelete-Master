@@ -1,0 +1,458 @@
+export const STORAGE_CONTRACT_SCHEMA_VERSION = 1;
+
+const UNSIGNED_DECIMAL = /^(0|[1-9][0-9]*)$/;
+const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const MOUNT_LABEL = /^[A-Za-z]:$/;
+const MAX_U64 = 18_446_744_073_709_551_615n;
+const MAX_DISKS = 128;
+const MAX_VOLUMES_PER_DISK = 128;
+const MAX_CANDIDATES_PER_PAGE = 200;
+const MAX_WARNINGS = 128;
+const MAX_TEXT_CODE_POINTS = 512;
+
+export type BusType =
+  | "unknown"
+  | "ata"
+  | "sata"
+  | "scsi"
+  | "usb"
+  | "nvme"
+  | "virtual";
+export type SupportedFileSystem =
+  | "ntfs"
+  | "fat12"
+  | "fat16"
+  | "fat32"
+  | "unrecognized";
+export type ScanStatus = "complete" | "partial" | "unrecognized";
+export type CandidateKind = "file" | "directory";
+export type CandidateState =
+  | "exactEvidence"
+  | "likelyComplete"
+  | "completeUnvalidated"
+  | "structurallyValid"
+  | "partial"
+  | "conflicted"
+  | "readError"
+  | "zeroedOrTrimmed"
+  | "overwritten"
+  | "metadataOnly"
+  | "unknown";
+export type MetadataConfidence = "high" | "medium" | "low";
+export type PathState =
+  | "exact"
+  | "reconstructed"
+  | "incomplete"
+  | "orphaned"
+  | "ambiguous";
+
+export interface StorageVolume {
+  id: string;
+  mountLabel: string;
+  label: string;
+  fileSystem: string;
+  sizeBytes: string;
+  freeBytes: string;
+  isSystem: boolean;
+  scanSupported: boolean;
+  folderScopeSupported: boolean;
+  warnings: string[];
+}
+
+export interface StorageDisk {
+  id: string;
+  displayName: string;
+  busType: BusType;
+  sizeBytes: string;
+  volumes: StorageVolume[];
+}
+
+export interface StorageInventory {
+  schemaVersion: 1;
+  generation: string;
+  disks: StorageDisk[];
+}
+
+export interface ScanScope {
+  kind: "volume" | "folder";
+  label: string;
+}
+
+export interface FolderSelection {
+  schemaVersion: 1;
+  scopeId: string;
+  volumeId: string;
+  label: string;
+}
+
+export interface ScanSummary {
+  schemaVersion: 1;
+  scanId: string;
+  sourceLabel: string;
+  scope: ScanScope;
+  fileSystem: SupportedFileSystem;
+  scanStatus: ScanStatus;
+  totalCandidates: string;
+  matchedCandidates: string;
+  unknownCandidates: string;
+  warnings: string[];
+}
+
+export interface CandidateRow {
+  id: string;
+  displayPath: string;
+  kind: CandidateKind;
+  state: CandidateState;
+  sizeBytes: string;
+  metadataConfidence: MetadataConfidence;
+  recoverabilityScore: number | null;
+  pathState: PathState;
+  warnings: string[];
+}
+
+export interface CandidatePage {
+  schemaVersion: 1;
+  scanId: string;
+  cursor: string | null;
+  nextCursor: string | null;
+  candidates: CandidateRow[];
+}
+
+export class StorageContractError extends Error {
+  constructor() {
+    super("The desktop storage service returned an incompatible response.");
+    this.name = "StorageContractError";
+  }
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new StorageContractError();
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]) {
+  if (
+    Object.keys(value).length !== keys.length ||
+    !keys.every((key) => Object.hasOwn(value, key))
+  ) {
+    throw new StorageContractError();
+  }
+}
+
+function text(value: unknown, allowEmpty = false): string {
+  if (
+    typeof value !== "string" ||
+    (!allowEmpty && value.length === 0) ||
+    [...value].length > MAX_TEXT_CODE_POINTS ||
+    [...value].some((character) => {
+      const code = character.codePointAt(0);
+      return (
+        code !== undefined &&
+        (code <= 0x1f ||
+          (code >= 0x7f && code <= 0x9f) ||
+          (code >= 0x202a && code <= 0x202e) ||
+          (code >= 0x2066 && code <= 0x2069))
+      );
+    })
+  ) {
+    throw new StorageContractError();
+  }
+  return value;
+}
+
+function opaqueId(value: unknown): string {
+  if (typeof value !== "string" || !OPAQUE_ID.test(value)) {
+    throw new StorageContractError();
+  }
+  return value;
+}
+
+function decimal(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 20 ||
+    !UNSIGNED_DECIMAL.test(value) ||
+    BigInt(value) > MAX_U64
+  ) {
+    throw new StorageContractError();
+  }
+  return value;
+}
+
+function boolean(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new StorageContractError();
+  }
+  return value;
+}
+
+function warningList(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > MAX_WARNINGS) {
+    throw new StorageContractError();
+  }
+  return value.map((item) => text(item));
+}
+
+function oneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new StorageContractError();
+  }
+  return value as T;
+}
+
+function volume(value: unknown): StorageVolume {
+  const item = record(value);
+  exactKeys(item, [
+    "id",
+    "mountLabel",
+    "label",
+    "fileSystem",
+    "sizeBytes",
+    "freeBytes",
+    "isSystem",
+    "scanSupported",
+    "folderScopeSupported",
+    "warnings",
+  ]);
+  if (typeof item.mountLabel !== "string" || !MOUNT_LABEL.test(item.mountLabel)) {
+    throw new StorageContractError();
+  }
+  return {
+    id: opaqueId(item.id),
+    mountLabel: item.mountLabel,
+    label: text(item.label, true),
+    fileSystem: text(item.fileSystem),
+    sizeBytes: decimal(item.sizeBytes),
+    freeBytes: decimal(item.freeBytes),
+    isSystem: boolean(item.isSystem),
+    scanSupported: boolean(item.scanSupported),
+    folderScopeSupported: boolean(item.folderScopeSupported),
+    warnings: warningList(item.warnings),
+  };
+}
+
+function disk(value: unknown): StorageDisk {
+  const item = record(value);
+  exactKeys(item, [
+    "id",
+    "displayName",
+    "busType",
+    "sizeBytes",
+    "volumes",
+  ]);
+  if (
+    !Array.isArray(item.volumes) ||
+    item.volumes.length > MAX_VOLUMES_PER_DISK
+  ) {
+    throw new StorageContractError();
+  }
+  const volumes = item.volumes.map(volume);
+  if (new Set(volumes.map((entry) => entry.id)).size !== volumes.length) {
+    throw new StorageContractError();
+  }
+  return {
+    id: opaqueId(item.id),
+    displayName: text(item.displayName),
+    busType: oneOf(item.busType, [
+      "unknown",
+      "ata",
+      "sata",
+      "scsi",
+      "usb",
+      "nvme",
+      "virtual",
+    ]),
+    sizeBytes: decimal(item.sizeBytes),
+    volumes,
+  };
+}
+
+export function parseStorageInventory(value: unknown): StorageInventory {
+  const item = record(value);
+  exactKeys(item, ["schemaVersion", "generation", "disks"]);
+  if (
+    item.schemaVersion !== STORAGE_CONTRACT_SCHEMA_VERSION ||
+    !Array.isArray(item.disks) ||
+    item.disks.length > MAX_DISKS
+  ) {
+    throw new StorageContractError();
+  }
+  const disks = item.disks.map(disk);
+  if (new Set(disks.map((entry) => entry.id)).size !== disks.length) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    generation: opaqueId(item.generation),
+    disks,
+  };
+}
+
+export function parseFolderSelection(value: unknown): FolderSelection {
+  const item = record(value);
+  exactKeys(item, ["schemaVersion", "scopeId", "volumeId", "label"]);
+  if (item.schemaVersion !== STORAGE_CONTRACT_SCHEMA_VERSION) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    scopeId: opaqueId(item.scopeId),
+    volumeId: opaqueId(item.volumeId),
+    label: text(item.label),
+  };
+}
+
+function scope(value: unknown): ScanScope {
+  const item = record(value);
+  exactKeys(item, ["kind", "label"]);
+  return {
+    kind: oneOf(item.kind, ["volume", "folder"]),
+    label: text(item.label),
+  };
+}
+
+export function parseScanSummary(value: unknown): ScanSummary {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "scanId",
+    "sourceLabel",
+    "scope",
+    "fileSystem",
+    "scanStatus",
+    "totalCandidates",
+    "matchedCandidates",
+    "unknownCandidates",
+    "warnings",
+  ]);
+  if (item.schemaVersion !== STORAGE_CONTRACT_SCHEMA_VERSION) {
+    throw new StorageContractError();
+  }
+  const fileSystem = oneOf(item.fileSystem, [
+    "ntfs",
+    "fat12",
+    "fat16",
+    "fat32",
+    "unrecognized",
+  ]);
+  const scanStatus = oneOf(item.scanStatus, [
+    "complete",
+    "partial",
+    "unrecognized",
+  ]);
+  if (
+    (fileSystem === "unrecognized") !== (scanStatus === "unrecognized")
+  ) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    scanId: opaqueId(item.scanId),
+    sourceLabel: text(item.sourceLabel),
+    scope: scope(item.scope),
+    fileSystem,
+    scanStatus,
+    totalCandidates: decimal(item.totalCandidates),
+    matchedCandidates: decimal(item.matchedCandidates),
+    unknownCandidates: decimal(item.unknownCandidates),
+    warnings: warningList(item.warnings),
+  };
+}
+
+function nullableOpaqueId(value: unknown): string | null {
+  return value === null ? null : opaqueId(value);
+}
+
+function candidate(value: unknown): CandidateRow {
+  const item = record(value);
+  exactKeys(item, [
+    "id",
+    "displayPath",
+    "kind",
+    "state",
+    "sizeBytes",
+    "metadataConfidence",
+    "recoverabilityScore",
+    "pathState",
+    "warnings",
+  ]);
+  const kind = oneOf(item.kind, ["file", "directory"]);
+  const score = item.recoverabilityScore;
+  const validFileScore =
+    kind === "file" &&
+    typeof score === "number" &&
+    Number.isInteger(score) &&
+    score >= 0 &&
+    score <= 100;
+  const validDirectoryScore = kind === "directory" && score === null;
+  if (!validFileScore && !validDirectoryScore) {
+    throw new StorageContractError();
+  }
+  return {
+    id: opaqueId(item.id),
+    displayPath: text(item.displayPath),
+    kind,
+    state: oneOf(item.state, [
+      "exactEvidence",
+      "likelyComplete",
+      "completeUnvalidated",
+      "structurallyValid",
+      "partial",
+      "conflicted",
+      "readError",
+      "zeroedOrTrimmed",
+      "overwritten",
+      "metadataOnly",
+      "unknown",
+    ]),
+    sizeBytes: decimal(item.sizeBytes),
+    metadataConfidence: oneOf(item.metadataConfidence, [
+      "high",
+      "medium",
+      "low",
+    ]),
+    recoverabilityScore: score as number | null,
+    pathState: oneOf(item.pathState, [
+      "exact",
+      "reconstructed",
+      "incomplete",
+      "orphaned",
+      "ambiguous",
+    ]),
+    warnings: warningList(item.warnings),
+  };
+}
+
+export function parseCandidatePage(value: unknown): CandidatePage {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "scanId",
+    "cursor",
+    "nextCursor",
+    "candidates",
+  ]);
+  if (
+    item.schemaVersion !== STORAGE_CONTRACT_SCHEMA_VERSION ||
+    !Array.isArray(item.candidates) ||
+    item.candidates.length > MAX_CANDIDATES_PER_PAGE
+  ) {
+    throw new StorageContractError();
+  }
+  const candidates = item.candidates.map(candidate);
+  if (new Set(candidates.map((entry) => entry.id)).size !== candidates.length) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    scanId: opaqueId(item.scanId),
+    cursor: nullableOpaqueId(item.cursor),
+    nextCursor: nullableOpaqueId(item.nextCursor),
+    candidates,
+  };
+}

@@ -5,53 +5,119 @@ const ptBR = {
   "nav.analysis": "Análise",
   "nav.settings": "Configurações",
   "nav.help": "Ajuda",
-  "analysis.title": "Análise de imagem",
+
+  "analysis.title": "Unidades conectadas",
   "analysis.subtitle":
-    "Inspecione uma imagem local comum usando o mecanismo real e somente leitura.",
+    "Escolha um volume local real para procurar metadados de arquivos recuperáveis em modo somente leitura.",
   "analysis.runtime.title": "Aplicativo desktop necessário",
   "analysis.runtime.body":
-    "A análise só está disponível no aplicativo Tauri instalado. Esta visualização no navegador não acessa arquivos nem apresenta dados substitutos.",
-  "analysis.idle.title": "Selecione uma imagem de disco",
-  "analysis.idle.body":
-    "Formatos aceitos: IMG, DD, RAW e BIN. O caminho permanece no processo Rust e a origem é aberta somente para leitura.",
-  "analysis.select": "Selecionar e analisar imagem",
-  "analysis.pending.title": "Análise em andamento",
-  "analysis.pending.body":
-    "O mecanismo está lendo a imagem. O progresso é indeterminado porque o scanner ainda não fornece fases ou percentual.",
-  "analysis.cancelled": "A seleção foi cancelada. Nenhuma imagem foi aberta.",
-  "analysis.error.title": "Não foi possível analisar a imagem",
-  "analysis.tryAgain": "Tentar novamente",
-  "analysis.report.new": "Analisar outra imagem",
-  "analysis.report.readOnly": "Origem validada · somente leitura",
-  "analysis.report.sourceSize": "Tamanho da origem",
-  "analysis.report.partition": "Tabela de partição",
-  "analysis.report.volumes": "Volumes",
-  "analysis.report.volumeTable": "Tabela de volumes analisados",
-  "analysis.report.candidates": "Metadados candidatos",
-  "analysis.report.candidateCaveat":
-    "A contagem indica metadados identificados pelo scanner. Ela não garante que os arquivos possam ser recuperados.",
-  "analysis.report.partialCaveat":
-    "A contagem é parcial: o scanner atingiu um limite seguro ou encontrou metadados ilegíveis. Consulte os avisos; nenhum candidato fora da região analisada está incluído.",
-  "analysis.report.volume": "Volume",
-  "analysis.report.fileSystem": "Sistema de arquivos",
-  "analysis.report.coverage": "Cobertura",
-  "analysis.report.offset": "Offset em bytes",
-  "analysis.report.length": "Tamanho em bytes",
-  "analysis.report.warnings": "Avisos do scanner",
-  "analysis.report.noVolumes": "Nenhum volume reconhecido foi retornado.",
-  "analysis.report.noWarnings": "Nenhum aviso foi retornado pelo scanner.",
-  "analysis.report.omitted": "Avisos omitidos pelo limite de transporte",
-  "partition.mbr": "MBR",
-  "partition.gpt": "GPT",
-  "partition.none": "Não reconhecida",
+    "A detecção de unidades está disponível somente no aplicativo Tauri instalado. O navegador não acessa discos e nunca exibe inventário substituto.",
+  "analysis.safety.title": "Inventário sem elevação e leitura protegida",
+  "analysis.safety.body":
+    "O aplicativo consulta as unidades sem elevação. Somente ao iniciar a análise o Windows pode solicitar UAC para o broker mínimo, que revalida a identidade escolhida e apenas lê a origem: ele nunca grava, bloqueia, desmonta, formata ou executa arquivos recuperados.",
+  "analysis.inventory.loadingTitle": "Detectando unidades conectadas",
+  "analysis.inventory.loadingBody":
+    "Consultando o inventário real do Windows sem solicitar elevação.",
+  "analysis.inventory.title": "Volumes montados detectados",
+  "analysis.inventory.body":
+    "Drive letters e nomes são apenas rótulos. A leitura usa identificadores opacos validados pelo processo nativo.",
+  "analysis.inventory.refresh": "Atualizar unidades",
+  "analysis.inventory.refreshing": "Atualizando unidades",
+  "analysis.inventory.emptyTitle": "Nenhuma unidade compatível",
+  "analysis.inventory.emptyBody":
+    "Nenhum volume local montado e compatível foi encontrado.",
+  "analysis.inventory.errorTitle": "Não foi possível detectar as unidades",
+  "analysis.disk": "Grupo de armazenamento",
+  "analysis.disk.noVolumes": "Nenhum volume montado foi retornado.",
+  "analysis.volume.choose": "Escolha um volume para analisar",
+  "analysis.volume.unnamed": "Volume sem nome",
+  "analysis.volume.system": "Sistema",
+  "analysis.volume.unsupported": "Não compatível",
+  "analysis.volume.free": "livres",
+  "analysis.scope.title": "Escopo da análise",
+  "analysis.scope.wholeVolume":
+    "O volume inteiro será lido em modo RAW. Escolher uma pasta é opcional e filtra os candidatos depois da análise.",
+  "analysis.scope.folderBody":
+    "O volume inteiro será lido em modo RAW; os resultados serão filtrados pela identidade comprovada da pasta.",
+  "analysis.scope.folderLabel": "Pasta selecionada",
+  "analysis.scope.chooseFolder": "Escolher pasta",
+  "analysis.scope.changeFolder": "Trocar pasta",
+  "analysis.scope.clearFolder": "Remover filtro de pasta",
+  "analysis.scope.folderCancelled":
+    "A seleção da pasta foi cancelada. O volume inteiro continua selecionado.",
+  "analysis.scope.folderChangeCancelled":
+    "A troca da pasta foi cancelada. O filtro anterior continua selecionado.",
+  "analysis.scope.unsupported":
+    "Este volume não oferece uma identidade de pasta segura; a análise continuará no volume inteiro.",
+  "analysis.scan.start": "Analisar volume selecionado",
+  "analysis.scan.pendingTitle": "Análise em andamento",
+  "analysis.scan.pendingBody":
+    "O mecanismo está lendo o volume e validando metadados reais. Esta versão não oferece cancelamento, percentual ou previsão; mantenha o aplicativo aberto até a conclusão.",
+  "analysis.scan.errorTitle": "Não foi possível concluir a análise",
+
+  "analysis.results.readOnly": "Origem validada · somente leitura",
+  "analysis.results.newScan": "Voltar aos volumes",
+  "analysis.results.scope": "Escopo",
+  "analysis.results.fileSystem": "Sistema de arquivos",
+  "analysis.results.total": "Total observado",
+  "analysis.results.matched": "Correspondências verificadas",
+  "analysis.results.unknown": "Ancestralidade desconhecida",
+  "analysis.results.partialTitle": "Cobertura parcial",
+  "analysis.results.partialBody":
+    "O scanner encontrou uma limitação segura ou metadados mutáveis/corrompidos. O resultado não é apresentado como exaustivo.",
+  "analysis.results.unknownTitle": "Ancestralidade desconhecida",
+  "analysis.results.unknownBody":
+    "Esses candidatos não foram incluídos como correspondências da pasta: a cadeia de diretórios não pôde ser provada como interna ou externa.",
+  "analysis.results.candidates": "candidatos",
+  "analysis.results.table": "Candidatos encontrados",
+  "analysis.results.caveat":
+    "Estado, confiança e pontuação estimam a qualidade dos metadados; não comprovam que o conteúdo esteja íntegro ou possa ser recuperado.",
+  "analysis.results.loaded": "carregados",
+  "analysis.results.path": "Caminho reconstruído",
+  "analysis.results.kind": "Tipo",
+  "analysis.results.size": "Tamanho",
+  "analysis.results.state": "Estado",
+  "analysis.results.confidence": "Confiança",
+  "analysis.results.score": "Pontuação",
+  "analysis.results.noCandidates":
+    "Nenhum candidato foi retornado para este escopo.",
+  "analysis.results.loadMore": "Carregar mais",
+  "analysis.results.loadingMore": "Carregando",
+  "analysis.results.warnings": "Avisos do scanner",
+  "analysis.results.noWarnings": "Nenhum aviso foi retornado pelo scanner.",
+
+  "scope.volume": "Volume inteiro",
+  "scope.folder": "Pasta verificada",
   "filesystem.ntfs": "NTFS",
   "filesystem.fat12": "FAT12",
   "filesystem.fat16": "FAT16",
   "filesystem.fat32": "FAT32",
   "filesystem.unrecognized": "Não reconhecido",
-  "scanStatus.complete": "Completa",
-  "scanStatus.partial": "Parcial",
-  "scanStatus.unrecognized": "Não reconhecida",
+  "bus.unknown": "Barramento desconhecido",
+  "bus.ata": "ATA",
+  "bus.sata": "SATA",
+  "bus.scsi": "SCSI",
+  "bus.usb": "USB",
+  "bus.nvme": "NVMe",
+  "bus.virtual": "Virtual",
+
+  "candidate.kind.file": "Arquivo",
+  "candidate.kind.directory": "Pasta",
+  "candidate.state.exactEvidence": "Evidência exata",
+  "candidate.state.likelyComplete": "Provavelmente completo",
+  "candidate.state.completeUnvalidated": "Completo, não validado",
+  "candidate.state.structurallyValid": "Estrutura válida",
+  "candidate.state.partial": "Parcial",
+  "candidate.state.conflicted": "Conflitante",
+  "candidate.state.readError": "Erro de leitura",
+  "candidate.state.zeroedOrTrimmed": "Zerado ou TRIM",
+  "candidate.state.overwritten": "Sobrescrito",
+  "candidate.state.metadataOnly": "Somente metadados",
+  "candidate.state.unknown": "Desconhecido",
+  "candidate.confidence.high": "Alta",
+  "candidate.confidence.medium": "Média",
+  "candidate.confidence.low": "Baixa",
+
   "settings.title": "Configurações",
   "settings.subtitle":
     "Estas preferências alteram o aplicativo imediatamente e ficam salvas apenas neste dispositivo.",
@@ -66,41 +132,52 @@ const ptBR = {
   "settings.theme.light": "Claro",
   "settings.motion": "Reduzir movimento",
   "settings.motion.help":
-    "Remove animações de transição e o movimento do indicador de atividade.",
+    "Remove animações de transição e o movimento dos indicadores de atividade.",
+
   "help.title": "Ajuda e limites",
   "help.subtitle":
-    "O que esta versão realmente faz — e o que ainda não está disponível.",
+    "Como a análise de volumes funciona e quais limites protegem seus dados.",
   "help.available.title": "Disponível agora",
   "help.available.body":
-    "Seleciona uma imagem local IMG, DD, RAW ou BIN, valida a origem no Rust e mostra o resumo real de partições, volumes, contagens de metadados candidatos e avisos.",
-  "help.safety.title": "Limite de segurança",
+    "Detecta volumes locais montados reais sem elevação, permite uma pasta opcional, analisa o volume em modo RAW e mostra candidatos reais em páginas limitadas.",
+  "help.safety.title": "Somente leitura, sempre",
   "help.safety.body":
-    "A origem é aberta somente para leitura. O caminho completo não é enviado à interface nem persistido. Discos reais nunca são usados pelos testes automatizados.",
+    "A interface consulta o inventário sem elevação. Ao iniciar a análise, o broker solicitado pelo UAC apenas revalida a identidade escolhida e faz leituras limitadas; ele não grava, bloqueia, desmonta, formata ou executa o conteúdo encontrado.",
   "help.unavailable.title": "Ainda não disponível",
   "help.unavailable.body":
-    "Esta versão não acessa discos físicos, não recupera ou restaura arquivos e não oferece visualização, sessões, carving, exFAT, pausa, cancelamento de uma análise em andamento ou percentual de progresso.",
-  "help.interpretation.title": "Como interpretar o resultado",
+    "Esta versão não restaura, abre ou pré-visualiza arquivos recuperados e não lida com volumes bloqueados, remotos ou layouts compostos cuja identidade não possa ser comprovada.",
+  "help.interpretation.title": "Pasta e ancestralidade",
   "help.interpretation.body":
-    "Uma contagem de metadados candidatos confirma apenas que o parser encontrou registros compatíveis. Integridade e recuperabilidade exigem recursos adicionais que esta versão não afirma possuir.",
-  "error.SOURCE_FORBIDDEN":
-    "A origem selecionada é proibida. Dispositivos, caminhos de rede e caminhos especiais não são aceitos.",
-  "error.SOURCE_UNSUPPORTED":
-    "O formato não é aceito. Selecione um arquivo IMG, DD, RAW ou BIN.",
-  "error.SOURCE_NOT_REGULAR":
-    "A origem precisa ser um arquivo local comum, sem links ou redirecionamentos.",
-  "error.SOURCE_EMPTY": "A imagem selecionada está vazia.",
-  "error.SOURCE_IO":
-    "Não foi possível abrir ou ler a imagem em modo somente leitura.",
-  "error.SCAN_CORRUPT":
-    "A estrutura da imagem está danificada ou não pôde ser analisada com segurança.",
-  "error.SCAN_REPORT_TOO_LARGE":
-    "O relatório excedeu o limite seguro de transporte e não foi exibido parcialmente.",
-  "error.SCAN_INTERNAL":
-    "O scanner encontrou uma falha interna. Nenhum resultado parcial foi exibido.",
-  "error.REPORT_INCOMPATIBLE":
-    "O aplicativo recebeu uma versão de relatório incompatível e não exibiu dados potencialmente incorretos.",
+    "A pasta é um filtro aplicado após a leitura RAW. Correspondências têm ancestralidade comprovada; candidatos desconhecidos ficam separados e nunca são apresentados como pertencentes à pasta.",
+
   "error.DESKTOP_RUNTIME_UNAVAILABLE":
     "O mecanismo desktop não está disponível neste ambiente.",
+  "error.INVENTORY_UNAVAILABLE":
+    "O Windows não retornou um inventário de armazenamento compatível.",
+  "error.SOURCE_UNSUPPORTED":
+    "O volume selecionado não é compatível com o scanner atual.",
+  "error.SOURCE_GONE":
+    "A unidade foi removida durante a operação. Conecte-a e atualize a lista.",
+  "error.SOURCE_IDENTITY_CHANGED":
+    "A identidade da unidade mudou. Atualize a lista antes de tentar novamente.",
+  "error.FOLDER_SCOPE_UNSUPPORTED":
+    "Esta pasta não pode ser vinculada com segurança ao volume selecionado.",
+  "error.FOLDER_SCOPE_MISMATCH":
+    "A pasta escolhida não pertence ao volume selecionado.",
+  "error.UAC_CANCELLED":
+    "A autorização do Windows foi cancelada. Nenhuma unidade foi aberta.",
+  "error.BROKER_UNAVAILABLE":
+    "O serviço de leitura segura não pôde ser iniciado.",
+  "error.BROKER_PROTOCOL":
+    "O componente de leitura segura é incompatível com esta versão do aplicativo.",
+  "error.SOURCE_IO":
+    "O volume não pôde ser lido em modo somente leitura.",
+  "error.SCAN_CORRUPT":
+    "A estrutura do volume está danificada ou não pôde ser analisada com segurança.",
+  "error.SCAN_INTERNAL":
+    "O scanner encontrou uma falha interna. Nenhum resultado inventado foi exibido.",
+  "error.REPORT_INCOMPATIBLE":
+    "O aplicativo recebeu uma resposta incompatível e não exibiu dados potencialmente incorretos.",
 } as const;
 
 type MessageKey = keyof typeof ptBR;
@@ -110,53 +187,118 @@ const enUS: Record<MessageKey, string> = {
   "nav.analysis": "Analysis",
   "nav.settings": "Settings",
   "nav.help": "Help",
-  "analysis.title": "Image analysis",
+
+  "analysis.title": "Connected storage",
   "analysis.subtitle":
-    "Inspect an ordinary local image with the real, read-only engine.",
+    "Choose a real local volume and search its read-only metadata for recoverable files.",
   "analysis.runtime.title": "Desktop application required",
   "analysis.runtime.body":
-    "Analysis is available only in the installed Tauri application. This browser view cannot access files and never presents substitute data.",
-  "analysis.idle.title": "Select a disk image",
-  "analysis.idle.body":
-    "Accepted formats: IMG, DD, RAW, and BIN. The path stays in the Rust process and the source is opened read-only.",
-  "analysis.select": "Select and analyze image",
-  "analysis.pending.title": "Analysis in progress",
-  "analysis.pending.body":
-    "The engine is reading the image. Progress is indeterminate because the scanner does not yet report phases or a percentage.",
-  "analysis.cancelled": "Selection was canceled. No image was opened.",
-  "analysis.error.title": "The image could not be analyzed",
-  "analysis.tryAgain": "Try again",
-  "analysis.report.new": "Analyze another image",
-  "analysis.report.readOnly": "Validated source · read-only",
-  "analysis.report.sourceSize": "Source size",
-  "analysis.report.partition": "Partition table",
-  "analysis.report.volumes": "Volumes",
-  "analysis.report.volumeTable": "Analyzed volumes table",
-  "analysis.report.candidates": "Candidate metadata",
-  "analysis.report.candidateCaveat":
-    "The count represents metadata identified by the scanner. It does not guarantee that files can be recovered.",
-  "analysis.report.partialCaveat":
-    "This count is partial: the scanner reached a safety bound or encountered unreadable metadata. Review the warnings; candidates beyond the scanned region are not included.",
-  "analysis.report.volume": "Volume",
-  "analysis.report.fileSystem": "File system",
-  "analysis.report.coverage": "Coverage",
-  "analysis.report.offset": "Byte offset",
-  "analysis.report.length": "Length in bytes",
-  "analysis.report.warnings": "Scanner warnings",
-  "analysis.report.noVolumes": "The scanner returned no recognized volumes.",
-  "analysis.report.noWarnings": "The scanner returned no warnings.",
-  "analysis.report.omitted": "Warnings omitted by the transport limit",
-  "partition.mbr": "MBR",
-  "partition.gpt": "GPT",
-  "partition.none": "Not recognized",
+    "Drive detection is available only in the installed Tauri application. The browser cannot access disks and never displays substitute inventory.",
+  "analysis.safety.title": "Unelevated inventory and protected reads",
+  "analysis.safety.body":
+    "The application queries drives without elevation. Only when a scan starts may Windows request UAC for the minimal broker, which revalidates the selected identity and only reads the source: it never writes, locks, dismounts, formats, or executes recovered files.",
+  "analysis.inventory.loadingTitle": "Detecting connected drives",
+  "analysis.inventory.loadingBody":
+    "Querying the real Windows inventory without requesting elevation.",
+  "analysis.inventory.title": "Detected mounted volumes",
+  "analysis.inventory.body":
+    "Drive letters and names are display labels only. Reads use opaque identifiers validated by the native process.",
+  "analysis.inventory.refresh": "Refresh drives",
+  "analysis.inventory.refreshing": "Refreshing drives",
+  "analysis.inventory.emptyTitle": "No compatible drives",
+  "analysis.inventory.emptyBody": "No compatible mounted local volume was found.",
+  "analysis.inventory.errorTitle": "Drives could not be detected",
+  "analysis.disk": "Storage group",
+  "analysis.disk.noVolumes": "No mounted volume was returned.",
+  "analysis.volume.choose": "Choose a volume to scan",
+  "analysis.volume.unnamed": "Unnamed volume",
+  "analysis.volume.system": "System",
+  "analysis.volume.unsupported": "Unsupported",
+  "analysis.volume.free": "free",
+  "analysis.scope.title": "Scan scope",
+  "analysis.scope.wholeVolume":
+    "The entire volume will be read as RAW. Choosing a folder is optional and filters candidates after the scan.",
+  "analysis.scope.folderBody":
+    "The entire volume will be read as RAW; results will be filtered by the folder's proven identity.",
+  "analysis.scope.folderLabel": "Selected folder",
+  "analysis.scope.chooseFolder": "Choose folder",
+  "analysis.scope.changeFolder": "Change folder",
+  "analysis.scope.clearFolder": "Remove folder filter",
+  "analysis.scope.folderCancelled":
+    "Folder selection was canceled. The whole volume remains selected.",
+  "analysis.scope.folderChangeCancelled":
+    "Folder change was canceled. The previous filter remains selected.",
+  "analysis.scope.unsupported":
+    "This volume does not expose a safe folder identity; scanning remains available for the whole volume.",
+  "analysis.scan.start": "Scan selected volume",
+  "analysis.scan.pendingTitle": "Scan in progress",
+  "analysis.scan.pendingBody":
+    "The engine is reading the volume and validating real metadata. This version has no cancellation, percentage, or ETA; keep the application open until it completes.",
+  "analysis.scan.errorTitle": "The scan could not be completed",
+
+  "analysis.results.readOnly": "Validated source · read-only",
+  "analysis.results.newScan": "Back to volumes",
+  "analysis.results.scope": "Scope",
+  "analysis.results.fileSystem": "File system",
+  "analysis.results.total": "Total observed",
+  "analysis.results.matched": "Verified matches",
+  "analysis.results.unknown": "Unknown ancestry",
+  "analysis.results.partialTitle": "Partial coverage",
+  "analysis.results.partialBody":
+    "The scanner reached a safe bound or encountered mutable/corrupt metadata. This result is not presented as exhaustive.",
+  "analysis.results.unknownTitle": "Unknown ancestry",
+  "analysis.results.unknownBody":
+    "These candidates were not included as folder matches because their directory chain could not be proven inside or outside the scope.",
+  "analysis.results.candidates": "candidates",
+  "analysis.results.table": "Discovered candidates",
+  "analysis.results.caveat":
+    "State, confidence, and score estimate metadata quality; they do not prove that file content is intact or recoverable.",
+  "analysis.results.loaded": "loaded",
+  "analysis.results.path": "Reconstructed path",
+  "analysis.results.kind": "Kind",
+  "analysis.results.size": "Size",
+  "analysis.results.state": "State",
+  "analysis.results.confidence": "Confidence",
+  "analysis.results.score": "Score",
+  "analysis.results.noCandidates":
+    "No candidate was returned for this scope.",
+  "analysis.results.loadMore": "Load more",
+  "analysis.results.loadingMore": "Loading",
+  "analysis.results.warnings": "Scanner warnings",
+  "analysis.results.noWarnings": "The scanner returned no warnings.",
+
+  "scope.volume": "Whole volume",
+  "scope.folder": "Verified folder",
   "filesystem.ntfs": "NTFS",
   "filesystem.fat12": "FAT12",
   "filesystem.fat16": "FAT16",
   "filesystem.fat32": "FAT32",
   "filesystem.unrecognized": "Unrecognized",
-  "scanStatus.complete": "Complete",
-  "scanStatus.partial": "Partial",
-  "scanStatus.unrecognized": "Unrecognized",
+  "bus.unknown": "Unknown bus",
+  "bus.ata": "ATA",
+  "bus.sata": "SATA",
+  "bus.scsi": "SCSI",
+  "bus.usb": "USB",
+  "bus.nvme": "NVMe",
+  "bus.virtual": "Virtual",
+
+  "candidate.kind.file": "File",
+  "candidate.kind.directory": "Folder",
+  "candidate.state.exactEvidence": "Exact evidence",
+  "candidate.state.likelyComplete": "Likely complete",
+  "candidate.state.completeUnvalidated": "Complete, unvalidated",
+  "candidate.state.structurallyValid": "Structurally valid",
+  "candidate.state.partial": "Partial",
+  "candidate.state.conflicted": "Conflicted",
+  "candidate.state.readError": "Read error",
+  "candidate.state.zeroedOrTrimmed": "Zeroed or trimmed",
+  "candidate.state.overwritten": "Overwritten",
+  "candidate.state.metadataOnly": "Metadata only",
+  "candidate.state.unknown": "Unknown",
+  "candidate.confidence.high": "High",
+  "candidate.confidence.medium": "Medium",
+  "candidate.confidence.low": "Low",
+
   "settings.title": "Settings",
   "settings.subtitle":
     "These preferences change the application immediately and are stored only on this device.",
@@ -171,40 +313,51 @@ const enUS: Record<MessageKey, string> = {
   "settings.theme.light": "Light",
   "settings.motion": "Reduce motion",
   "settings.motion.help":
-    "Removes transition animations and movement from the activity indicator.",
+    "Removes transition animations and movement from activity indicators.",
+
   "help.title": "Help and limitations",
   "help.subtitle":
-    "What this version actually does — and what is not available yet.",
+    "How volume scanning works and which boundaries protect your data.",
   "help.available.title": "Available now",
   "help.available.body":
-    "Selects a local IMG, DD, RAW, or BIN image, validates the source in Rust, and shows the real summary of partitions, volumes, candidate metadata counts, and warnings.",
-  "help.safety.title": "Safety boundary",
+    "Detects real mounted local volumes without elevation, accepts an optional folder, scans the volume as RAW, and shows real candidates in bounded pages.",
+  "help.safety.title": "Always read-only",
   "help.safety.body":
-    "The source is opened read-only. Its full path is not sent to the interface or persisted. Automated tests never use real disks.",
+    "The interface queries inventory without elevation. When a scan starts, the UAC broker only revalidates the selected identity and performs bounded reads; it does not write, lock, dismount, format, or execute discovered content.",
   "help.unavailable.title": "Not available yet",
   "help.unavailable.body":
-    "This version does not access physical disks, recover or restore files, and does not provide preview, sessions, carving, exFAT, pause, in-progress scan cancellation, or progress percentages.",
-  "help.interpretation.title": "Interpreting the result",
+    "This version does not restore, open, or preview recovered files, and does not handle locked, remote, or composite volumes whose identity cannot be proven.",
+  "help.interpretation.title": "Folder scope and ancestry",
   "help.interpretation.body":
-    "A candidate metadata count confirms only that the parser found compatible records. Integrity and recoverability require additional capabilities that this version does not claim.",
-  "error.SOURCE_FORBIDDEN":
-    "The selected source is forbidden. Devices, network paths, and special paths are not accepted.",
-  "error.SOURCE_UNSUPPORTED":
-    "That format is not accepted. Select an IMG, DD, RAW, or BIN file.",
-  "error.SOURCE_NOT_REGULAR":
-    "The source must be an ordinary local file without links or redirection.",
-  "error.SOURCE_EMPTY": "The selected image is empty.",
-  "error.SOURCE_IO": "The image could not be opened or read in read-only mode.",
-  "error.SCAN_CORRUPT":
-    "The image structure is damaged or could not be analyzed safely.",
-  "error.SCAN_REPORT_TOO_LARGE":
-    "The report exceeded the safe transport limit and was not shown partially.",
-  "error.SCAN_INTERNAL":
-    "The scanner encountered an internal failure. No partial result was shown.",
-  "error.REPORT_INCOMPATIBLE":
-    "The application received an incompatible report version and did not display potentially incorrect data.",
+    "A folder is a post-RAW-scan filter. Matches have proven ancestry; unknown candidates stay separate and are never presented as belonging to the folder.",
+
   "error.DESKTOP_RUNTIME_UNAVAILABLE":
     "The desktop engine is not available in this environment.",
+  "error.INVENTORY_UNAVAILABLE":
+    "Windows did not return a compatible storage inventory.",
+  "error.SOURCE_UNSUPPORTED":
+    "The selected volume is not supported by the current scanner.",
+  "error.SOURCE_GONE":
+    "The drive was removed during the operation. Reconnect it and refresh.",
+  "error.SOURCE_IDENTITY_CHANGED":
+    "The drive identity changed. Refresh before trying again.",
+  "error.FOLDER_SCOPE_UNSUPPORTED":
+    "This folder cannot be safely bound to the selected volume.",
+  "error.FOLDER_SCOPE_MISMATCH":
+    "The selected folder does not belong to the selected volume.",
+  "error.UAC_CANCELLED":
+    "Windows authorization was canceled. No drive was opened.",
+  "error.BROKER_UNAVAILABLE":
+    "The secure read service could not be started.",
+  "error.BROKER_PROTOCOL":
+    "The secure read component is incompatible with this application version.",
+  "error.SOURCE_IO": "The volume could not be read in read-only mode.",
+  "error.SCAN_CORRUPT":
+    "The volume structure is damaged or could not be analyzed safely.",
+  "error.SCAN_INTERNAL":
+    "The scanner encountered an internal failure. No invented result was shown.",
+  "error.REPORT_INCOMPATIBLE":
+    "The application received an incompatible response and did not display potentially incorrect data.",
 };
 
 const catalogs: Record<Locale, Record<MessageKey, string>> = {

@@ -13,6 +13,9 @@ pub struct DirEntry {
     /// Decoded name. For deleted entries without an LFN, the lost first
     /// character is replaced by `_` and `name_certain` is false.
     pub name: String,
+    /// True only when the complete name is independently verifiable. Deleted
+    /// LFN chains retain useful characters, but the lost first short-name byte
+    /// prevents validating their checksum.
     pub name_certain: bool,
     pub is_deleted: bool,
     pub is_directory: bool,
@@ -120,7 +123,7 @@ pub fn parse_directory(data: &[u8], base_offset: u64) -> Vec<DirEntry> {
         // Attach LFN if the checksum ties it to this entry. For deleted
         // entries the first short-name byte is lost, so the checksum can no
         // longer be verified exactly; accept an immediately preceding deleted
-        // LFN chain as best evidence.
+        // LFN chain as best evidence without claiming name certainty.
         let mut name = short_name;
         if !pending_lfn.is_empty() {
             let checksum_ok = if deleted {
@@ -138,7 +141,7 @@ pub fn parse_directory(data: &[u8], base_offset: u64) -> Vec<DirEntry> {
                 }
                 if !units.is_empty() {
                     name = String::from_utf16_lossy(&units);
-                    name_certain = true;
+                    name_certain = !deleted;
                 }
             }
         }
@@ -231,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn recovers_deleted_lfn_name() {
+    fn recovers_deleted_lfn_name_but_does_not_claim_certainty() {
         let short: [u8; 11] = *b"DOCUME~1DOC";
         let ck = lfn_checksum(&short);
         let units: Vec<u16> = "Documento Final.docx".encode_utf16().collect();
@@ -250,7 +253,10 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_deleted);
         assert_eq!(entries[0].name, "Documento Final.docx");
-        assert!(entries[0].name_certain);
+        assert!(
+            !entries[0].name_certain,
+            "the deleted short-name byte is unavailable, so the LFN checksum cannot be verified"
+        );
     }
 
     #[test]

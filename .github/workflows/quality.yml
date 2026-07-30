@@ -96,6 +96,20 @@ jobs:
       - name: Build
         working-directory: apps/desktop
         run: pnpm build
+      - name: Build the fixed elevated broker sibling
+        working-directory: apps/desktop
+        run: pnpm broker:release
       - name: Build the unelevated Tauri executable without an installer
         working-directory: apps/desktop
         run: pnpm tauri build --no-bundle
+      - name: Verify the desktop and broker release pair
+        shell: pwsh
+        run: |
+          $desktop = 'target\release\undelete-master-desktop.exe'
+          $broker = 'target\release\undelete-master-broker.exe'
+          if (-not (Test-Path -LiteralPath $desktop -PathType Leaf)) {
+            throw "Missing unelevated desktop executable: $desktop"
+          }
+          if (-not (Test-Path -LiteralPath $broker -PathType Leaf)) {
+            throw "Missing elevated broker sibling: $broker"
+          }

@@ -2,14 +2,14 @@
 
 Master specification topic: 4 — IPC protocol
 
-Status: Proposed
+Status: Accepted through [ADR-0023](0023-windows-read-only-broker-and-folder-scope.md)
 
 ## Context
 
 A future read-only broker needs a narrow protocol that cannot become a generic
 privileged file or device service.
 
-## Proposed decision
+## Decision
 
 Use a versioned, length-prefixed local protocol with an explicit message
 allowlist for source inventory, open-read-only, bounded read, close, and health
@@ -21,4 +21,4 @@ requests, oversized frames, invalid UTF-8, and out-of-range reads.
 
 The protocol carries stable source identifiers and offsets, never destination
 paths or recovered content. Fuzzing, replay/spoofing, frame-limit, disconnect,
-and compatibility tests are required. IPC and the broker remain unimplemented.
+and compatibility tests are required. Delivery status is tracked by SDD-018.

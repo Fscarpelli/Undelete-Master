@@ -20,7 +20,7 @@ const productionModules = import.meta.glob(
 ) as Record<string, string>;
 
 describe("production surface inventory", () => {
-  it("DESKTOP-UNSUPPORTED-ABSENT-001 contains no fabricated provider, timer result, or unsupported route", () => {
+  it("WIN-PRODUCTION-SURFACE-001 contains only the real connected-storage flow", () => {
     const paths = Object.keys(productionModules).join("\n");
     const source = Object.values(productionModules).join("\n");
     const prohibitedSourceTokens = [
@@ -39,6 +39,8 @@ describe("production surface inventory", () => {
       "Results" + "View",
       "LiveScan" + "View",
       "/mock" + ".ts",
+      "/report" + ".ts",
+      "/desktop" + ".ts",
     ];
 
     for (const token of prohibitedSourceTokens) {
@@ -47,8 +49,15 @@ describe("production surface inventory", () => {
     for (const token of prohibitedPathTokens) {
       expect(paths).not.toContain(token);
     }
-    expect(
-      source.match(/invoke<unknown>\("select_and_scan_image"/gu) ?? [],
-    ).toHaveLength(1);
+    for (const command of [
+      "list_storage_sources",
+      "select_scan_folder",
+      "scan_storage_volume",
+      "get_candidate_page",
+    ]) {
+      expect(
+        source.match(new RegExp(`invoke<unknown>\\("${command}"`, "gu")) ?? [],
+      ).toHaveLength(1);
+    }
   });
 });

@@ -12,14 +12,25 @@ use std::path::Path;
 
 pub use report::{ImageScanReport, SourceReport, VolumeReport, VolumeScanStatus};
 use thiserror::Error;
-use um_core::{Region, SourceReader};
+use um_core::{Candidate, Region, SourceReader};
 use um_fs_common::ScanError;
 use um_fs_fat::{scan_fat, FatVariant};
-use um_fs_ntfs::scan_ntfs;
+use um_fs_ntfs::{scan_ntfs, NtfsNamespace};
 use um_io_common::{validate_local_regular_file, FileImageReader, RegionReader, SourcePathError};
 use um_partition::{discover, PartitionTableKind};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["img", "dd", "raw", "bin"];
+
+/// Real scanner details retained by native desktop/session adapters.
+///
+/// Candidate metadata and NTFS namespace evidence remain in Rust; the image
+/// CLI continues to serialize only its existing aggregate report.
+#[derive(Debug)]
+pub struct VolumeScanDetails {
+    pub report: VolumeReport,
+    pub candidates: Vec<Candidate>,
+    pub ntfs_namespace: Option<NtfsNamespace>,
+}
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -116,6 +127,16 @@ pub fn scan_image_path(path: &Path) -> Result<ImageScanReport, CliError> {
     })
 }
 
+/// Scans one already-open, read-only logical volume.
+///
+/// This entry point never opens a path or device. The caller owns the
+/// `SourceReader` authority and must supply a reader whose length is exactly
+/// the selected volume boundary.
+pub fn scan_volume_reader(reader: &dyn SourceReader) -> Result<VolumeScanDetails, CliError> {
+    let region = Region::new(0, reader.len()).ok_or(CliError::EmptyImage)?;
+    scan_volume_details(0, region, reader)
+}
+
 fn validate_extension(path: &Path) -> Result<(), CliError> {
     let extension = path
         .extension()
@@ -192,28 +213,43 @@ fn scan_volume(
     region: Region,
     reader: &dyn SourceReader,
 ) -> Result<VolumeReport, CliError> {
+    scan_volume_details(index, region, reader).map(|details| details.report)
+}
+
+fn scan_volume_details(
+    index: u32,
+    region: Region,
+    reader: &dyn SourceReader,
+) -> Result<VolumeScanDetails, CliError> {
     match scan_ntfs(reader) {
-        Ok(output) => Ok(VolumeReport {
-            index,
-            offset_bytes: region.offset,
-            length_bytes: region.len,
-            file_system: "ntfs".to_string(),
-            scan_status: if output.is_complete {
-                VolumeScanStatus::Complete
-            } else {
-                VolumeScanStatus::Partial
-            },
-            candidate_count: output.candidates.len(),
-            warnings: output.warnings,
-        }),
+        Ok(output) => {
+            let report = VolumeReport {
+                index,
+                offset_bytes: region.offset,
+                length_bytes: region.len,
+                file_system: "ntfs".to_string(),
+                scan_status: if output.is_complete {
+                    VolumeScanStatus::Complete
+                } else {
+                    VolumeScanStatus::Partial
+                },
+                candidate_count: output.candidates.len(),
+                warnings: output.warnings,
+            };
+            Ok(VolumeScanDetails {
+                report,
+                candidates: output.candidates,
+                ntfs_namespace: Some(output.namespace),
+            })
+        }
         Err(ScanError::NotRecognized(_)) => match scan_fat(reader) {
-            Ok(output) => Ok({
+            Ok(output) => {
                 let file_system = match output.boot.variant {
                     FatVariant::Fat12 => "fat12",
                     FatVariant::Fat16 => "fat16",
                     FatVariant::Fat32 => "fat32",
                 };
-                VolumeReport {
+                let report = VolumeReport {
                     index,
                     offset_bytes: region.offset,
                     length_bytes: region.len,
@@ -225,9 +261,18 @@ fn scan_volume(
                     },
                     candidate_count: output.candidates.len(),
                     warnings: output.warnings,
-                }
+                };
+                Ok(VolumeScanDetails {
+                    report,
+                    candidates: output.candidates,
+                    ntfs_namespace: None,
+                })
+            }
+            Err(ScanError::NotRecognized(_)) => Ok(VolumeScanDetails {
+                report: unrecognized_volume(index, region),
+                candidates: Vec::new(),
+                ntfs_namespace: None,
             }),
-            Err(ScanError::NotRecognized(_)) => Ok(unrecognized_volume(index, region)),
             Err(source) => Err(CliError::VolumeScan {
                 index,
                 file_system: "FAT",
@@ -256,12 +301,16 @@ fn unrecognized_volume(index: u32, region: Region) -> VolumeReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_is_forbidden_source, scan_volume, CliError};
+    use super::{path_is_forbidden_source, scan_volume, scan_volume_reader, CliError};
     use std::path::Path;
     use um_core::{
         ReadError, ReadOutcome, Region, SectorLayout, SourceIdentity, SourceKind, SourceReader,
     };
+    use um_fixture_builder::ntfs::{
+        FileOptions as NtfsFileOptions, NodeParent as NtfsParent, NtfsImageBuilder,
+    };
     use um_fs_common::ScanError;
+    use um_io_common::MemImageReader;
 
     struct MarkerErrorReader {
         identity: SourceIdentity,
@@ -368,5 +417,35 @@ mod tests {
             }
         ));
         assert!(!error.to_string().contains("UNIQUE-SECRET-IO-MARKER"));
+    }
+
+    #[test]
+    fn cli_volume_reader_001_preserves_real_candidates_and_namespace() {
+        let mut builder = NtfsImageBuilder::new("cli-volume-reader");
+        builder.add_file(
+            NtfsParent::Root,
+            "deleted-volume-file.txt",
+            b"real candidate metadata".to_vec(),
+            true,
+            NtfsFileOptions::default(),
+        );
+        let (volume, manifest) = builder.build();
+        let reader = MemImageReader::new("cli-volume-reader", volume);
+
+        let details = scan_volume_reader(&reader).expect("scan mounted-volume reader");
+
+        assert_eq!(details.report.index, 0);
+        assert_eq!(details.report.offset_bytes, 0);
+        assert_eq!(details.report.length_bytes, reader.len());
+        assert_eq!(details.report.file_system, "ntfs");
+        assert_eq!(details.candidates.len(), manifest.expected_candidates.len());
+        assert_eq!(
+            details.candidates[0].name,
+            manifest.expected_candidates[0].name
+        );
+        assert!(
+            details.ntfs_namespace.is_some(),
+            "folder scoping needs identity evidence, not only a display path"
+        );
     }
 }

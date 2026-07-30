@@ -1,0 +1,20 @@
+[package]
+name = "um-elevated-broker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Minimal elevated read-only storage broker"
+
+[dependencies]
+um-broker-protocol = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+um-io-windows = { workspace = true }
+
+[[bin]]
+name = "undelete-master-broker"
+path = "src/main.rs"
+test = false
+bench = false

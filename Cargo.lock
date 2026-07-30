@@ -2944,6 +2944,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
 name = "swift-rs"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3716,6 +3722,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "um-broker-client"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "subtle",
+ "um-broker-protocol",
+ "um-core",
+ "um-io-windows",
+]
+
+[[package]]
+name = "um-broker-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "um-cli"
 version = "0.1.0"
 dependencies = [
@@ -3746,6 +3767,8 @@ name = "um-desktop"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "getrandom 0.3.4",
+ "hex",
  "serde",
  "serde_json",
  "sha2",
@@ -3753,10 +3776,21 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "um-broker-client",
  "um-cli",
  "um-core",
  "um-fixture-builder",
  "um-fs-common",
+ "um-fs-ntfs",
+ "um-io-windows",
+]
+
+[[package]]
+name = "um-elevated-broker"
+version = "0.1.0"
+dependencies = [
+ "um-broker-protocol",
+ "um-io-windows",
 ]
 
 [[package]]
@@ -3820,7 +3854,12 @@ dependencies = [
 name = "um-io-windows"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.19",
+ "um-core",
  "windows-sys 0.61.2",
 ]
 

@@ -122,6 +122,44 @@ fn reconstructs_paths_through_deleted_directories() {
 }
 
 #[test]
+fn ntfs_namespace_output_001_scopes_by_active_directory_identity() {
+    let mut builder = NtfsImageBuilder::new("ntfs-namespace-output");
+    let mounted = builder.add_dir(NodeParent::Root, "Mounted", false);
+    builder.add_file(
+        NodeParent::Node(mounted),
+        "deleted.txt",
+        b"namespace evidence".to_vec(),
+        true,
+        FileOptions::default(),
+    );
+
+    let (image, _) = builder.build();
+    let output =
+        um_fs_ntfs::scan_ntfs(&MemImageReader::new("ntfs-namespace-output", image)).unwrap();
+    assert!(output.namespace.is_complete);
+
+    let directory = match output
+        .namespace
+        .resolve_active_directory(&["Mounted".to_string()])
+    {
+        um_fs_ntfs::NtfsDirectoryResolution::Unique(directory) => directory,
+        other => panic!("expected one active Mounted directory, got {other:?}"),
+    };
+    let candidate = find(&output.candidates, "deleted.txt");
+    let candidate_node = um_fs_ntfs::NtfsNodeRef {
+        record: candidate.record_ref,
+        sequence: candidate.sequence.expect("NTFS candidate sequence"),
+    };
+
+    assert_eq!(
+        output
+            .namespace
+            .classify_candidate(candidate_node, directory),
+        um_fs_ntfs::NtfsScopeMembership::Match
+    );
+}
+
+#[test]
 fn partial_overwrite_is_reported_not_hidden() {
     let content = deterministic_bytes(99, 16_384); // 4 clusters
     let mut b = NtfsImageBuilder::new("ntfs-partial");

@@ -1,5 +1,13 @@
 # Foundation Hardening, Safe Image CLI, and Real-only Desktop Plan
 
+> **Historical plan:** Tasks below describe the completed SDD-017 image-only
+> increment. The desktop product surface has since been superseded by
+> [SDD-018](docs/specs/018-windows-volume-and-folder-scan.md): it inventories
+> connected local storage, selects a mounted volume and optional NTFS folder,
+> and performs bounded reads through the elevated read-only broker. The CLI
+> remains image-only. This history is retained as implementation evidence and
+> must not be read as the current desktop contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` or `superpowers:executing-plans` to
 > implement this plan task-by-task. Steps use checkbox syntax for tracking.

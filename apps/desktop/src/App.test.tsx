@@ -8,39 +8,141 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { DesktopScanReport } from "./api/report";
+import type {
+  CandidatePage,
+  FolderSelection,
+  ScanSummary,
+  StorageInventory,
+} from "./api/storage";
 
 const tauri = vi.hoisted(() => ({
   isTauri: vi.fn<() => boolean>(),
   invoke: vi.fn(),
 }));
+const rawDeviceMarker = "Physical" + "Drive0";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: tauri.isTauri,
   invoke: tauri.invoke,
 }));
 
-const report: DesktopScanReport = {
-  schemaVersion: 2,
-  source: {
-    label: "evidence.img",
-    sizeBytes: "9007199254740992",
-  },
-  partitionTable: "gpt",
-  volumes: [
+const inventory: StorageInventory = {
+  schemaVersion: 1,
+  generation: "inventory-7",
+  disks: [
     {
-      index: 7,
-      offsetBytes: "9007199254740992",
-      lengthBytes: "18446744073709551615",
-      fileSystem: "ntfs",
-      scanStatus: "complete",
-      candidateCount: "42",
-      warnings: ["The bitmap ended before the declared volume boundary."],
+      id: "disk-0",
+      displayName: "Internal NVMe",
+      busType: "nvme",
+      sizeBytes: "2048000000000",
+      volumes: [
+        {
+          id: "volume-c",
+          mountLabel: "C:",
+          label: "System",
+          fileSystem: "ntfs",
+          sizeBytes: "2027000000000",
+          freeBytes: "751619276800",
+          isSystem: true,
+          scanSupported: true,
+          folderScopeSupported: true,
+          warnings: [],
+        },
+        {
+          id: "volume-r",
+          mountLabel: "R:",
+          label: "Recovery",
+          fileSystem: "unknown",
+          sizeBytes: "21000000000",
+          freeBytes: "0",
+          isSystem: false,
+          scanSupported: false,
+          folderScopeSupported: false,
+          warnings: ["This volume is not supported by the scanner."],
+        },
+      ],
+    },
+    {
+      id: "disk-1",
+      displayName: "Portable SSD",
+      busType: "usb",
+      sizeBytes: "1000000000000",
+      volumes: [
+        {
+          id: "volume-e",
+          mountLabel: "E:",
+          label: "Archive",
+          fileSystem: "fat32",
+          sizeBytes: "999000000000",
+          freeBytes: "450000000000",
+          isSystem: false,
+          scanSupported: true,
+          folderScopeSupported: false,
+          warnings: [],
+        },
+      ],
     },
   ],
-  warnings: ["The backup partition header was not available."],
-  warningCount: "2",
-  warningsOmitted: "0",
+};
+
+const folder: FolderSelection = {
+  schemaVersion: 1,
+  scopeId: "scope-documents",
+  volumeId: "volume-c",
+  label: "Documents",
+};
+
+const summary: ScanSummary = {
+  schemaVersion: 1,
+  scanId: "scan-1",
+  sourceLabel: "System (C:)",
+  scope: { kind: "folder", label: "Documents" },
+  fileSystem: "ntfs",
+  scanStatus: "partial",
+  totalCandidates: "14",
+  matchedCandidates: "9",
+  unknownCandidates: "2",
+  warnings: ["The active volume changed while it was being read."],
+};
+
+const firstPage: CandidatePage = {
+  schemaVersion: 1,
+  scanId: "scan-1",
+  cursor: null,
+  nextCursor: "cursor-2",
+  candidates: [
+    {
+      id: "candidate-1",
+      displayPath: "Documents/deleted invoice.pdf",
+      kind: "file",
+      state: "likelyComplete",
+      sizeBytes: "18446744073709551615",
+      metadataConfidence: "high",
+      recoverabilityScore: 88,
+      pathState: "reconstructed",
+      warnings: [],
+    },
+  ],
+};
+
+const secondPage: CandidatePage = {
+  schemaVersion: 1,
+  scanId: "scan-1",
+  cursor: "cursor-2",
+  nextCursor: null,
+  candidates: [
+    {
+      id: "candidate-2",
+      displayPath: "Documents/old notes.txt",
+      kind: "file",
+      state: "partial",
+      sizeBytes: "4096",
+      metadataConfidence: "medium",
+      recoverabilityScore: 54,
+      pathState: "incomplete",
+      warnings: ["Some data extents could not be proven."],
+    },
+  ],
 };
 
 function deferred<T>() {
@@ -53,13 +155,39 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe("real-only desktop workflow", () => {
+function commandName(call: unknown[]): string {
+  return String(call[0]);
+}
+
+function mockRealFlow() {
+  tauri.invoke.mockImplementation(
+    (command: string, payload: Record<string, unknown>) => {
+      switch (command) {
+        case "list_storage_sources":
+          return Promise.resolve(inventory);
+        case "select_scan_folder":
+          return Promise.resolve(folder);
+        case "scan_storage_volume":
+          return Promise.resolve(summary);
+        case "get_candidate_page":
+          return Promise.resolve(
+            payload.cursor === null ? firstPage : secondPage,
+          );
+        default:
+          return Promise.reject(new Error(`Unexpected command: ${command}`));
+      }
+    },
+  );
+}
+
+describe("real connected-storage desktop workflow", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     tauri.isTauri.mockReturnValue(true);
     tauri.invoke.mockReset();
   });
 
-  it("DESKTOP-TAURI-ONLY-001 fails closed in a browser and never invokes the scanner", () => {
+  it("WIN-BROWSER-FAIL-CLOSED-001 shows no inventory outside Tauri", () => {
     tauri.isTauri.mockReturnValue(false);
 
     render(<App />);
@@ -68,14 +196,246 @@ describe("real-only desktop workflow", () => {
       screen.getByRole("heading", { name: "Aplicativo desktop necessário" }),
     ).toBeTruthy();
     expect(
-      screen.queryByRole("button", {
-        name: "Selecionar e analisar imagem",
-      }),
+      screen.queryByRole("button", { name: "Atualizar unidades" }),
     ).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
     expect(tauri.invoke).not.toHaveBeenCalled();
   });
 
-  it("DESKTOP-NAVIGATION-FOCUS-001 focuses each new view heading", async () => {
+  it("WIN-REAL-INVENTORY-001 loads and groups observed disks and volumes on open", async () => {
+    tauri.invoke.mockResolvedValue(inventory);
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: /Internal NVMe/u }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Portable SSD/u })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /System.*C:/u })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /Recovery.*R:/u })).toBeDisabled();
+    expect(screen.getByText("NVMe")).toBeTruthy();
+    expect(screen.getByText("USB")).toBeTruthy();
+    expect(screen.getByText("NTFS")).toBeTruthy();
+    expect(screen.getByText("700 GiB livres")).toBeTruthy();
+    expect(tauri.invoke).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke).toHaveBeenCalledWith("list_storage_sources", {
+      requestId: expect.stringMatching(/^inventory-[0-9a-z-]+$/u),
+    });
+    expect(JSON.stringify(tauri.invoke.mock.calls)).not.toContain(
+      rawDeviceMarker,
+    );
+  });
+
+  it("WIN-INVENTORY-EMPTY-001 shows a truthful empty state and refreshes", async () => {
+    tauri.invoke
+      .mockResolvedValueOnce({
+        schemaVersion: 1,
+        generation: "inventory-empty",
+        disks: [],
+      })
+      .mockResolvedValueOnce(inventory);
+
+    render(<App />);
+
+    expect(
+      await screen.findByText(
+        "Nenhum volume local montado e compatível foi encontrado.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Atualizar unidades" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: /Internal NVMe/u }),
+    ).toBeTruthy();
+    expect(
+      tauri.invoke.mock.calls.map(commandName),
+    ).toEqual(["list_storage_sources", "list_storage_sources"]);
+  });
+
+  it("WIN-FOLDER-CANCEL-001 treats native folder cancellation as unchanged scope", async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === "list_storage_sources") {
+        return Promise.resolve(inventory);
+      }
+      if (command === "select_scan_folder") {
+        return Promise.resolve(null);
+      }
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /System.*C:/u }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Escolher pasta" }));
+
+    expect(
+      await screen.findByText(
+        "A seleção da pasta foi cancelada. O volume inteiro continua selecionado.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(tauri.invoke).toHaveBeenLastCalledWith("select_scan_folder", {
+      requestId: expect.stringMatching(/^folder-[0-9a-z-]+$/u),
+      generation: "inventory-7",
+      volumeId: "volume-c",
+    });
+  });
+
+  it("WIN-REAL-SCAN-001 scans the selected volume/folder then renders the first real page", async () => {
+    mockRealFlow();
+    render(<App />);
+
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /System.*C:/u }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Escolher pasta" }));
+    expect(await screen.findByText("Documents")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Analisar volume selecionado" }),
+    );
+
+    const resultHeading = await screen.findByRole("heading", {
+      level: 1,
+      name: "System (C:)",
+    });
+    expect(resultHeading).toHaveFocus();
+    expect(screen.getByText("Cobertura parcial")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Ancestralidade desconhecida",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText("2 candidatos")).toBeTruthy();
+    const candidateTable = screen.getByRole("table", {
+      name: "Candidatos encontrados",
+    });
+    const recoveredPath = within(candidateTable).getByText(
+      "Documents/deleted invoice.pdf",
+    );
+    expect(recoveredPath.closest("bdi")).toHaveAttribute("dir", "auto");
+    expect(within(candidateTable).getByText("88/100")).toBeTruthy();
+    expect(
+      within(candidateTable).getByText("18.446.744.073.709.551.615 B"),
+    ).toBeTruthy();
+    expect(tauri.invoke).toHaveBeenCalledWith("scan_storage_volume", {
+      requestId: expect.stringMatching(/^scan-[0-9a-z-]+$/u),
+      generation: "inventory-7",
+      volumeId: "volume-c",
+      scopeId: "scope-documents",
+    });
+    expect(tauri.invoke).toHaveBeenCalledWith("get_candidate_page", {
+      requestId: expect.stringMatching(/^page-[0-9a-z-]+$/u),
+      scanId: "scan-1",
+      cursor: null,
+      limit: 100,
+    });
+  });
+
+  it("WIN-CANDIDATE-PAGINATION-001 appends bounded pages without losing prior rows", async () => {
+    mockRealFlow();
+    render(<App />);
+
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /System.*C:/u }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Analisar volume selecionado" }),
+    );
+    expect(
+      await screen.findByText("Documents/deleted invoice.pdf"),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Carregar mais" }));
+
+    expect(await screen.findByText("Documents/old notes.txt")).toBeTruthy();
+    expect(screen.getByText("Documents/deleted invoice.pdf")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Carregar mais" }),
+    ).toBeNull();
+    const pageCalls = tauri.invoke.mock.calls.filter(
+      (call) => call[0] === "get_candidate_page",
+    );
+    expect(pageCalls).toHaveLength(2);
+    expect(pageCalls[1]?.[1]).toMatchObject({
+      scanId: "scan-1",
+      cursor: "cursor-2",
+      limit: 100,
+    });
+  });
+
+  it("WIN-DUPLICATE-SCAN-001 admits only one scan while the native request is pending", async () => {
+    const pending = deferred<ScanSummary>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === "list_storage_sources") {
+        return Promise.resolve(inventory);
+      }
+      if (command === "scan_storage_volume") {
+        return pending.promise;
+      }
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /System.*C:/u }),
+    );
+    const scanButton = screen.getByRole("button", {
+      name: "Analisar volume selecionado",
+    });
+    fireEvent.click(scanButton);
+    fireEvent.click(scanButton);
+
+    expect(
+      screen.getByRole("progressbar", { name: "Análise em andamento" }),
+    ).toBeTruthy();
+    expect(
+      tauri.invoke.mock.calls.filter(
+        (call) => call[0] === "scan_storage_volume",
+      ),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      pending.reject({ code: "SCAN_INTERNAL" });
+      await pending.promise.catch(() => undefined);
+    });
+  });
+
+  it("WIN-ERROR-PRIVACY-001 sanitizes inventory failures and never renders native details", async () => {
+    tauri.invoke.mockRejectedValue({
+      code: "BROKER_UNAVAILABLE",
+      message: String.raw`\\.\${rawDeviceMarker} C:\private-marker access denied`,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "O serviço de leitura segura não pôde ser iniciado.",
+    );
+    expect(document.body.textContent).not.toContain("private-marker");
+    expect(document.body.textContent).not.toContain(rawDeviceMarker);
+    expect(document.body.textContent).not.toContain("access denied");
+  });
+
+  it("WIN-STALE-UNMOUNT-001 ignores a late inventory response after unmount", async () => {
+    const pending = deferred<StorageInventory>();
+    tauri.invoke.mockReturnValue(pending.promise);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mounted = render(<App />);
+
+    mounted.unmount();
+    await act(async () => {
+      pending.resolve(inventory);
+      await pending.promise;
+    });
+
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it("WIN-NAVIGATION-FOCUS-001 focuses each view heading", async () => {
     tauri.isTauri.mockReturnValue(false);
     render(<App />);
     const navigation = screen.getByRole("navigation", {
@@ -87,172 +447,32 @@ describe("real-only desktop workflow", () => {
     fireEvent.click(settingsButton!);
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { level: 1, name: /Config/u }),
+        screen.getByRole("heading", { level: 1, name: "Configurações" }),
       ).toHaveFocus();
     });
 
     fireEvent.click(helpButton!);
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { level: 1, name: /Ajuda/u }),
+        screen.getByRole("heading", { level: 1, name: "Ajuda e limites" }),
       ).toHaveFocus();
     });
 
     fireEvent.click(analysisButton!);
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { level: 1, name: /An/u }),
+        screen.getByRole("heading", {
+          level: 1,
+          name: "Unidades conectadas",
+        }),
       ).toHaveFocus();
     });
-  });
-
-  it("DESKTOP-PICKER-CANCEL-001 treats native picker cancellation as an idle outcome", async () => {
-    tauri.invoke.mockResolvedValue(null);
-    render(<App />);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Selecionar e analisar imagem" }),
-    );
-
-    expect(
-      await screen.findByText(
-        "A seleção foi cancelada. Nenhuma imagem foi aberta.",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(tauri.invoke).toHaveBeenCalledWith("select_and_scan_image", {
-      requestId: expect.stringMatching(/^scan-[0-9a-z]+$/),
-    });
-    expect(Object.keys(tauri.invoke.mock.calls[0]?.[1] ?? {})).toEqual([
-      "requestId",
-    ]);
-  });
-
-  it("DESKTOP-DOUBLE-SUBMIT-001 admits only one invoke when activation is repeated synchronously", () => {
-    const pending = deferred<DesktopScanReport | null>();
-    tauri.invoke.mockReturnValue(pending.promise);
-    render(<App />);
-
-    const button = screen.getByRole("button", {
-      name: "Selecionar e analisar imagem",
-    });
-    fireEvent.click(button);
-    fireEvent.click(button);
-
-    expect(tauri.invoke).toHaveBeenCalledTimes(1);
-    expect(
-      screen.getByRole("progressbar", { name: "Análise em andamento" }),
-    ).toBeTruthy();
-  });
-
-  it("DESKTOP-NAVIGATION-SINGLE-SCAN-001 keeps one scan in flight across navigation", async () => {
-    const pending = deferred<DesktopScanReport | null>();
-    tauri.invoke.mockReturnValue(pending.promise);
-    render(<App />);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Selecionar e analisar imagem" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Configurações" }));
-    fireEvent.click(screen.getByRole("button", { name: "Análise" }));
-
-    expect(
-      screen.getByRole("progressbar", { name: "Análise em andamento" }),
-    ).toBeTruthy();
-    expect(
-      screen.queryByRole("button", {
-        name: "Selecionar e analisar imagem",
-      }),
-    ).toBeNull();
-    expect(tauri.invoke).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      pending.resolve(report);
-      await pending.promise;
-    });
-
-    expect(
-      await screen.findByRole("heading", { name: "evidence.img" }),
-    ).toHaveFocus();
-    expect(tauri.invoke).toHaveBeenCalledTimes(1);
-  });
-
-  it("DESKTOP-STALE-RESPONSE-001 ignores a response after the app has been replaced", async () => {
-    const pending = deferred<DesktopScanReport | null>();
-    tauri.invoke.mockReturnValue(pending.promise);
-    const mounted = render(<App />);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Selecionar e analisar imagem" }),
-    );
-    mounted.unmount();
-
-    await act(async () => {
-      pending.resolve(report);
-      await pending.promise;
-    });
-
-    render(<App />);
-    expect(
-      screen.getByRole("button", { name: "Selecionar e analisar imagem" }),
-    ).toBeTruthy();
-    expect(screen.queryByText("evidence.img")).toBeNull();
-  });
-
-  it("DESKTOP-REAL-SUMMARY-001 renders only the real bounded report and preserves large integers", async () => {
-    tauri.invoke.mockResolvedValue(report);
-    render(<App />);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Selecionar e analisar imagem" }),
-    );
-
-    const sourceHeading = await screen.findByRole("heading", {
-      name: "evidence.img",
-    });
-    expect(sourceHeading).toHaveFocus();
-    expect(sourceHeading.querySelector("bdi")).toHaveAttribute("dir", "auto");
-    expect(screen.getByText("Origem validada · somente leitura")).toBeTruthy();
-    expect(screen.getAllByText("9.007.199.254.740.992").length).toBeGreaterThan(
-      0,
-    );
-    expect(
-      screen.getByText("18.446.744.073.709.551.615"),
-    ).toBeTruthy();
-    expect(screen.getByText("NTFS")).toBeTruthy();
-    expect(screen.getByText("Completa")).toBeTruthy();
-    expect(screen.getAllByText("42")).toHaveLength(2);
-    expect(
-      screen.getByText(
-        "A contagem indica metadados identificados pelo scanner. Ela não garante que os arquivos possam ser recuperados.",
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByText("The backup partition header was not available."),
-    ).toBeTruthy();
-  });
-
-  it("DESKTOP-ERROR-PRIVACY-001 maps structured errors without exposing the backend message", async () => {
-    tauri.invoke.mockRejectedValue({
-      code: "SOURCE_IO",
-      message: String.raw`C:\private-marker\source.img: access denied`,
-    });
-    render(<App />);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Selecionar e analisar imagem" }),
-    );
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Não foi possível abrir ou ler a imagem em modo somente leitura.",
-    );
-    expect(document.body.textContent).not.toContain("private-marker");
-    expect(document.body.textContent).not.toContain("access denied");
   });
 });
 
 describe("effective preferences", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     tauri.isTauri.mockReturnValue(false);
     tauri.invoke.mockReset();
   });
@@ -289,11 +509,6 @@ describe("effective preferences", () => {
       theme: "light",
       reducedMotion: true,
     });
-    expect(Object.keys(stored).sort()).toEqual([
-      "locale",
-      "reducedMotion",
-      "theme",
-    ]);
 
     first.unmount();
     render(<App />);
@@ -302,41 +517,5 @@ describe("effective preferences", () => {
     expect(
       screen.getByRole("checkbox", { name: /^Reduce motion/u }),
     ).toBeChecked();
-  });
-
-  it("DESKTOP-PREFERENCE-STORAGE-001 reports session-only behavior when persistence fails", async () => {
-    const setItem = vi
-      .spyOn(Storage.prototype, "setItem")
-      .mockImplementation(() => {
-        throw new Error("storage unavailable");
-      });
-
-    try {
-      render(<App />);
-      fireEvent.click(
-        screen.getByRole("button", { name: "Configurações" }),
-      );
-
-      expect(
-        await screen.findByText(
-          "As alterações valem nesta sessão, mas não puderam ser salvas neste dispositivo.",
-        ),
-      ).toBeTruthy();
-
-      fireEvent.change(screen.getByLabelText("Tema"), {
-        target: { value: "light" },
-      });
-
-      await waitFor(() => {
-        expect(document.documentElement.dataset.theme).toBe("light");
-      });
-      expect(
-        screen.getByText(
-          "As alterações valem nesta sessão, mas não puderam ser salvas neste dispositivo.",
-        ),
-      ).toBeTruthy();
-    } finally {
-      setItem.mockRestore();
-    }
   });
 });

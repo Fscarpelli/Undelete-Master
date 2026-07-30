@@ -328,8 +328,8 @@ CI uses only repository fixtures, memory images, and temporary regular files.
   `FAT-COMPLETENESS-002`, `FAT-COMPLETENESS-003`,
   `FAT-COMPLETENESS-004`, `FAT-TABLE-BOUND-001`,
   `FAT-DEPTH-BOUND-001`, `FAT-DIRECTORY-CHAIN-BOUND-001`,
-  `CLI-IMAGE-FAT-PARTIAL-001`, `DESKTOP-PARTIAL-SCAN-STATUS-001`,
-  `DESKTOP-FAT-PARTIAL-001`.
+  `CLI-IMAGE-FAT-PARTIAL-001`, `DESKTOP-CANDIDATE-001`,
+  `WIN-PARTIAL-UNKNOWN-001`.
 - **Implementation links:** `crates/fs-ntfs/src/scan.rs`,
   `crates/fs-fat/src/scan.rs`, `crates/cli/src/lib.rs`.
 - **Status:** Verified.

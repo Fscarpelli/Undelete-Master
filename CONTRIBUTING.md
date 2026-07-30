@@ -25,8 +25,11 @@ isolated allowlisted harness and ADR first. Ordinary PR CI is not that harness.
 4. Add an ADR for an architecture/security deviation instead of silently
    weakening the master spec.
 5. Use only the four status values defined by SDD-000.
-6. Do not claim unsupported formats, Tauri, restore, carving, broker, installer,
-   or release behavior.
+6. Do not claim unsupported formats, whole-physical-disk scanning, restore,
+   carving, installer, or release behavior.
+7. Treat broker protocol or allowlist changes as security-sensitive behavior:
+   add protocol regression tests, update SDD-018/ADR-0023, and keep the desktop
+   manifest unelevated.
 
 ## Required checks
 
@@ -39,16 +42,15 @@ cargo test --workspace
 From `apps/desktop`:
 
 ```powershell
-npm ci
+pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-Use `package-lock.json` as the only frontend dependency lockfile. pnpm invokes
-the required scripts after `npm ci`; do not generate or commit a second
-frontend lockfile.
+Use the committed `pnpm-lock.yaml` as the frontend dependency lockfile; do not
+generate or commit a second lockfile.
 
 PRs must also pass documentation validation in
 `.github/workflows/quality.yml`. Do not disable, skip, or convert a critical test

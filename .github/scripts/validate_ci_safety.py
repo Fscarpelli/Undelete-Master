@@ -31,6 +31,7 @@ SKIPPED_DIRECTORIES = {
 
 WEB_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".psm1", ".py", ".sh"}
+AUDITED_WINDOWS_BOUNDARY = Path("crates/io-windows/src/windows.rs")
 
 
 def joined(*parts: str) -> str:
@@ -158,6 +159,18 @@ RULE_HASH_ALLOWLIST = {
         "crates/cli/src/lib.rs",
         "windows-raw-device",
     ): "44d7ed6c177e9aec18e4d0da1f1a7aaa18b51831c717f77b4f82b361016c1e0a",
+    (
+        "apps/desktop/src/App.test.tsx",
+        "windows-raw-device",
+    ): "f5049cca425a14f53d20796ed62c2e3ad079793797ebc73d07454b555ca02098",
+    (
+        "crates/broker-protocol/tests/schema.rs",
+        "windows-raw-device",
+    ): "e2f83e02b3b95eca0ac2c7320503dc4db222277b0be3c77f5b3562c4e928c910",
+    (
+        "crates/broker-protocol/tests/schema.rs",
+        "unix-raw-device",
+    ): "e2f83e02b3b95eca0ac2c7320503dc4db222277b0be3c77f5b3562c4e928c910",
 }
 
 
@@ -205,6 +218,58 @@ def scan(
         if re.search(rule.pattern, text, re.IGNORECASE | re.MULTILINE):
             if hash_is_allowlisted(root, path, rule):
                 continue
+            errors.append(f"{relative_name(root, path)} [{rule.id}]: {rule.message}")
+
+
+def rust_function_span(text: str, function_name: str) -> tuple[int, int] | None:
+    match = re.search(rf"\bfn\s+{re.escape(function_name)}\b[^{{]*\{{", text)
+    if match is None:
+        return None
+    opening = text.find("{", match.start(), match.end())
+    depth = 0
+    for index in range(opening, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return match.start(), index + 1
+    return None
+
+
+def scan_audited_windows_boundary(
+    root: Path,
+    path: Path,
+    errors: list[str],
+) -> None:
+    """Permit RAW selectors and pipe duplex access only in the reviewed adapter."""
+
+    text = read_text_fail_closed(path, root, errors)
+    if text is None:
+        return
+
+    for rule in DESTRUCTIVE_COMMAND_RULES:
+        if re.search(rule.pattern, text, re.IGNORECASE | re.MULTILINE):
+            errors.append(f"{relative_name(root, path)} [{rule.id}]: {rule.message}")
+
+    write_token = joined("GENERIC_", "WRITE")
+    allowed_spans = [
+        (match.start(), match.end())
+        for match in re.finditer(r"\buse\b[^;]*;", text, re.DOTALL)
+    ]
+    pipe_span = rust_function_span(text, "connect_broker_pipe")
+    if pipe_span is not None:
+        allowed_spans.append(pipe_span)
+
+    reviewed = list(text)
+    for match in re.finditer(rf"\b{re.escape(write_token)}\b", text):
+        if any(start <= match.start() < end for start, end in allowed_spans):
+            for index in range(match.start(), match.end()):
+                reviewed[index] = " "
+
+    reviewed_text = "".join(reviewed)
+    for rule in WINDOWS_WRITE_RULES:
+        if re.search(rule.pattern, reviewed_text, re.IGNORECASE | re.MULTILINE):
             errors.append(f"{relative_name(root, path)} [{rule.id}]: {rule.message}")
 
 
@@ -789,6 +854,62 @@ def executable_surfaces(root: Path) -> list[tuple[Path, tuple[Rule, ...]]]:
     return sorted(surfaces.items(), key=lambda item: item[0].as_posix())
 
 
+def validate_native_release_pair(root: Path, errors: list[str]) -> None:
+    manifest_path = root / "apps" / "desktop" / "package.json"
+    if not manifest_path.is_file():
+        return
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        errors.append(
+            "apps/desktop/package.json: native release-pair contract could not "
+            f"be inspected: {error.__class__.__name__}"
+        )
+        return
+
+    scripts = manifest.get("scripts")
+    if not isinstance(scripts, dict):
+        errors.append("apps/desktop/package.json: missing scripts object")
+        return
+    if scripts.get("broker:release") != "cargo build --release -p um-elevated-broker":
+        errors.append(
+            "apps/desktop/package.json: broker:release must build the fixed "
+            "elevated broker package"
+        )
+    if scripts.get("desktop:build") != "pnpm broker:release && tauri build":
+        errors.append(
+            "apps/desktop/package.json: desktop:build must build the broker "
+            "before the Tauri executable"
+        )
+
+    workflow_path = root / ".github" / "workflows" / "quality.yml"
+    try:
+        workflow = workflow_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(
+            ".github/workflows/quality.yml: native release-pair gate is unavailable"
+        )
+        return
+
+    broker_build = workflow.find("run: pnpm broker:release")
+    desktop_build = workflow.find("run: pnpm tauri build --no-bundle")
+    if broker_build < 0 or desktop_build <= broker_build:
+        errors.append(
+            ".github/workflows/quality.yml: CI must build the broker before "
+            "the unelevated desktop"
+        )
+    for relative_binary in (
+        r"target\release\undelete-master-broker.exe",
+        r"target\release\undelete-master-desktop.exe",
+    ):
+        if relative_binary not in workflow:
+            errors.append(
+                ".github/workflows/quality.yml: CI must verify release sibling "
+                f"{relative_binary}"
+            )
+
+
 def validate_repository(root: Path) -> tuple[list[str], int, int]:
     errors: list[str] = []
     workflows = workflow_files(root)
@@ -823,7 +944,11 @@ def validate_repository(root: Path) -> tuple[list[str], int, int]:
     if not surfaces:
         errors.append("repository: no first-party executable surface found")
     for path, rules in surfaces:
-        scan(root, path, rules, errors)
+        if path.relative_to(root) == AUDITED_WINDOWS_BOUNDARY:
+            scan_audited_windows_boundary(root, path, errors)
+        else:
+            scan(root, path, rules, errors)
+    validate_native_release_pair(root, errors)
 
     return errors, len(workflows), len(surfaces)
 

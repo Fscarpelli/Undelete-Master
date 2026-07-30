@@ -1,0 +1,17 @@
+[package]
+name = "um-broker-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Unelevated, read-only client for the elevated storage broker"
+
+[dependencies]
+getrandom = { workspace = true }
+subtle = { workspace = true }
+um-broker-protocol = { workspace = true }
+um-core = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+um-io-windows = { workspace = true }

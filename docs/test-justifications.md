@@ -1,5 +1,18 @@
 # Formal Test Justifications
 
+## JUST-SDD-REAL-HISTORICAL
+
+- **Requirements:** SDD-REAL-001, SDD-REAL-002, SDD-REAL-003,
+  SDD-REAL-004, SDD-REAL-005, SDD-REAL-006, SDD-REAL-007,
+  SDD-REAL-008, SDD-REAL-009, SDD-REAL-010, SDD-REAL-011,
+  SDD-REAL-012.
+- **Formal rationale:** SDD-017 records a superseded image-desktop increment.
+  Its removed adapter tests cannot be treated as executable evidence for the
+  current mounted-volume desktop; retained evidence is historical only.
+- **Exit criterion:** SDD-018 current requirements and same-revision gates
+  replace every historical desktop test claim while ADR-0003 retains image-CLI
+  coverage.
+
 Status: Active
 
 These records satisfy master specification §23.4 only while the named
@@ -46,11 +59,11 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-003-BROKER-PENDING
 
 - **Requirements:** FR-003.
-- **Formal rationale:** read-only Rust traits and regular-image readers exist,
-  but the verified seal requires the future Windows broker and runtime
-  no-write evidence.
-- **Exit criterion:** pass broker handle/access audits and source-write
-  prohibition tests on the supported Windows matrix.
+- **Formal rationale:** the read-only broker and mounted-volume boundary are
+  implemented, but final same-revision access-mask/import audits, built-binary
+  evidence and supported-Windows runtime proof remain pending.
+- **Exit criterion:** pass the full broker/static gates, inspect both native
+  binaries and retain source-write prohibition evidence.
 
 ## JUST-FR-004-UNVERSIONED-UI
 
@@ -62,11 +75,12 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-010-013-WINDOWS-INVENTORY
 
 - **Requirements:** FR-010, FR-011, FR-012, FR-013.
-- **Formal rationale:** regular image identity exists, but real Windows source
-  enumeration, stable physical identity, hot-plug, and disconnect handling do
-  not.
-- **Exit criterion:** pass broker inventory, substitution, drive-letter change,
-  hot-plug, disconnect, and resume tests.
+- **Formal rationale:** mounted local inventory, disk display grouping and
+  opaque volume identity are implemented. The master requirement also asks for
+  added-image inventory, richer encryption/media metadata, hotplug pause and
+  identity-matched resume, which this increment does not implement.
+- **Exit criterion:** add the missing source classes/metadata and pass
+  drive-letter substitution, hotplug, disconnect, pause and resume acceptance.
 
 ## JUST-FR-020-024-SCAN-PREPARATION
 
@@ -199,9 +213,11 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-NFR-001-BROKER-PENDING
 
 - **Requirements:** NFR-001.
-- **Formal rationale:** image readers are read-only, but product-wide runtime
-  proof depends on the future broker.
-- **Exit criterion:** pass source-write prohibition and handle-rights audits.
+- **Formal rationale:** source traits, image readers and the mounted-volume
+  broker are read-only by design, but final same-revision handle-rights,
+  native-import and built-binary evidence remains pending.
+- **Exit criterion:** pass source-write prohibition and handle-rights audits
+  and retain the exact main/broker artifact hashes.
 
 ## JUST-NFR-003-EXTERNAL-EVIDENCE
 

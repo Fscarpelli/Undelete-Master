@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Unelevated real-only desktop image scanner for Undelete Master"
+description = "Unelevated desktop coordinator for read-only Windows volume recovery scans"
 
 [lib]
 name = "um_desktop"
@@ -21,14 +21,19 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-dialog = { version = "=2.7.2" }
+um-broker-client = { workspace = true }
 um-cli = { workspace = true }
+um-core = { workspace = true }
 um-fs-common = { workspace = true }
+um-fs-ntfs = { workspace = true }
+um-io-windows = { workspace = true }
 
 [dev-dependencies]
 crc32fast = { workspace = true }
-sha2 = { workspace = true }
 tempfile = { workspace = true }
-um-core = { workspace = true }
 um-fixture-builder = { workspace = true }

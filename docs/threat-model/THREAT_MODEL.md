@@ -1,93 +1,96 @@
 # Threat Model
 
-Status: current for the real-only image desktop; review required before device,
-restore or preview work
+Status: Current for SDD-018; final native/package/security evidence pending
 
 ## Scope
 
-This model covers the unelevated Tauri desktop, regular-image CLI, read-only
-file reader and bounded partition/filesystem parsers. The future elevated
-broker, sandbox worker, restore process, session import and installer remain
-outside the implemented boundary.
+This model covers the unelevated Tauri desktop, mounted-volume inventory,
+native NTFS folder authority, protocol-v2 broker client, short-lived elevated
+broker, read-only mounted-volume source, unelevated partition/filesystem
+parsers, candidate adaptation and React rendering.
+
+The image CLI remains a separate read-only path. Restore, preview, carving,
+exFAT, persistent sessions, whole-physical-disk scans and unmounted sources are
+absent.
 
 ## Data flow and trust boundaries
 
 ```mermaid
 flowchart LR
-    User["Authorized user"] --> WebView["React WebView"]
-    WebView -->|"requestId only"| Command["Tauri select_and_scan_image"]
-    Command --> Picker["Rust-owned native picker"]
-    Picker -->|"path remains in Rust"| Guard["io-common locality and ancestor guard"]
-    Guard --> WindowsFFI["io-windows GetDriveTypeW"]
-    Guard --> CLI["um_cli scan composition"]
-    Image["Untrusted regular image"] --> Reader["Read-only FileImageReader"]
-    CLI --> Reader
-    Reader --> Parsers["Bounded partition and filesystem parsers"]
-    Parsers --> Adapter["Bounded schema-2 sanitized DTO adapter"]
-    Adapter -->|"no path; decimal strings; scan status"| WebView
-
-    WebView -. "future typed IPC" .-> Broker["Future elevated read broker"]
-    Broker -. "bounded reads" .-> Device["Future physical source"]
-    WebView -. "future isolated input" .-> Worker["Future restricted preview worker"]
+    UI["React WebView"] -->|"requestId + opaque IDs"| Facade["Four Tauri commands (asInvoker)"]
+    Facade -->|"query only"| Inventory["Mounted local volume inventory"]
+    Facade -->|"native picker; path retained in Rust"| Folder["NTFS folder authority"]
+    Facade -->|"fixed sibling + CSPRNG values"| Pipe["Current-user local pipe"]
+    Pipe -->|"peer PID/liveness + fixed sibling image + protocol v2"| Broker["Elevated read-only broker"]
+    Broker -->|"GENERIC_READ / OPEN_EXISTING"| Volume["Selected mounted volume"]
+    Broker -->|"bounded bytes"| Scanner["Unelevated partition + NTFS/FAT scanner"]
+    Scanner -->|"namespace evidence"| Filter["Match / NoMatch / Unknown"]
+    Filter -->|"sanitized summary + 100-row pages"| UI
 ```
 
-Trust boundaries are untrusted image to reader/parser, native path to the
-Rust-only command and locality guard, parser-controlled text to DTO/WebView,
-and future unelevated-to-elevated or recovered-content boundaries.
+The logical group is outside source authority and has no physical disk number.
+Unelevated inventory uses no DASD/IOCTL mapping. Production never opens
+`PhysicalDriveN`.
+
+Primary trust boundaries are WebView/native IPC, unelevated/elevated pipe,
+display inventory/authoritative open, mutable volume/read session, native
+folder/NTFS namespace, untrusted metadata/DTO and DTO/React rendering.
 
 ## STRIDE register
 
-| Threat | Boundary/component | Impact | Implemented mitigation | Remaining test/evidence | State |
+| Threat | Boundary | Impact | Current mitigation | Residual / required evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Source tampering by application | Reader/command | Recoverable evidence is destroyed. | No write API; read-only regular-file open; no device command; source SHA-256 parity test. | Future broker runtime proof. | Mitigating |
-| WebView supplies a device/path | IPC | Host opens an unintended source. | Command accepts request ID only; picker lives in Rust; `um_cli` revalidates the path. | Broader Windows namespace corpus. | Mitigating |
-| Remote or redirected source is treated as local | Rust path boundary | Network-controlled bytes or a junction target are scanned. | `io-windows` classifies drive-letter roots with read-only `GetDriveTypeW`; remote/error results fail closed; `io-common` rejects every symlink/reparse ancestor and validates the final read-only handle. | External Windows namespace corpus and deterministic concurrent mutation tests. | Mitigating |
-| Source replacement between picker, locality checks, ancestor checks and open | Picker to reader | Different bytes are analyzed or a local path is redirected. | One Rust command minimizes the interval; final open does not follow a final reparse point and validates handle metadata. | Retained ancestor/source handles and stable file/volume identity; the current pathname sequence is not race-free. | Open |
-| Path/error disclosure | Rust DTO/WebView | Sensitive local path leaks. | Basename-only report; stable error codes; raw error ignored; unique-marker tests. | Packaged log inspection. | Mitigating |
-| Bidirectional text spoofing | Parser/source label to WebView | A filename or warning appears visually reordered. | Rust removes Unicode bidi formatting controls before IPC; React renders text nodes, and the source heading uses `<bdi dir="auto">`. | Frozen-code regressions passed; native visual review remains pending, Unicode confusables remain possible, and labels are display-only. | Mitigating |
-| Numeric truncation | Rust/JavaScript IPC | Wrong offset/count is presented. | Decimal strings, strict regex and `BigInt`. | Cross-platform boundary corpus. | Mitigating |
-| Parser denial of service | Untrusted image | Panic, hang or excessive allocation. | Checked arithmetic, bounded reads/work, 64 MiB NTFS `$Bitmap` cap, MFT work limits, FAT table rejection above 64 MiB before allocation, and FAT directory count/byte/depth/chain limits applied before directory reads, plus report limits and `spawn_blocking`. | Frozen-code full suites pass; fuzz and performance campaigns plus cooperative cancellation remain open. | Partial |
-| Incomplete metadata coverage is presented as exhaustive | NTFS/FAT parser, report and UI | A bounded candidate count is mistaken for the total and recovery decisions become misleading. | NTFS marks work/prefix/skipped-record/signature/malformed-candidate-attribute/merge boundaries partial and keeps every `$ATTRIBUTE_LIST` partial until complete reference and candidate-defining-attribute resolution is proven; FAT marks every declared secondary-copy disagreement/read failure plus directory chain/cycle/start/read/count/byte/depth boundaries partial; schema 2 preserves partial for either recognized filesystem and the UI displays a coverage caveat. | Frozen-code gates pass; external NTFS/FAT corpora and native UI acceptance remain pending. | Mitigating |
-| Recognized parser corruption is masked by fallback | Partition/filesystem composition | Corrupt GPT/NTFS/FAT data appears unrecognized, complete, or as a protective-MBR volume. | GPT accepts header plus table atomically, always evaluates both canonical locations, reads backup only at final LBA, rejects conflicting valid headers, validates reciprocal/consistent metadata and reserved entry areas, permits an independently valid backup after primary read/header/table failure, and never surfaces `0xEE` when both copies fail. NTFS requires an aligned logical MFT spanning all 16 reserved record slots and well-formed record-0 attributes. FAT rejects a declared table above 64 MiB before allocation. Filesystem and whole-image fallback occur only on `NotRecognized`; typed `Read`/`Corrupt` errors map to stable codes. | Frozen-code full suite passed; hostile external-corpus evidence remains pending. | Mitigating |
-| Fabricated evidence | UI/runtime | User mistakes generated state for scan output. | One invoke; browser fails closed; no production provider/timer; CI real-only guard. | Same-revision packaged smoke and remote CI. | Mitigating |
-| WebView command abuse | Capability/commands | Shell, filesystem, network or privileged host action. | One app command, empty capability permissions, no privileged plugins, local production CSP; development `devCsp` and the dev-only served-HTML transform add only the fixed `ws://localhost:1420` live-reload origin, while production output stays WebSocket-free. | Final packaged capability/CSP inventory and native acceptance. | Mitigating |
-| Recovered-content execution | Future preview | Malware executes. | Preview and individual content are absent. | Restricted worker design/tests. | Not started |
-| Path traversal/reparse race | Future restore | Write escapes destination. | Restore is absent. | Handle-based containment and race tests. | Not started |
-| Supply-chain substitution | Build/release | Compromised dependency/artifact. | Cargo/pnpm lockfiles, pinned Tauri versions, audit and CI hashes. | SBOM, signing and provenance. | Open |
-| Endpoint-security alert is dismissed without resolution | Build/release | A compromised or low-reputation artifact is distributed. | Norton deletion is classified as unresolved; the development build is unsigned and redistribution is blocked. | Vendor classification, signed clean-machine artifact, Authenticode and reproducible provenance. | Open |
-| CI device access | Pull request | Test damages a disk. | Managed runners, deny environment and static storage guard. | Independent runtime isolation proof. | Mitigating |
+| Spoofed broker peer | Native client to pipe | Privileged read oracle or redirected session | Fixed sibling, restrictive one-instance pipe, bidirectional PID/liveness, broker-side `QueryFullProcessImageNameW` equality with the canonical fixed desktop sibling, v2 sequences and exact nonce echo | Image-path equality reduces confused-deputy exposure but is not publisher/package authentication; Authenticode, protected-directory and same-revision native evidence remain pending | Open |
+| Broker binary replacement | Package to process launch | Attacker receives elevated execution | The launcher derives the fixed broker sibling internally; the genuine broker checks the desktop sibling image before service; no UI executable path | A replaced broker can ignore its own peer check, and a user-replaceable sibling directory defeats path-only identity; Authenticode, hash binding, protected installation and clean-machine evidence pending | Open |
+| Protocol replay/confusion | Pipe framing | Wrong command/result applied | Fixed 20-byte header, exact v2, independent contiguous sequences, closed ten-message schema | Final full suite and fuzz campaign pending | Mitigating |
+| Privilege expansion | Protocol/native boundary | Write, arbitrary path or generic control under elevation | No mutation/path/access-mask/control field; three query-only IOCTLs; scan source uses `GENERIC_READ` | Static import/access-mask review and built-binary evidence pending | Open |
+| Stale volume substitution | Inventory to open/read | Wrong source scanned | Stable GUID+serial ID; UAC; independent broker canonical length/extents/mapping checks on the currently mounted source | An exact GUID+serial clone is indistinguishable at first open; post-open extents/length/geometry become that source's baseline; live volume remains mutable and no snapshot is claimed | Open |
+| Identity change between reads | Mutable volume | Mixed or misleading result | Re-enumerate after both 256 valid reads and one second; every accepted read still reaches `ReadFile` | Not a snapshot; change between cadence points remains possible | Open |
+| Out-of-range/oversized read | Protocol to source | Escape, allocation or denial of service | Checked `offset + length`, source-length bound, 1 MiB cap, client chunking, one source | Hostile live-device campaign pending | Mitigating |
+| Source mutation by application | Broker to volume | Destroyed recoverable evidence | Read-only trait, `GENERIC_READ`, no mutation opcode or storage-changing IOCTL | Final static/native binary evidence pending | Open |
+| False folder containment | Folder picker to namespace | Wrong candidates attributed to folder | Native NTFS identity: volume serial + record/sequence; exact active-directory resolution; trivalent ancestry | External NTFS corpus and native selection evidence pending | Mitigating |
+| Path disclosure | Native to WebView/log | Private path/device information exposed | Commands use opaque IDs; absolute folder/device/pipe paths and raw OS errors remain native | Final artifact/log marker scan pending | Mitigating |
+| Recovered-text spoofing | Parser to UI | Visually misleading path/warning | Bounded text, control/bidi formatting removal, React text nodes and directional isolation | Unicode confusables and native visual review remain | Mitigating |
+| Parser memory/CPU denial | Volume bytes to parser | Hang, panic or excessive allocation | Unelevated `spawn_blocking`, checked arithmetic, region/work/allocation limits, bounded DTO; NTFS per-name path saturation is checked before another recursive sibling descent | `NTFS-NAMESPACE-WORK-BOUND-001` reduces the synthetic case from 8,191 calls to at most 600, but no cooperative cancellation and fuzz/performance corpora remain pending | Partial |
+| False completeness | Parser/filter to UI | User treats partial count as exhaustive | NTFS/FAT status/warnings retained; unknown ancestry separate; score not a guarantee | Native presentation and external corpus pending | Mitigating |
+| Fabricated production state | Browser/UI data path | User trusts nonexistent scan | Browser fails closed; exact four commands; no production sample/fallback/timer result | Final bundle/static inspection pending | Mitigating |
+| Recovered-content execution | Candidate UI | Malware executes | No preview, open, execute, restore or Explorer action | Future feature requires a new threat model | Not started |
+| Destructive test | CI/local tests | Real media damaged | Synthetic images/readers only; static CI/device guard | Static analysis is defense in depth; final validator run pending | Mitigating |
+| Unsigned artifact quarantine | Release | User disables protection or trusts altered binary | Event remains unresolved; no false-positive claim; release requires signing and exact hashes | Norton disposition, Authenticode and clean-machine evidence pending | Open |
 
-## Independent security-review snapshot
+## Protocol security facts
 
-Codex Security scan
-`ebdb9b62-f405-4e5b-837a-f58937dec74b` was sealed at
-`2026-07-29T21:26:36.951973Z` for working-tree snapshot
-`codex-security-snapshot/v1:sha256:b48534c24ce25c4d2799081366d5d970402bbcc226fd6f460be806c89f34a0b3`
-with base/head
-`3b08141ae521fd0992bac06ef2f79eb0c576cff6`. It contains `34/34` unique
-review receipts. Three candidates were technically validated—ancestor/path
-TOCTOU, picker-to-open TOCTOU, and bidi display formatting—and each received a
-final policy decision of `ignore`, leaving zero reportable findings.
+- `HelloAck` echoes the exact 32-byte CSPRNG client nonce.
+- The client comparison is constant-time.
+- The echo binds the response to this connection but provides no shared-secret
+  authentication.
+- Native peer identity combines PID/liveness with
+  `QueryFullProcessImageNameW` on the already-bound handle and exact canonical
+  equality to the fixed desktop sibling.
+- Peer image-path equality is not Authenticode, publisher, package-revision or
+  protected-directory authentication.
+- Protocol v2 permits exactly `Hello`, `HelloAck`, `OpenSource`, `Opened`,
+  `ReadAt`, `ReadData`, `CloseSource`, `Closed`, `Shutdown` and `Error`.
+- Maximum payload/read is 1 MiB.
+- One session opens at most one source.
 
-That outcome is a reportability result for the sealed snapshot, not proof that
-the repository has no vulnerabilities. The technically valid TOCTOU candidates
-remain in this threat model. The later bidi mitigation's frozen-code tests pass,
-while native visual acceptance remains pending. The local report is
-non-portable and may be removed by
-temporary-file cleanup:
-`C:\Users\fscar\AppData\Local\Temp\codex-security-scans-nnlDPh\Undelete-Master\3b08141ae521fd0992bac06ef2f79eb0c576cff6_20260729T205644Z_4tn30ko4\report.md`.
-Its measured SHA-256 is
-`F4DA89BCED64BDF8CB1295182351DE77CF4E3D76B56191782138D7BCA50381FC`.
-See the retained
-[desktop evidence record](../evidence/real-only-desktop-2026-07-29.md).
+## Privacy facts
 
-## Residual risk
+No account, cloud, analytics or telemetry is required. Only locale, theme and
+reduced-motion preferences persist. Native folder/source authorities and scan
+results live in bounded memory. Candidate bytes never enter JavaScript.
 
-Synthetic fixtures and static inspection cannot prove compatibility with all
-real media or hostile filesystems. The current executable is an image analyzer,
-not a production recovery release. A `partial` recognized NTFS or FAT result is
-intentionally non-exhaustive even when all observed candidates are valid.
-Pathname validation is not a chain-of-custody guarantee. Device, restore,
-preview, final
-same-revision gates, native accessibility, signing, endpoint-classification
-resolution, and external-corpus evidence remain release blockers.
+## Residual risk and acceptance boundary
+
+The current implementation is not a forensic snapshot, signed release or proof
+of broad real-media compatibility. An exact volume clone that preserves GUID
+plus serial cannot be distinguished at first broker open, and namespace-budget
+saturation remains explicitly partial/unknown rather than complete evidence.
+No real volume was scanned for this evidence. Final local gates, static guards,
+native binaries/manifests/hashes, actual Tauri accessibility, remote CI,
+external corpora, Authenticode, administrator-protected installation,
+clean-machine and endpoint-security disposition remain pending.
+
+Norton’s deletion of an unsigned development build is inconclusive. Temporary
+local protection state is not a mitigation and must not be generalized into a
+release instruction.

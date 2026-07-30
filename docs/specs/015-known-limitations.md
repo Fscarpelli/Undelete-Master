@@ -4,100 +4,122 @@ Status: Current as of 2026-07-29
 
 ## Product status
 
-This repository is not a production data-recovery release. The real desktop
-analyzes ordinary image files but does not restore data. Do not use it as the
-only means of recovering important information.
+This repository is not a production data-recovery release. The desktop now has
+an implemented real mounted-volume workflow, but its final native, package,
+remote, signing and endpoint-security gates remain pending. No real-volume scan
+has been executed as acceptance evidence.
 
-## Current limitations
+The CLI continues to analyze approved regular image files. Neither desktop nor
+CLI restores data.
 
-- No physical-disk/volume enumeration, UAC broker, hot-plug identity, BitLocker
-  workflow or raw-device access.
-- The desktop returns only a real aggregate image report. Individual candidate
-  rows remain absent until the Rust scanner exposes a bounded versioned record
-  contract.
-- No restore engine, destination containment, transactional write, manifest or
-  Explorer launch.
-- No persisted SQLite sessions, checkpoint resume, import or export.
-- No carving, validators, sandboxed preview worker or repair derivatives.
-- No production exFAT support; the incomplete local exFAT work is excluded from
-  the workspace and publication claims.
+## Source limitations
+
+- The desktop lists mounted local volumes only.
+- Logical cards group mounted volumes without a physical disk number; they are
+  not a physical-disk map or whole-disk scan controls.
+- `PhysicalDriveN`, unmounted partitions and whole-physical-disk scans are not
+  supported.
+- Remote/mapped, CD-ROM, RAM-disk and unknown roots fail closed unelevated.
+  Missing and multi-disk/composite mappings are detected and rejected only by
+  the elevated broker after explicit scan activation.
+- There is no Storage Spaces/dynamic-volume proof, locked-BitLocker key flow,
+  VHD/VHDX attach flow or ReFS support.
+- A mounted volume stays online and mutable during scanning. The app does not
+  lock, dismount, snapshot or freeze it, so results are not a forensic snapshot
+  or chain-of-custody record.
+- Identity is re-enumerated after both 256 valid reads and one elapsed second,
+  not before every physical read. Each accepted read still performs actual
+  source I/O and fails closed on I/O failure.
+- Pre-UAC volume identity is GUID plus serial. A replacement that preserves
+  both values exactly is indistinguishable at first broker open. UAC and
+  independent broker enumeration still occur, but extents, canonical length
+  and sector geometry are derived from the source currently mounted and become
+  its later revalidation baseline. This is not a snapshot guarantee.
+
+## Folder-scope limitations
+
+- Folder scope is NTFS-only. FAT can be scanned only as a whole mounted volume.
+- The folder picker path stays native, but selected NTFS authority depends on
+  Windows volume serial and file-reference semantics.
+- Only candidates whose ancestry is proven `Match` are shown.
+- Missing, corrupt, reused, cyclic or ambiguous ancestry is counted as
+  `Unknown` and omitted from rows. It is never silently treated as `NoMatch`.
+- Display paths are not containment authority and may be reconstructed,
+  incomplete, orphaned or ambiguous.
+- A folder-scoped scan still reads the containing volume's metadata; it is not
+  an ordinary visible-file directory walk.
+
+## Filesystem and recovery limitations
+
 - NTFS and FAT support covers deterministic fixtures and selected hostile
   structures, not a complete compatibility matrix.
-- Schema-version-2 reports expose `complete`, `partial`, or `unrecognized` for
-  every volume. Recognized NTFS and FAT scans may be `partial`. Any partial
-  candidate count is the number observed within bounded coverage, not an
-  exhaustive total; the desktop shows a coverage caveat.
-- NTFS MFT enumeration is intentionally incomplete after its configured
-  byte/record cap, a shortened trusted physical prefix, skipped
-  unreadable/torn/corrupt records, a nonblank record without a `FILE`
-  signature, malformed attributes in an ordinary/extension record, or
-  extension-record merge failures. Any `$ATTRIBUTE_LIST`, even a well-formed
-  resident value, remains partial because complete resolution of every
-  reference and candidate-defining attribute is not yet proven. A
-  record-unaligned `$MFT` logical size, one spanning fewer than the 16 reserved
-  record slots, or malformed record-0 attributes rejects the NTFS scan as
-  corrupt instead of returning a partial result.
-- The NTFS allocation `$Bitmap` read and backing allocation stop at 64 MiB.
-  Allocation bits beyond that retained prefix are unknown, which can reduce
-  allocation certainty for later clusters.
-- FAT permits up to four total declared copies. Enumeration is partial when any
-  declared secondary copy disagrees with the authoritative first copy or is
-  unreadable; a reachable directory has a broken/cyclic/unusable chain or no
-  usable start cluster; a descended directory read fails; or traversal reaches
-  10,000 directories, 256 levels, or 8 MiB for one directory stream. The
-  8 MiB-derived cluster-count limit bounds the chain vector before directory
-  cluster reads. A declared FAT table above 64 MiB is rejected as corrupt
-  before allocation rather than returned as partial.
-- GPT recovery evaluates both canonical copies and intentionally rejects
-  relocated backup headers, conflicting valid headers, nonreciprocal or
-  inconsistent primary/backup metadata, and entry arrays outside reserved GPT
-  metadata space. This strictness can reject damaged/noncanonical media rather
-  than infer a partition map; RAW/carving fallback remains absent.
-- No NTFS LZNT1 decompression, full attribute-list/ADS/EFS workflow or broad
-  journal/recycle-bin enrichment.
-- Scans have a truthful indeterminate pending state, but no phase percentage,
-  ETA, pause, resume or cooperative cancellation.
-- Mapped remote drives and symlink/reparse ancestors are rejected, and the
-  final Windows open validates the opened handle without following a final
-  reparse point. However, picker selection, `GetDriveTypeW` classification,
-  ancestor checks, and open are separate pathname operations. The current
-  single command minimizes the interval but is not race-free and does not
-  provide forensic chain-of-custody identity.
-- Unicode bidi formatting controls are removed before IPC and the source label
-  is directionally isolated in the UI. Other visually confusable Unicode
-  characters remain possible; displayed labels are not authoritative identity.
-- No fuzz campaign, external forensic corpus, million-row, performance or
-  native assistive-technology completion evidence.
-- Focused GPT, NTFS, FAT, CLI, desktop status/error, focus and CSP regressions
-  do not replace the required full Rust/frontend gates or native acceptance.
-- Development permits only `ws://localhost:1420` for Vite live reload. It is
-  injected into served development HTML by a dev-only transform so it agrees
-  with Tauri `devCsp`, and is absent from production configuration and built
-  HTML. This is a development exception, not a production network capability.
-- No installer, portable package, SBOM, signing, clean-machine, upgrade or
-  uninstall evidence.
-- Frozen-code Rust/frontend gates pass. Packaged native scan, production
-  artifact inspection, native visual acceptance, external corpora/real-media
-  compatibility, and remote CI are still pending.
-- The current executable is an unsigned development artifact. Norton deleted
-  one local build on 2026-07-29; that classification is unresolved and the
-  artifact is not approved for redistribution. Do not disable security
-  software permanently or treat the alert as a confirmed false positive.
+- No production exFAT support; incomplete local exFAT work is outside release
+  claims.
+- No carving, repair derivative, journal/recycle-bin enrichment, NTFS LZNT1,
+  full attribute-list/ADS/EFS workflow or damaged-volume reconstruction.
+- Recognized NTFS/FAT scans may be `partial`. Candidate counts then reflect only
+  bounded observed coverage, not an exhaustive total.
+- NTFS MFT and allocation-bitmap work is bounded. Missing/torn records,
+  malformed ordinary attributes, unresolved `$ATTRIBUTE_LIST`, prefix limits
+  and extension merge failures can force partial status. Recursive namespace
+  expansion checks the 256-path per-name cap before descending into another
+  saturated sibling; saturation marks namespace/ancestry evidence incomplete,
+  keeps unproven membership `Unknown` and may force partial status rather than
+  overclaiming complete coverage.
+- FAT copy disagreement/read failure, directory-chain damage/cycles and
+  traversal limits can force partial status. A declared FAT table above 64 MiB
+  is rejected before allocation.
+- GPT parsing deliberately rejects conflicting/nonreciprocal canonical copies
+  and metadata outside reserved GPT space. It does not infer a partition map
+  through carving.
+- Overwritten, trimmed, securely erased, encrypted-unavailable or physically
+  unreadable bytes cannot be recreated. A name, metadata record or score does
+  not prove intact content.
 
-## Security-review limitation
+## Product-flow limitations
 
-The [sealed 2026-07-29 Codex Security snapshot](../evidence/real-only-desktop-2026-07-29.md)
-contains `34/34` unique review receipts, three technically valid candidates
-whose final policy decisions were `ignore`, and zero reportable findings. That
-is a bounded reportability outcome, not proof that vulnerabilities are absent.
-It does not attest later changes, reproduce the concurrent TOCTOU candidates,
-replace final CI, or resolve Norton's classification of the unsigned build.
+- No restore, preview, content execution, Explorer launch or destination
+  containment.
+- No persistent sessions, checkpoint resume, import or export.
+- No pause, resume, cooperative cancellation, phase percentage or ETA.
+- No hotplug subscription. Refresh is explicit; a disappearing source fails
+  when native identity or I/O detects it.
+- No candidate content validation. Candidate rows contain metadata only.
+- Candidate pages are fixed at at most 100 rows. Native memory retains at most
+  32 folder scopes and 4 scan sessions; older authorities are evicted.
+- Browser execution is intentionally unavailable and has no fallback data.
+- Displayed labels may contain Unicode confusables even though control and bidi
+  formatting characters are removed; labels are not authority.
 
-The production application contains no synthetic provider, fabricated result,
-simulated progress, restore/session emulation or browser data fallback.
+## Validation and release limitations
 
-## Recovery truth
+- Deterministic component tests do not prove compatibility with arbitrary real
+  media or hostile filesystems.
+- Fuzzing, external forensic corpora, million-row performance and long-running
+  mutable-volume campaigns remain incomplete.
+- Final same-revision Rust/frontend/static gates remain to be recorded.
+- Native main/broker builds, hashes, extracted manifests, actual Tauri visual
+  and assistive-technology review, remote CI and clean-machine evidence remain
+  pending.
+- The broker now queries the already-bound peer with
+  `QueryFullProcessImageNameW` and requires the canonical fixed
+  `undelete-master-desktop.exe` sibling before serving. This reduces the
+  confused-deputy surface but does not authenticate publisher/package revision
+  or protect a user-writable sibling directory.
+- No signed installer, portable release, SBOM, upgrade or uninstall evidence
+  has been accepted.
+- Norton deleted one unsigned local development executable on 2026-07-29. The
+  classification remains unresolved and the artifact is not approved for
+  redistribution. It is neither confirmed malware nor a confirmed false
+  positive.
+- Temporarily disabling endpoint protection is not a release workaround.
+  Protection should be restored after the local build exercise.
+- Unsigned artifacts remain blocked from production redistribution until
+  Authenticode, administrator-protected package placement and clean-machine
+  evidence pass.
 
-Overwritten, trimmed, securely erased, unavailable encrypted or physically
-unreadable bytes cannot be recreated by software. A filename, metadata record
-or candidate count does not prove intact recoverable content.
+## Real-only invariant
+
+Production contains no sample disk provider, fabricated candidate, simulated
+progress, restore/session emulation or browser data fallback. If the real
+native boundary is unavailable, the desktop fails closed.

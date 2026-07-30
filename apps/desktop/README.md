@@ -1,21 +1,31 @@
-# Undelete Master — desktop real-only
+# Undelete Master — desktop para volumes conectados
 
-Aplicativo Tauri 2 + React para analisar imagens locais comuns usando o
-scanner Rust real do workspace.
+Aplicativo Tauri 2 + React que detecta os armazenamentos locais conectados ao
+Windows e usa o scanner Rust real do workspace.
 
 ## Escopo atual
 
-- seleciona `.img`, `.dd`, `.raw` ou `.bin` pelo diálogo nativo controlado pelo
-  Rust;
-- mantém o caminho fora do WebView;
-- abre a origem somente para leitura;
-- mostra o resumo real de partições, volumes, contagens de metadados candidatos
-  e avisos;
-- falha de forma fechada quando aberto apenas no navegador.
+- inventaria volumes locais montados sem elevação e os apresenta em grupos
+  lógicos honestos;
+- permite escolher um volume compatível para análise;
+- em NTFS, permite selecionar uma pasta opcional pelo diálogo nativo;
+- mantém caminhos nativos fora do WebView e envia somente identidades opacas;
+- mantém a interface sem elevação e eleva apenas o broker temporário de leitura;
+- mostra candidatos reais em páginas limitadas, com avisos e resultados de
+  ancestralidade desconhecida separados;
+- falha de forma fechada quando aberto apenas no navegador;
+- não possui seletor de imagem, dados mock, fallback demonstrativo ou progresso
+  inventado.
 
-Esta versão não acessa discos físicos, não restaura arquivos e não oferece
-prévia, sessões, carving, exFAT, percentual, pausa ou cancelamento de uma
-análise em andamento. Recursos sem backend seguro não aparecem na interface.
+Os cartões iniciais não alegam conhecer o número do disco físico. A origem
+efetivamente aberta é um volume montado e compatível, nunca `PhysicalDriveN`;
+somente o broker elevado resolve e valida os extents físicos. O filtro de pasta
+analisa os metadados do volume e só apresenta candidatos cuja pertença à pasta
+NTFS pode ser comprovada.
+
+Esta versão não restaura arquivos e não oferece prévia, carving, exFAT,
+sessões persistentes, pausa, cancelamento, unidade desmontada, volume multidisco
+ou varredura do disco físico inteiro.
 
 ## Comandos
 
@@ -29,5 +39,6 @@ pnpm desktop:dev
 pnpm desktop:build
 ```
 
-O build Vite isolado serve para validar a interface fechada do navegador. A
-análise de arquivos funciona exclusivamente dentro do runtime Tauri.
+`desktop:dev` e `desktop:build` compilam o broker Windows irmão antes do
+desktop. O build Vite isolado valida somente a interface fechada do navegador;
+inventário e análise funcionam exclusivamente dentro do runtime Tauri.

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use um_core::{
     Candidate, CandidateKind, CandidateState, DiscoveryMethod, ExtentAvailability, ExtentRun,
@@ -32,12 +32,260 @@ const MAX_MFT_SCAN_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_BITMAP_READ_BYTES: u64 = 64 * 1024 * 1024;
 // Hostile metadata must not retain one formatted warning per attempted record.
 const MAX_MFT_DETAILED_WARNINGS: usize = 16;
+// Namespace evidence is exported for folder scoping, but hostile hard-link
+// graphs must not cause unbounded path expansion or retained components.
+const MAX_NAMESPACE_PATHS: usize = 65_536;
+const MAX_NAMESPACE_PATHS_PER_NAME: usize = 256;
+const MAX_NAMESPACE_COMPONENTS: usize = 1_048_576;
+
+#[cfg(test)]
+std::thread_local! {
+    static NAMESPACE_EXPANSION_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Stable reference to one observed MFT record generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NtfsNodeRef {
+    pub record: u64,
+    pub sequence: u16,
+}
+
+/// Truthfulness state for one reconstructed namespace path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NtfsPathState {
+    /// Every parent reference reached the active root with exact sequences.
+    Exact,
+    /// The path used a deleted-directory generation match.
+    Reconstructed,
+    /// Known metadata or a safety bound prevents complete path evidence.
+    Incomplete,
+    /// A parent is missing, reused, cyclic, or not a directory.
+    Orphaned,
+    /// More than one namespace identity can satisfy a displayed path.
+    Ambiguous,
+}
+
+/// One non-DOS `$FILE_NAME` path for an observed MFT record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfsNamespacePath {
+    pub node: NtfsNodeRef,
+    pub namespace: u8,
+    pub name: String,
+    /// Root-first display components, excluding `name`.
+    pub parent_path: Vec<String>,
+    /// Root-first observed directory identities, including the root and the
+    /// immediate parent when those identities were validated.
+    pub ancestors: Vec<NtfsNodeRef>,
+    pub state: NtfsPathState,
+}
+
+/// Directory identity retained independently from recoverable candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NtfsDirectoryNode {
+    pub node: NtfsNodeRef,
+    pub active: bool,
+}
+
+/// Result of resolving mounted-folder components against active directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtfsDirectoryResolution {
+    Unique(NtfsNodeRef),
+    NotFound,
+    Ambiguous,
+    Unknown,
+}
+
+/// Three-valued folder membership. Unknown is never collapsed into NoMatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtfsScopeMembership {
+    Match,
+    NoMatch,
+    Unknown,
+}
+
+/// Bounded namespace evidence used for identity-based folder scoping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfsNamespace {
+    pub paths: Vec<NtfsNamespacePath>,
+    pub directories: Vec<NtfsDirectoryNode>,
+    /// True only when the scanned MFT and namespace expansion were exhaustive
+    /// within the supported metadata model and safety budgets.
+    pub is_complete: bool,
+}
+
+/// Bounded-index construction failure for externally assembled namespaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtfsNamespaceIndexError {
+    TooManyPaths,
+}
+
+/// Summary of the path evidence retained for one record generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtfsCandidatePathEvidence {
+    Missing,
+    One(NtfsPathState),
+    Multiple,
+}
+
+/// One-pass, bounded lookup index over namespace paths.
+///
+/// The index owns only path offsets. Path components and ancestry remain in
+/// the namespace, so aggregate retained evidence stays bounded by the scanner's
+/// namespace limits.
+#[derive(Debug)]
+pub struct NtfsNamespaceIndex<'a> {
+    namespace: &'a NtfsNamespace,
+    paths_by_node: HashMap<NtfsNodeRef, Vec<usize>>,
+}
+
+impl NtfsNamespace {
+    /// Builds a path-offset index in one pass.
+    pub fn build_index(&self) -> Result<NtfsNamespaceIndex<'_>, NtfsNamespaceIndexError> {
+        if self.paths.len() > MAX_NAMESPACE_PATHS {
+            return Err(NtfsNamespaceIndexError::TooManyPaths);
+        }
+        let mut paths_by_node: HashMap<NtfsNodeRef, Vec<usize>> =
+            HashMap::with_capacity(self.paths.len());
+        for (offset, path) in self.paths.iter().enumerate() {
+            paths_by_node.entry(path.node).or_default().push(offset);
+        }
+        Ok(NtfsNamespaceIndex {
+            namespace: self,
+            paths_by_node,
+        })
+    }
+
+    /// Resolves exact, root-first components to one active directory identity.
+    ///
+    /// Component equality is deliberate: this model does not claim to emulate
+    /// NTFS case-folding or per-directory case-sensitivity rules.
+    pub fn resolve_active_directory(&self, components: &[String]) -> NtfsDirectoryResolution {
+        let active: HashSet<NtfsNodeRef> = self
+            .directories
+            .iter()
+            .filter(|directory| directory.active)
+            .map(|directory| directory.node)
+            .collect();
+
+        if components.is_empty() {
+            let roots: HashSet<NtfsNodeRef> = active
+                .iter()
+                .copied()
+                .filter(|node| node.record == ROOT_RECORD)
+                .collect();
+            return match roots.len() {
+                1 => {
+                    NtfsDirectoryResolution::Unique(*roots.iter().next().expect("one active root"))
+                }
+                0 if self.is_complete => NtfsDirectoryResolution::NotFound,
+                0 => NtfsDirectoryResolution::Unknown,
+                _ => NtfsDirectoryResolution::Ambiguous,
+            };
+        }
+
+        let mut exact_nodes = HashSet::new();
+        let mut uncertain_match = false;
+        for path in &self.paths {
+            if !active.contains(&path.node) || !path_matches_components(path, components) {
+                continue;
+            }
+            if path.state == NtfsPathState::Exact {
+                exact_nodes.insert(path.node);
+            } else {
+                uncertain_match = true;
+            }
+        }
+
+        if exact_nodes.len() > 1 {
+            NtfsDirectoryResolution::Ambiguous
+        } else if exact_nodes.len() == 1 && !uncertain_match {
+            NtfsDirectoryResolution::Unique(*exact_nodes.iter().next().expect("one exact node"))
+        } else if uncertain_match || !self.is_complete {
+            NtfsDirectoryResolution::Unknown
+        } else {
+            NtfsDirectoryResolution::NotFound
+        }
+    }
+
+    /// Classifies one candidate generation by directory identity reachability.
+    pub fn classify_candidate(
+        &self,
+        candidate: NtfsNodeRef,
+        directory: NtfsNodeRef,
+    ) -> NtfsScopeMembership {
+        let Ok(index) = self.build_index() else {
+            return NtfsScopeMembership::Unknown;
+        };
+        index.classify_candidate(candidate, directory)
+    }
+}
+
+impl NtfsNamespaceIndex<'_> {
+    fn path_offsets(&self, node: NtfsNodeRef) -> &[usize] {
+        self.paths_by_node.get(&node).map_or(&[], Vec::as_slice)
+    }
+
+    /// Classifies one candidate using only the paths indexed for that node.
+    pub fn classify_candidate(
+        &self,
+        candidate: NtfsNodeRef,
+        directory: NtfsNodeRef,
+    ) -> NtfsScopeMembership {
+        let path_offsets = self.path_offsets(candidate);
+        if path_offsets
+            .iter()
+            .any(|offset| self.namespace.paths[*offset].ancestors.contains(&directory))
+        {
+            return NtfsScopeMembership::Match;
+        }
+        if path_offsets.is_empty()
+            || !self.namespace.is_complete
+            || path_offsets.iter().any(|offset| {
+                !matches!(
+                    self.namespace.paths[*offset].state,
+                    NtfsPathState::Exact | NtfsPathState::Reconstructed
+                )
+            })
+        {
+            NtfsScopeMembership::Unknown
+        } else {
+            NtfsScopeMembership::NoMatch
+        }
+    }
+
+    /// Returns the presentation-relevant evidence without scanning unrelated
+    /// namespace paths.
+    pub fn candidate_path_evidence(&self, node: NtfsNodeRef) -> NtfsCandidatePathEvidence {
+        match self.path_offsets(node) {
+            [] => NtfsCandidatePathEvidence::Missing,
+            [offset] => NtfsCandidatePathEvidence::One(self.namespace.paths[*offset].state),
+            _ => NtfsCandidatePathEvidence::Multiple,
+        }
+    }
+
+    #[cfg(test)]
+    fn indexed_node_count(&self) -> usize {
+        self.paths_by_node.len()
+    }
+}
+
+fn path_matches_components(path: &NtfsNamespacePath, components: &[String]) -> bool {
+    path.parent_path.len().checked_add(1) == Some(components.len())
+        && path
+            .parent_path
+            .iter()
+            .zip(components)
+            .all(|(actual, expected)| actual == expected)
+        && components.last() == Some(&path.name)
+}
 
 /// Output of an NTFS metadata scan.
 #[derive(Debug)]
 pub struct NtfsScanOutput {
     pub boot: NtfsBoot,
     pub candidates: Vec<Candidate>,
+    pub namespace: NtfsNamespace,
     pub warnings: Vec<String>,
     /// `false` when metadata bounds or skipped corrupt/unreadable records mean
     /// the scanner cannot claim it enumerated every possible MFT candidate.
@@ -49,6 +297,8 @@ struct ParsedEntry {
     in_use: bool,
     is_directory: bool,
     best_name: Option<FileNameAttr>,
+    names: Vec<FileNameAttr>,
+    attributes_complete: bool,
     std_info: StandardInformation,
     streams: Vec<DataStream>,
     /// Physical byte offset of the record within the volume region.
@@ -306,6 +556,276 @@ fn pick_best_name(names: &[FileNameAttr]) -> Option<FileNameAttr> {
         .cloned()
 }
 
+fn useful_namespace_names(entry: &ParsedEntry) -> impl Iterator<Item = &FileNameAttr> {
+    entry
+        .names
+        .iter()
+        .filter(|name| name.namespace != NS_DOS && !name.name.is_empty())
+}
+
+#[derive(Debug, Clone)]
+struct ParentPathEvidence {
+    parent_path: Vec<String>,
+    ancestors: Vec<NtfsNodeRef>,
+    state: NtfsPathState,
+}
+
+struct ParentPathExpansion {
+    paths: Vec<ParentPathEvidence>,
+    complete: bool,
+}
+
+fn merge_path_state(left: NtfsPathState, right: NtfsPathState) -> NtfsPathState {
+    left.max(right)
+}
+
+fn orphaned_parent_path() -> ParentPathExpansion {
+    ParentPathExpansion {
+        paths: vec![ParentPathEvidence {
+            parent_path: Vec::new(),
+            ancestors: Vec::new(),
+            state: NtfsPathState::Orphaned,
+        }],
+        complete: true,
+    }
+}
+
+fn expand_parent_paths(
+    entries: &HashMap<u64, ParsedEntry>,
+    parent_record: u64,
+    parent_sequence: u16,
+    visited: &HashSet<u64>,
+    depth: usize,
+) -> ParentPathExpansion {
+    #[cfg(test)]
+    NAMESPACE_EXPANSION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+
+    if depth >= MAX_PATH_DEPTH {
+        return ParentPathExpansion {
+            paths: vec![ParentPathEvidence {
+                parent_path: Vec::new(),
+                ancestors: Vec::new(),
+                state: NtfsPathState::Incomplete,
+            }],
+            complete: false,
+        };
+    }
+
+    let mut visited = visited.clone();
+    if !visited.insert(parent_record) {
+        return orphaned_parent_path();
+    }
+    let Some(parent) = entries.get(&parent_record) else {
+        return orphaned_parent_path();
+    };
+    if !parent.is_directory {
+        return orphaned_parent_path();
+    }
+
+    let node = NtfsNodeRef {
+        record: parent_record,
+        sequence: parent.sequence,
+    };
+    if parent_record == ROOT_RECORD {
+        if !parent.in_use || parent.sequence != parent_sequence {
+            return orphaned_parent_path();
+        }
+        return ParentPathExpansion {
+            paths: vec![ParentPathEvidence {
+                parent_path: Vec::new(),
+                ancestors: vec![node],
+                state: if parent.attributes_complete {
+                    NtfsPathState::Exact
+                } else {
+                    NtfsPathState::Incomplete
+                },
+            }],
+            complete: true,
+        };
+    }
+
+    let exact_sequence = parent.sequence == parent_sequence;
+    let deleted_generation = !parent.in_use && parent.sequence == parent_sequence.wrapping_add(1);
+    if !exact_sequence && !deleted_generation {
+        return orphaned_parent_path();
+    }
+
+    let relation_state = if !parent.attributes_complete {
+        NtfsPathState::Incomplete
+    } else if !parent.in_use {
+        NtfsPathState::Reconstructed
+    } else {
+        NtfsPathState::Exact
+    };
+    let names: Vec<&FileNameAttr> = useful_namespace_names(parent).collect();
+    if names.is_empty() {
+        return ParentPathExpansion {
+            paths: vec![ParentPathEvidence {
+                parent_path: Vec::new(),
+                ancestors: vec![node],
+                state: NtfsPathState::Orphaned,
+            }],
+            complete: true,
+        };
+    }
+
+    let mut paths = Vec::new();
+    let mut complete = true;
+    'names: for name in names {
+        if paths.len() >= MAX_NAMESPACE_PATHS_PER_NAME {
+            complete = false;
+            break 'names;
+        }
+        let upstream = expand_parent_paths(
+            entries,
+            name.parent_record,
+            name.parent_sequence,
+            &visited,
+            depth + 1,
+        );
+        complete &= upstream.complete;
+        for mut path in upstream.paths {
+            if paths.len() >= MAX_NAMESPACE_PATHS_PER_NAME {
+                complete = false;
+                break 'names;
+            }
+            path.parent_path.push(name.name.clone());
+            path.ancestors.push(node);
+            path.state = merge_path_state(path.state, relation_state);
+            paths.push(path);
+        }
+    }
+
+    if paths.is_empty() {
+        ParentPathExpansion {
+            paths: vec![ParentPathEvidence {
+                parent_path: Vec::new(),
+                ancestors: vec![node],
+                state: NtfsPathState::Incomplete,
+            }],
+            complete: false,
+        }
+    } else {
+        ParentPathExpansion { paths, complete }
+    }
+}
+
+fn build_namespace(
+    entries: &HashMap<u64, ParsedEntry>,
+    scan_complete: bool,
+    warnings: &mut Vec<String>,
+) -> NtfsNamespace {
+    let mut directories: Vec<NtfsDirectoryNode> = entries
+        .iter()
+        .filter_map(|(&record, entry)| {
+            entry.is_directory.then_some(NtfsDirectoryNode {
+                node: NtfsNodeRef {
+                    record,
+                    sequence: entry.sequence,
+                },
+                active: entry.in_use,
+            })
+        })
+        .collect();
+    directories.sort_by_key(|directory| directory.node);
+
+    let mut records: Vec<u64> = entries.keys().copied().collect();
+    records.sort_unstable();
+    let mut paths = Vec::new();
+    let mut components_used = 0usize;
+    let mut namespace_complete = scan_complete;
+    let mut budget_reached = false;
+
+    'records: for record in records {
+        if record == ROOT_RECORD {
+            continue;
+        }
+        let entry = &entries[&record];
+        let node = NtfsNodeRef {
+            record,
+            sequence: entry.sequence,
+        };
+        for name in useful_namespace_names(entry) {
+            if paths.len() >= MAX_NAMESPACE_PATHS {
+                namespace_complete = false;
+                budget_reached = true;
+                break 'records;
+            }
+            let visited = HashSet::from([record]);
+            let expansion = expand_parent_paths(
+                entries,
+                name.parent_record,
+                name.parent_sequence,
+                &visited,
+                0,
+            );
+            if !expansion.complete {
+                namespace_complete = false;
+                budget_reached = true;
+            }
+            for parent in expansion.paths {
+                if paths.len() >= MAX_NAMESPACE_PATHS {
+                    namespace_complete = false;
+                    budget_reached = true;
+                    break 'records;
+                }
+                let component_cost = parent
+                    .parent_path
+                    .len()
+                    .checked_add(parent.ancestors.len())
+                    .and_then(|cost| cost.checked_add(1));
+                let Some(next_component_count) =
+                    component_cost.and_then(|cost| components_used.checked_add(cost))
+                else {
+                    namespace_complete = false;
+                    budget_reached = true;
+                    break 'records;
+                };
+                if next_component_count > MAX_NAMESPACE_COMPONENTS {
+                    namespace_complete = false;
+                    budget_reached = true;
+                    break 'records;
+                }
+                components_used = next_component_count;
+                paths.push(NtfsNamespacePath {
+                    node,
+                    namespace: name.namespace,
+                    name: name.name.clone(),
+                    parent_path: parent.parent_path,
+                    ancestors: parent.ancestors,
+                    state: merge_path_state(
+                        parent.state,
+                        if entry.attributes_complete {
+                            NtfsPathState::Exact
+                        } else {
+                            NtfsPathState::Incomplete
+                        },
+                    ),
+                });
+            }
+        }
+    }
+
+    paths.sort_by(|left, right| {
+        left.node
+            .cmp(&right.node)
+            .then_with(|| left.parent_path.cmp(&right.parent_path))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.namespace.cmp(&right.namespace))
+    });
+    if budget_reached {
+        warnings.push(format!(
+            "NTFS namespace evidence reached its bounded path/component budget ({MAX_NAMESPACE_PATHS} paths, {MAX_NAMESPACE_COMPONENTS} components); folder scope is incomplete"
+        ));
+    }
+
+    NtfsNamespace {
+        paths,
+        directories,
+        is_complete: namespace_complete,
+    }
+}
+
 /// Scans an NTFS volume region for deleted (and orphaned) candidates.
 pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError> {
     let mut warnings = Vec::new();
@@ -543,6 +1063,8 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
     }
     mft_warning_budget.finish(&mut warnings);
 
+    let namespace = build_namespace(&entries, is_complete, &mut warnings);
+
     // Pass 3: build candidates from records marked free.
     let mut candidates = Vec::new();
     for (&record_no, entry) in &entries {
@@ -596,6 +1118,7 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
     Ok(NtfsScanOutput {
         boot,
         candidates,
+        namespace,
         warnings,
         is_complete,
     })
@@ -650,12 +1173,15 @@ fn parse_entry(rec: &FileRecord, boot: &NtfsBoot, record_phys_offset: u64) -> (P
         }
     }
     let streams = extract_data_streams(&attrs, boot.total_clusters, &mut warnings);
+    let best_name = pick_best_name(&names);
     (
         ParsedEntry {
             sequence: rec.sequence,
             in_use: rec.in_use,
             is_directory: rec.is_directory,
-            best_name: pick_best_name(&names),
+            best_name,
+            names,
+            attributes_complete,
             std_info,
             streams,
             record_phys_offset,
@@ -827,6 +1353,23 @@ fn reconstruct_path(
 
     for _ in 0..MAX_PATH_DEPTH {
         if parent_no == ROOT_RECORD {
+            let Some(root) = entries.get(&ROOT_RECORD) else {
+                warnings.push("root directory record not found; treating as orphan".into());
+                return (orphan_path(self_record), MetadataConfidence::Low, warnings);
+            };
+            if !root.in_use || !root.is_directory {
+                warnings.push(
+                    "root directory record is not an active directory; treating as orphan".into(),
+                );
+                return (orphan_path(self_record), MetadataConfidence::Low, warnings);
+            }
+            if root.sequence != parent_seq {
+                warnings.push(format!(
+                    "root directory record was reused (expected seq {parent_seq}, found {}); path unreliable",
+                    root.sequence
+                ));
+                return (orphan_path(self_record), MetadataConfidence::Low, warnings);
+            }
             parts_rev.reverse();
             return (parts_rev, confidence, warnings);
         }
@@ -849,6 +1392,12 @@ fn reconstruct_path(
             warnings.push(format!(
                 "parent record {parent_no} was reused (expected seq {parent_seq}, found {}); path unreliable",
                 parent.sequence
+            ));
+            return (orphan_path(self_record), MetadataConfidence::Low, warnings);
+        }
+        if !parent.is_directory {
+            warnings.push(format!(
+                "parent record {parent_no} is not a directory; treating as orphan"
             ));
             return (orphan_path(self_record), MetadataConfidence::Low, warnings);
         }
@@ -1255,5 +1804,453 @@ mod tests {
 
         assert_eq!(prefix.len, stream_len);
         assert!(!prefix.stopped_at_untrusted_run);
+    }
+
+    fn namespace_name(
+        name: &str,
+        parent_record: u64,
+        parent_sequence: u16,
+        namespace: u8,
+    ) -> FileNameAttr {
+        FileNameAttr {
+            parent_record,
+            parent_sequence,
+            namespace,
+            name: name.to_string(),
+            logical_size: 0,
+            allocated_size: 0,
+        }
+    }
+
+    fn namespace_entry(
+        sequence: u16,
+        in_use: bool,
+        is_directory: bool,
+        names: Vec<FileNameAttr>,
+        attributes_complete: bool,
+    ) -> ParsedEntry {
+        let best_name = pick_best_name(&names);
+        ParsedEntry {
+            sequence,
+            in_use,
+            is_directory,
+            best_name,
+            names,
+            attributes_complete,
+            std_info: StandardInformation::default(),
+            streams: Vec::new(),
+            record_phys_offset: 0,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn namespace_root(entries: &mut HashMap<u64, ParsedEntry>) -> NtfsNodeRef {
+        let root = NtfsNodeRef {
+            record: ROOT_RECORD,
+            sequence: 5,
+        };
+        entries.insert(
+            ROOT_RECORD,
+            namespace_entry(root.sequence, true, true, Vec::new(), true),
+        );
+        root
+    }
+
+    fn add_active_directory(
+        entries: &mut HashMap<u64, ParsedEntry>,
+        record: u64,
+        sequence: u16,
+        name: &str,
+        parent: NtfsNodeRef,
+    ) -> NtfsNodeRef {
+        let node = NtfsNodeRef { record, sequence };
+        entries.insert(
+            record,
+            namespace_entry(
+                sequence,
+                true,
+                true,
+                vec![namespace_name(
+                    name,
+                    parent.record,
+                    parent.sequence,
+                    crate::attr::NS_WIN32,
+                )],
+                true,
+            ),
+        );
+        node
+    }
+
+    #[test]
+    fn ntfs_namespace_hardlink_001_preserves_every_useful_non_dos_name() {
+        let mut entries = HashMap::new();
+        let root = namespace_root(&mut entries);
+        let alpha = add_active_directory(&mut entries, 20, 1, "Alpha", root);
+        let beta = add_active_directory(&mut entries, 30, 1, "Beta", root);
+        let gamma = add_active_directory(&mut entries, 35, 1, "Gamma", root);
+        let candidate = NtfsNodeRef {
+            record: 40,
+            sequence: 7,
+        };
+        entries.insert(
+            candidate.record,
+            namespace_entry(
+                candidate.sequence,
+                false,
+                false,
+                vec![
+                    namespace_name(
+                        "linked.txt",
+                        alpha.record,
+                        alpha.sequence,
+                        crate::attr::NS_WIN32,
+                    ),
+                    namespace_name(
+                        "alias.txt",
+                        beta.record,
+                        beta.sequence,
+                        crate::attr::NS_POSIX,
+                    ),
+                    namespace_name("LINKED~1TXT", alpha.record, alpha.sequence, NS_DOS),
+                ],
+                true,
+            ),
+        );
+
+        let mut warnings = Vec::new();
+        let namespace = build_namespace(&entries, true, &mut warnings);
+        let candidate_paths: Vec<&NtfsNamespacePath> = namespace
+            .paths
+            .iter()
+            .filter(|path| path.node == candidate)
+            .collect();
+
+        assert_eq!(candidate_paths.len(), 2);
+        assert!(candidate_paths
+            .iter()
+            .any(|path| path.name == "linked.txt" && path.parent_path == ["Alpha"]));
+        assert!(candidate_paths
+            .iter()
+            .any(|path| path.name == "alias.txt" && path.parent_path == ["Beta"]));
+        assert_eq!(
+            namespace.classify_candidate(candidate, alpha),
+            NtfsScopeMembership::Match
+        );
+        assert_eq!(
+            namespace.classify_candidate(candidate, beta),
+            NtfsScopeMembership::Match
+        );
+        assert_eq!(
+            namespace.classify_candidate(candidate, gamma),
+            NtfsScopeMembership::NoMatch
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn ntfs_namespace_work_bound_001_stops_before_expanding_a_saturated_sibling() {
+        let mut entries = HashMap::new();
+        let mut parent = namespace_root(&mut entries);
+        for level in 0..12_u64 {
+            let node = NtfsNodeRef {
+                record: 100 + level,
+                sequence: 1,
+            };
+            entries.insert(
+                node.record,
+                namespace_entry(
+                    node.sequence,
+                    true,
+                    true,
+                    vec![
+                        namespace_name(
+                            &format!("left-{level}"),
+                            parent.record,
+                            parent.sequence,
+                            crate::attr::NS_WIN32,
+                        ),
+                        namespace_name(
+                            &format!("right-{level}"),
+                            parent.record,
+                            parent.sequence,
+                            crate::attr::NS_POSIX,
+                        ),
+                    ],
+                    true,
+                ),
+            );
+            parent = node;
+        }
+
+        NAMESPACE_EXPANSION_CALLS.with(|calls| calls.set(0));
+        let expansion =
+            expand_parent_paths(&entries, parent.record, parent.sequence, &HashSet::new(), 0);
+        let calls = NAMESPACE_EXPANSION_CALLS.with(std::cell::Cell::get);
+
+        assert_eq!(expansion.paths.len(), MAX_NAMESPACE_PATHS_PER_NAME);
+        assert!(!expansion.complete);
+        assert!(
+            calls <= 600,
+            "saturated sibling expansion exceeded the recursive work bound: {calls} calls"
+        );
+    }
+
+    #[test]
+    fn ntfs_namespace_parent_validation_001_marks_invalid_ancestry_orphaned() {
+        let mut entries = HashMap::new();
+        let root = namespace_root(&mut entries);
+        let target = add_active_directory(&mut entries, 20, 1, "Target", root);
+        entries.insert(
+            50,
+            namespace_entry(
+                1,
+                true,
+                false,
+                vec![namespace_name(
+                    "not-a-directory",
+                    root.record,
+                    root.sequence,
+                    crate::attr::NS_WIN32,
+                )],
+                true,
+            ),
+        );
+        entries.insert(
+            60,
+            namespace_entry(
+                9,
+                true,
+                true,
+                vec![namespace_name(
+                    "reused",
+                    root.record,
+                    root.sequence,
+                    crate::attr::NS_WIN32,
+                )],
+                true,
+            ),
+        );
+
+        let invalid = [
+            (
+                NtfsNodeRef {
+                    record: 40,
+                    sequence: 1,
+                },
+                namespace_name("root-sequence.txt", ROOT_RECORD, 4, crate::attr::NS_WIN32),
+            ),
+            (
+                NtfsNodeRef {
+                    record: 41,
+                    sequence: 1,
+                },
+                namespace_name("missing.txt", 99, 1, crate::attr::NS_WIN32),
+            ),
+            (
+                NtfsNodeRef {
+                    record: 42,
+                    sequence: 1,
+                },
+                namespace_name("file-parent.txt", 50, 1, crate::attr::NS_WIN32),
+            ),
+            (
+                NtfsNodeRef {
+                    record: 43,
+                    sequence: 1,
+                },
+                namespace_name("reused-parent.txt", 60, 1, crate::attr::NS_WIN32),
+            ),
+        ];
+        for (node, name) in &invalid {
+            entries.insert(
+                node.record,
+                namespace_entry(node.sequence, false, false, vec![name.clone()], true),
+            );
+        }
+
+        let namespace = build_namespace(&entries, true, &mut Vec::new());
+        for (node, _) in invalid {
+            let path = namespace
+                .paths
+                .iter()
+                .find(|path| path.node == node)
+                .expect("invalid candidate path retained as evidence");
+            assert_eq!(path.state, NtfsPathState::Orphaned);
+            assert_eq!(
+                namespace.classify_candidate(node, target),
+                NtfsScopeMembership::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn ntfs_primary_path_parent_validation_001_checks_root_sequence_and_directory_kind() {
+        let mut entries = HashMap::new();
+        let root = namespace_root(&mut entries);
+        entries.insert(
+            50,
+            namespace_entry(
+                1,
+                true,
+                false,
+                vec![namespace_name(
+                    "ordinary-file",
+                    root.record,
+                    root.sequence,
+                    crate::attr::NS_WIN32,
+                )],
+                true,
+            ),
+        );
+
+        for name in [
+            namespace_name("wrong-root.txt", ROOT_RECORD, 4, crate::attr::NS_WIN32),
+            namespace_name("file-parent.txt", 50, 1, crate::attr::NS_WIN32),
+        ] {
+            let (path, confidence, _) = reconstruct_path(&entries, &name, 80);
+            assert_eq!(confidence, MetadataConfidence::Low);
+            assert_eq!(path, orphan_path(80));
+        }
+    }
+
+    #[test]
+    fn ntfs_namespace_directory_resolution_001_rejects_ambiguous_display_path() {
+        let mut entries = HashMap::new();
+        let root = namespace_root(&mut entries);
+        add_active_directory(&mut entries, 20, 1, "Docs", root);
+        add_active_directory(&mut entries, 21, 1, "Docs", root);
+
+        let namespace = build_namespace(&entries, true, &mut Vec::new());
+        assert_eq!(
+            namespace.resolve_active_directory(&["Docs".to_string()]),
+            NtfsDirectoryResolution::Ambiguous
+        );
+    }
+
+    #[test]
+    fn ntfs_namespace_directory_resolution_002_accepts_one_proven_path_in_partial_scan() {
+        let mut entries = HashMap::new();
+        let root = namespace_root(&mut entries);
+        let expected = add_active_directory(&mut entries, 20, 1, "Docs", root);
+
+        let namespace = build_namespace(&entries, false, &mut Vec::new());
+        assert!(!namespace.is_complete);
+        assert_eq!(
+            namespace.resolve_active_directory(&["Docs".to_string()]),
+            NtfsDirectoryResolution::Unique(expected),
+            "global MFT incompleteness must preserve a positively proven active directory; only negative membership stays unknown"
+        );
+    }
+
+    #[test]
+    fn ntfs_namespace_scope_unknown_001_never_becomes_no_match() {
+        let mut entries = HashMap::new();
+        let root = namespace_root(&mut entries);
+        let target = add_active_directory(&mut entries, 20, 1, "Target", root);
+        let candidate = NtfsNodeRef {
+            record: 40,
+            sequence: 1,
+        };
+        entries.insert(
+            candidate.record,
+            namespace_entry(
+                candidate.sequence,
+                false,
+                false,
+                vec![namespace_name("unknown.txt", 999, 1, crate::attr::NS_WIN32)],
+                true,
+            ),
+        );
+
+        let namespace = build_namespace(&entries, true, &mut Vec::new());
+        assert_eq!(
+            namespace.classify_candidate(candidate, target),
+            NtfsScopeMembership::Unknown
+        );
+    }
+
+    #[test]
+    fn ntfs_namespace_index_001_groups_offsets_by_node_for_bounded_lookup() {
+        let target = NtfsNodeRef {
+            record: 50_000,
+            sequence: 9,
+        };
+        let directory = NtfsNodeRef {
+            record: 42,
+            sequence: 3,
+        };
+        let mut paths = (0..4_096_u64)
+            .map(|record| NtfsNamespacePath {
+                node: NtfsNodeRef {
+                    record,
+                    sequence: 1,
+                },
+                namespace: crate::attr::NS_WIN32,
+                name: format!("unrelated-{record}.bin"),
+                parent_path: Vec::new(),
+                ancestors: vec![NtfsNodeRef {
+                    record: ROOT_RECORD,
+                    sequence: 5,
+                }],
+                state: NtfsPathState::Exact,
+            })
+            .collect::<Vec<_>>();
+        paths.push(NtfsNamespacePath {
+            node: target,
+            namespace: crate::attr::NS_WIN32,
+            name: "target.bin".to_owned(),
+            parent_path: vec!["Documents".to_owned()],
+            ancestors: vec![
+                NtfsNodeRef {
+                    record: ROOT_RECORD,
+                    sequence: 5,
+                },
+                directory,
+            ],
+            state: NtfsPathState::Exact,
+        });
+        let namespace = NtfsNamespace {
+            paths,
+            directories: Vec::new(),
+            is_complete: true,
+        };
+
+        let index = namespace.build_index().expect("bounded namespace index");
+
+        assert_eq!(index.indexed_node_count(), 4_097);
+        assert_eq!(
+            index.candidate_path_evidence(target),
+            NtfsCandidatePathEvidence::One(NtfsPathState::Exact)
+        );
+        assert_eq!(
+            index.classify_candidate(target, directory),
+            NtfsScopeMembership::Match
+        );
+    }
+
+    #[test]
+    fn ntfs_namespace_index_002_rejects_externally_unbounded_path_evidence() {
+        let path = NtfsNamespacePath {
+            node: NtfsNodeRef {
+                record: 40,
+                sequence: 1,
+            },
+            namespace: crate::attr::NS_WIN32,
+            name: "candidate.bin".to_owned(),
+            parent_path: Vec::new(),
+            ancestors: Vec::new(),
+            state: NtfsPathState::Exact,
+        };
+        let namespace = NtfsNamespace {
+            paths: vec![path; MAX_NAMESPACE_PATHS + 1],
+            directories: Vec::new(),
+            is_complete: true,
+        };
+
+        assert_eq!(
+            namespace.build_index().expect_err("unbounded index"),
+            NtfsNamespaceIndexError::TooManyPaths
+        );
     }
 }

@@ -272,7 +272,13 @@ fn handle_directory(ctx: &mut ScanCtx<'_>, entry: &DirEntry, path: &[String], pa
         chain
     } else {
         match ctx.fat.entry(entry.first_cluster) {
-            Some(FatEntry::Free) => vec![entry.first_cluster],
+            Some(FatEntry::Free) => {
+                ctx.mark_incomplete(format!(
+                    "deleted directory '{}' has a cleared FAT chain; scanning only its first cluster",
+                    entry.name
+                ));
+                vec![entry.first_cluster]
+            }
             Some(FatEntry::Next(_)) | Some(FatEntry::EndOfChain) => {
                 // Chain unexpectedly retained: follow it.
                 let chain_limit = directory_chain_limit(ctx);

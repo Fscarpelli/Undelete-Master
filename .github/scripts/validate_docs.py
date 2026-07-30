@@ -33,6 +33,7 @@ REQUIRED = [
     ])),
     "docs/traceability-matrix.md",
     "docs/specs/017-real-only-image-desktop.md",
+    "docs/specs/018-windows-volume-and-folder-scan.md",
     "docs/risk-register.md",
     "docs/test-justifications.md",
     "docs/threat-model/THREAT_MODEL.md",
@@ -67,6 +68,7 @@ EXPECTED_SDD016_IDS = {
     "SDD-QA-001",
 }
 EXPECTED_SDD017_IDS = {f"SDD-REAL-{index:03d}" for index in range(1, 13)}
+EXPECTED_SDD018_IDS = {f"SDD-WIN-{index:03d}" for index in range(1, 14)}
 EXPECTED_ADR_TARGETS = {
     1: "0001-tauri-react-rust-target.md",
     2: "0008-process-separation-and-uac.md",
@@ -719,7 +721,9 @@ def validate_test_references(
     test_ids = {
         test_id
         for test_id in TEST_ID_PATTERN.findall(test_area)
-        if not test_id.startswith(("JUST-", "REAL-AC-"))
+        if not test_id.startswith(
+            ("JUST-", "REAL-AC-", "SDD-", "NFR-", "FR-")
+        )
     }
     just_ids = set(JUST_ID_PATTERN.findall(test_area))
     if not test_ids and not just_ids:
@@ -759,6 +763,7 @@ def validate_matrix(
     nfr_statuses: dict[str, str],
     sdd016_statuses: dict[str, str],
     sdd017_statuses: dict[str, str],
+    sdd018_statuses: dict[str, str],
     justifications: dict[str, set[str]],
     errors: list[str],
 ) -> None:
@@ -774,6 +779,9 @@ def validate_matrix(
     real_header, real_rows = parse_matrix_section(
         text, "Current real-only image desktop increment"
     )
+    windows_header, windows_rows = parse_matrix_section(
+        text, "Connected mounted-volume desktop increment"
+    )
     fr_header, fr_rows = parse_matrix_section(
         text, "Master functional requirements with current evidence"
     )
@@ -783,6 +791,7 @@ def validate_matrix(
     for header, name in (
         (current_header, "current increment"),
         (real_header, "real-only"),
+        (windows_header, "connected-volume"),
         (fr_header, "master FR"),
         (nfr_header, "NFR"),
     ):
@@ -856,6 +865,12 @@ def validate_matrix(
         sdd017_statuses,
         "real-only",
     )
+    validate_rows(
+        windows_rows,
+        EXPECTED_SDD018_IDS,
+        sdd018_statuses,
+        "connected-volume",
+    )
 
 
 def validate_requirement_sections(
@@ -904,7 +919,9 @@ def validate_requirement_sections(
             test_id
             for test_id in TEST_ID_PATTERN.findall(section)
             if test_id != requirement
-            and not test_id.startswith(("JUST-", "REAL-AC-"))
+            and not test_id.startswith(
+                ("JUST-", "REAL-AC-", "SDD-", "NFR-", "FR-")
+            )
         }
         just_ids = set(JUST_ID_PATTERN.findall(section))
         if not test_ids and not just_ids:
@@ -982,6 +999,7 @@ def validate_justification_usage(
         "docs/specs/002-non-functional-requirements.md",
         "docs/specs/016-foundation-hardening-and-safe-image-cli.md",
         "docs/specs/017-real-only-image-desktop.md",
+        "docs/specs/018-windows-volume-and-folder-scan.md",
     ):
         path = root / relative
         if path.is_file():
@@ -1126,7 +1144,11 @@ def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
     validate_links_and_placeholders(root, errors)
     catalog = validate_functional_catalog(root, master_ids, errors)
     valid_requirements = (
-        master_ids | EXPECTED_NFR_IDS | EXPECTED_SDD016_IDS | EXPECTED_SDD017_IDS
+        master_ids
+        | EXPECTED_NFR_IDS
+        | EXPECTED_SDD016_IDS
+        | EXPECTED_SDD017_IDS
+        | EXPECTED_SDD018_IDS
     )
     justifications = validate_justifications(root, valid_requirements, errors)
     nfr_statuses = validate_requirement_sections(
@@ -1163,6 +1185,15 @@ def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
         justifications,
         errors,
     )
+    sdd018_statuses = validate_requirement_sections(
+        root,
+        "docs/specs/018-windows-volume-and-folder-scan.md",
+        "###",
+        r"SDD-WIN-\d{3}",
+        EXPECTED_SDD018_IDS,
+        justifications,
+        errors,
+    )
     validate_sdd_fields_and_paths(
         root,
         "docs/specs/016-foundation-hardening-and-safe-image-cli.md",
@@ -1175,6 +1206,12 @@ def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
         r"SDD-REAL-\d{3}",
         errors,
     )
+    validate_sdd_fields_and_paths(
+        root,
+        "docs/specs/018-windows-volume-and-folder-scan.md",
+        r"SDD-WIN-\d{3}",
+        errors,
+    )
     validate_matrix(
         root,
         master_ids,
@@ -1182,6 +1219,7 @@ def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
         nfr_statuses,
         sdd016_statuses,
         sdd017_statuses,
+        sdd018_statuses,
         justifications,
         errors,
     )
@@ -1196,6 +1234,7 @@ def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
         "nfrs": len(nfr_statuses),
         "sdd016_requirements": len(sdd016_statuses),
         "sdd017_requirements": len(sdd017_statuses),
+        "sdd018_requirements": len(sdd018_statuses),
         "justifications": len(justifications),
         "adr_topics": 17,
     }
@@ -1214,7 +1253,8 @@ def main() -> int:
         "documentation validation passed: "
         f"{stats['catalog_frs']}/{stats['master_frs']} exact FR catalog and matrix, "
         f"{stats['nfrs']} NFR, {stats['sdd016_requirements']} foundation and "
-        f"{stats['sdd017_requirements']} real-only requirements, "
+        f"{stats['sdd017_requirements']} real-only and "
+        f"{stats['sdd018_requirements']} connected-volume requirements, "
         f"{stats['adr_topics']} required ADR topics, "
         f"{stats['justifications']} formal justifications, "
         "statuses/test references/local paths checked"

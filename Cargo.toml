@@ -10,6 +10,9 @@ members = [
     "crates/fixture-builder",
     "crates/cli",
     "crates/io-windows",
+    "crates/broker-protocol",
+    "crates/broker-client",
+    "crates/elevated-broker",
     "apps/desktop/src-tauri",
 ]
 
@@ -33,6 +36,8 @@ um-restore = { path = "crates/restore" }
 um-fixture-builder = { path = "crates/fixture-builder" }
 um-cli = { path = "crates/cli" }
 um-io-windows = { path = "crates/io-windows" }
+um-broker-protocol = { path = "crates/broker-protocol" }
+um-broker-client = { path = "crates/broker-client" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +48,8 @@ hex = "0.4"
 proptest = "1"
 tempfile = "3"
 libc = "0.2"
+getrandom = "0.3.4"
+subtle = "2.6"
 
 [profile.release]
 opt-level = 3

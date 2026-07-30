@@ -67,8 +67,8 @@ Each record uses the requirement fields mandated by master spec §23.2.
   normal logs.
 - **Acceptance / tests / implementation:** AC-026,
   `CLI-JSON-PRIVACY-001`, `CLI-PROCESS-ERROR-PRIVACY-001`,
-  `CLI-PROBE-ERROR-PRIVACY-001`, and
-  `DESKTOP-VOLUME-SCAN-ERROR-001`; future logging/session layers.
+  `CLI-PROBE-ERROR-PRIVACY-001`, `BROKER-CLIENT-READER-004`, and
+  `WIN-ERROR-PRIVACY-001`; future logging/session layers.
 - **Status:** `Partial`.
 
 ## NFR-005 — Accessibility
@@ -82,10 +82,10 @@ Each record uses the requirement fields mandated by master spec §23.2.
   forced-colors, and effective reduced-motion coverage is implemented in
   `apps/desktop/src/App.tsx`, `apps/desktop/src/styles/global.css`, and
   component/CSS
-  tests `DESKTOP-NAVIGATION-FOCUS-001`,
-  `DESKTOP-FORCED-COLORS-FOCUS-001`, and
+  tests `WIN-NAVIGATION-FOCUS-001`,
+  `WIN-VOLUME-RADIO-A11Y-001`, and
   `DESKTOP-EFFECTIVE-PREFS-001`, plus the named focusable table-region test
-  `DESKTOP-VOLUME-TABLE-A11Y-001`. Automated accessibility, 200% scaling,
+  `WIN-CANDIDATE-TABLE-A11Y-001`. Automated accessibility, 200% scaling,
   assistive-technology, and real-shell acceptance remain covered by
   `JUST-NFR-005-UNVERSIONED-UI`.
 - **Status:** `Partial`.

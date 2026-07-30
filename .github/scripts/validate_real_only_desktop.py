@@ -12,10 +12,18 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 
-ALLOWED_COMMANDS = {"select_and_scan_image"}
+ALLOWED_COMMANDS = {
+    "list_storage_sources",
+    "select_scan_folder",
+    "scan_storage_volume",
+    "get_candidate_page",
+}
 ALLOWED_CAPABILITIES = {"core:default", "dialog:allow-open"}
 FORBIDDEN_PRODUCTION_FILES = {
     "api/mock.ts",
+    "api/desktop.ts",
+    "api/report.ts",
+    "state/imageScan.ts",
     "views/LiveScanView.tsx",
     "views/RestoreView.tsx",
     "views/SessionsView.tsx",
@@ -32,6 +40,12 @@ PRODUCTION_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 TEST_FILE = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$", re.IGNORECASE)
 SIMULATION_PATTERNS = (
     (re.compile(r"\bMockDataProvider\b"), "production mock provider"),
+    (
+        re.compile(
+            r"\b(?:Mock|Fake)(?:Data|Provider|Runtime|Source|Candidate|Inventory)\b"
+        ),
+        "production mock or fake surface",
+    ),
     (re.compile(r"\bMath\.random\s*\("), "simulated runtime primitive"),
     (re.compile(r"\bsetInterval\s*\("), "simulated runtime primitive"),
     (
@@ -49,10 +63,22 @@ SKIPPED_RUST_DIRECTORIES = {
     "venv",
     ".venv",
 }
-IO_WINDOWS_SOURCE = Path("crates/io-windows/src/lib.rs")
+IO_WINDOWS_SOURCE = Path("crates/io-windows/src/windows.rs")
+IO_WINDOWS_CRATE_ROOT = Path("crates/io-windows/src/lib.rs")
+IO_WINDOWS_TRANSPORT_CONFIG = Path("crates/io-windows/src/transport_config.rs")
 IO_WINDOWS_MANIFEST = Path("crates/io-windows/Cargo.toml")
+BROKER_ROOT = Path("crates/elevated-broker")
 ALLOWED_WINDOWS_SYS_VERSION = "=0.61.2"
-ALLOWED_WINDOWS_SYS_FEATURES = ["Win32_Storage_FileSystem"]
+ALLOWED_WINDOWS_SYS_FEATURES = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+]
 
 
 def joined(*parts: str) -> str:
@@ -61,52 +87,39 @@ def joined(*parts: str) -> str:
     return "".join(parts)
 
 
-FORBIDDEN_SCAN_IDENTIFIERS = (
-    (
-        "CreateFile",
-        re.compile(r"\bCreateFile(?:A|W|2)\b"),
-    ),
-    (
-        "WriteFile",
-        re.compile(r"\b(?:Nt|Zw)?WriteFile(?:Ex|Gather)?\b"),
-    ),
-    (
-        "DeviceIoControl",
-        re.compile(r"\bDeviceIoControl\b"),
-    ),
-    (
-        joined("GENERIC_", "WRITE"),
-        re.compile(rf"\b{re.escape(joined('GENERIC_', 'WRITE'))}\b"),
-    ),
-    (
-        joined("FILE_", "WRITE_*"),
-        re.compile(rf"\b{re.escape(joined('FILE_', 'WRITE_'))}[A-Z0-9_]+\b"),
-    ),
-    (
-        joined("FILE_", "APPEND_DATA"),
-        re.compile(rf"\b{re.escape(joined('FILE_', 'APPEND_DATA'))}\b"),
-    ),
-    (
-        joined("FILE_", "ALL_ACCESS"),
-        re.compile(rf"\b{re.escape(joined('FILE_', 'ALL_ACCESS'))}\b"),
-    ),
-    (
-        joined("FS", "CTL_*"),
-        re.compile(rf"\b{re.escape(joined('FS', 'CTL_'))}[A-Z0-9_]+\b"),
-    ),
-    (
-        joined("IO", "CTL_*"),
-        re.compile(rf"\b{re.escape(joined('IO', 'CTL_'))}[A-Z0-9_]+\b"),
-    ),
-)
 UNSAFE_TOKEN = re.compile(r"\bunsafe\b")
-ALLOWED_UNSAFE_BLOCK = re.compile(
-    r"""
-    \bunsafe\s*\{\s*
-    GetDriveTypeW\s*\(\s*root\s*\.\s*as_ptr\s*\(\s*\)\s*\)
-    \s*\}
-    """,
-    re.VERBOSE,
+CREATE_FILE_TOKEN = re.compile(r"\bCreateFile(?:A|W|2)\b")
+DEVICE_CONTROL_TOKEN = re.compile(r"\bDeviceIoControl\b")
+GENERIC_WRITE_TOKEN = re.compile(
+    rf"\b{re.escape(joined('GENERIC_', 'WRITE'))}\b"
+)
+CONTROL_CODE_TOKEN = re.compile(r"\b(?:IOCTL|FSCTL)_[A-Z0-9_]+\b")
+ALLOWED_CONTROL_CODES = {
+    joined("IOCTL_", "VOLUME_GET_VOLUME_DISK_EXTENTS"),
+    joined("IOCTL_", "DISK_GET_LENGTH_INFO"),
+    joined("IOCTL_", "STORAGE_QUERY_PROPERTY"),
+}
+MUTATING_WINDOWS_API = re.compile(
+    joined(
+        r"\b(?:",
+        r"(?:Nt|Zw)?WriteFile(?:Ex|Gather)?|",
+        r"DeleteFile(?:A|W)?|RemoveDirectory(?:A|W)?|",
+        r"MoveFile(?:Ex|Transacted)?(?:A|W)?|ReplaceFile(?:A|W)?|",
+        r"SetEndOfFile|SetFileInformationByHandle|",
+        r"SetVolumeMountPoint(?:A|W)?|DeleteVolumeMountPoint(?:A|W)?|",
+        r"SetVolumeLabel(?:A|W)?|LockFile(?:Ex)?",
+        r")\b",
+    ),
+    re.IGNORECASE,
+)
+MUTATING_ACCESS_TOKEN = re.compile(
+    joined(
+        r"\b(?:",
+        r"FILE_(?:WRITE_[A-Z0-9_]+|APPEND_DATA|ALL_ACCESS)|",
+        r"DELETE|WRITE_DAC|WRITE_OWNER|",
+        r"CREATE_ALWAYS|CREATE_NEW|OPEN_ALWAYS|TRUNCATE_EXISTING",
+        r")\b",
+    )
 )
 
 
@@ -304,8 +317,8 @@ def validate_io_windows_manifest(root: Path, errors: list[str]) -> int:
     if specification != expected:
         errors.append(
             f"{relative(root, path)}: windows-sys must be pinned to "
-            f"{ALLOWED_WINDOWS_SYS_VERSION} with only "
-            f"{ALLOWED_WINDOWS_SYS_FEATURES[0]}"
+            f"{ALLOWED_WINDOWS_SYS_VERSION} with exactly the audited "
+            "read-only inventory, pipe, process, and device-query features"
         )
 
     allowed_location = (
@@ -323,6 +336,160 @@ def validate_io_windows_manifest(root: Path, errors: list[str]) -> int:
     return 1
 
 
+def rust_item_span(code: str, function_name: str) -> tuple[int, int] | None:
+    match = re.search(rf"\bfn\s+{re.escape(function_name)}\b[^{{]*\{{", code)
+    if match is None:
+        return None
+    opening = code.find("{", match.start(), match.end())
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "{":
+            depth += 1
+        elif code[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return match.start(), index + 1
+    return None
+
+
+def rust_call_arguments(code: str, call_name: str) -> list[tuple[int, int, list[str]]]:
+    calls: list[tuple[int, int, list[str]]] = []
+    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", code):
+        opening = code.find("(", match.start(), match.end())
+        depth = 1
+        argument_start = opening + 1
+        arguments: list[str] = []
+        index = argument_start
+        while index < len(code) and depth:
+            character = code[index]
+            if character in "([{":
+                depth += 1
+            elif character in ")]}":
+                depth -= 1
+                if depth == 0:
+                    trailing = code[argument_start:index]
+                    if trailing.strip():
+                        arguments.append(trailing)
+                    calls.append((match.start(), index + 1, arguments))
+                    break
+            elif character == "," and depth == 1:
+                arguments.append(code[argument_start:index])
+                argument_start = index + 1
+            index += 1
+    return calls
+
+
+def compact(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def within(position: int, span: tuple[int, int] | None) -> bool:
+    return span is not None and span[0] <= position < span[1]
+
+
+def validate_windows_ffi_boundary(
+    root: Path,
+    path: Path,
+    text: str,
+    code: str,
+    errors: list[str],
+) -> None:
+    name = relative(root, path)
+    unsafe_count = len(UNSAFE_TOKEN.findall(code))
+    safety_count = len(re.findall(r"(?m)^\s*// SAFETY:", text))
+    if unsafe_count == 0:
+        errors.append(f"{name}: audited Windows boundary must contain reviewed FFI")
+    if unsafe_count != safety_count:
+        errors.append(
+            f"{name}: every unsafe operation requires one local SAFETY justification"
+        )
+
+    if MUTATING_WINDOWS_API.search(code):
+        errors.append(f"{name}: mutating Windows API is forbidden")
+    if MUTATING_ACCESS_TOKEN.search(code):
+        errors.append(
+            f"{name}: mutating access or create disposition is forbidden"
+        )
+
+    raw_span = rust_item_span(code, "open_volume_for_read")
+    pipe_span = rust_item_span(code, "connect_broker_pipe")
+    if raw_span is None:
+        errors.append(f"{name}: missing audited open_volume_for_read boundary")
+    if pipe_span is None:
+        errors.append(f"{name}: missing audited connect_broker_pipe boundary")
+
+    create_calls = rust_call_arguments(code, "CreateFileW")
+    raw_calls = [call for call in create_calls if within(call[0], raw_span)]
+    pipe_calls = [call for call in create_calls if within(call[0], pipe_span)]
+    expected_raw_access = joined("GENERIC_", "READ")
+    expected_pipe_access = joined("GENERIC_", "READ|GENERIC_", "WRITE")
+    allowed_access = {
+        "0",
+        expected_raw_access,
+        "FILE_READ_ATTRIBUTES",
+        expected_pipe_access,
+    }
+    for _, _, arguments in create_calls:
+        if len(arguments) != 7:
+            errors.append(f"{name}: every CreateFileW call must have seven fixed arguments")
+            continue
+        access = compact(arguments[1])
+        disposition = compact(arguments[4])
+        if access not in allowed_access:
+            errors.append(f"{name}: unapproved CreateFileW desired-access expression")
+        if disposition != "OPEN_EXISTING":
+            errors.append(f"{name}: every CreateFileW call must use OPEN_EXISTING")
+
+    if (
+        len(raw_calls) != 1
+        or len(raw_calls[0][2]) != 7
+        or compact(raw_calls[0][2][1]) != expected_raw_access
+        or compact(raw_calls[0][2][4]) != "OPEN_EXISTING"
+    ):
+        errors.append(
+            f"{name}: raw volume open must use exactly GENERIC_READ and OPEN_EXISTING"
+        )
+    if (
+        len(pipe_calls) != 1
+        or len(pipe_calls[0][2]) != 7
+        or compact(pipe_calls[0][2][1]) != expected_pipe_access
+        or compact(pipe_calls[0][2][4]) != "OPEN_EXISTING"
+    ):
+        errors.append(
+            f"{name}: {joined('GENERIC_', 'WRITE')} is allowed only for "
+            "the fixed named-pipe transport"
+        )
+
+    use_spans = [
+        (match.start(), match.end())
+        for match in re.finditer(r"\buse\b[^;]*;", code, re.DOTALL)
+    ]
+    for match in GENERIC_WRITE_TOKEN.finditer(code):
+        if within(match.start(), pipe_span) or any(
+            start <= match.start() < end for start, end in use_spans
+        ):
+            continue
+        errors.append(
+            f"{name}: {joined('GENERIC_', 'WRITE')} is allowed only for "
+            "the fixed named-pipe transport"
+        )
+
+    observed_codes = set(CONTROL_CODE_TOKEN.findall(code))
+    for control_code in sorted(observed_codes - ALLOWED_CONTROL_CODES):
+        errors.append(
+            f"{name}: unapproved device-control code {control_code!r}"
+        )
+    for _, _, arguments in rust_call_arguments(code, "DeviceIoControl"):
+        if len(arguments) != 8:
+            errors.append(f"{name}: DeviceIoControl call must have eight fixed arguments")
+            continue
+        control_code = compact(arguments[1]).split("::")[-1]
+        if control_code not in ALLOWED_CONTROL_CODES:
+            errors.append(
+                f"{name}: unapproved device-control code {control_code!r}"
+            )
+
+
 def validate_rust_safety_boundary(root: Path, errors: list[str]) -> int:
     source_paths = first_party_rust_sources(root)
     allowed_path = root / IO_WINDOWS_SOURCE
@@ -336,29 +503,38 @@ def validate_rust_safety_boundary(root: Path, errors: list[str]) -> int:
         if text is None:
             continue
         code = mask_rust_comments_and_literals(text)
-        unsafe_tokens = list(UNSAFE_TOKEN.finditer(code))
-
         if path == allowed_path:
-            allowed_blocks = list(ALLOWED_UNSAFE_BLOCK.finditer(code))
-            if len(unsafe_tokens) != 1 or len(allowed_blocks) != 1:
-                errors.append(
-                    f"{relative(root, path)}: exactly one unsafe block is allowed, "
-                    "containing only GetDriveTypeW(root.as_ptr())"
-                )
-        elif unsafe_tokens:
+            validate_windows_ffi_boundary(root, path, text, code, errors)
+            continue
+
+        if UNSAFE_TOKEN.search(code):
             errors.append(
                 f"{relative(root, path)}: unsafe Rust is forbidden outside "
                 f"{IO_WINDOWS_SOURCE.as_posix()}"
             )
+        if CREATE_FILE_TOKEN.search(code):
+            errors.append(
+                f"{relative(root, path)}: CreateFile is restricted to "
+                f"{IO_WINDOWS_SOURCE.as_posix()}"
+            )
+        if DEVICE_CONTROL_TOKEN.search(code):
+            errors.append(
+                f"{relative(root, path)}: DeviceIoControl is restricted to "
+                f"{IO_WINDOWS_SOURCE.as_posix()}"
+            )
+        if MUTATING_WINDOWS_API.search(code) or MUTATING_ACCESS_TOKEN.search(code):
+            errors.append(
+                f"{relative(root, path)}: mutating Windows API or access token is forbidden"
+            )
 
-        if is_scan_boundary_source(root, path):
-            for name, pattern in FORBIDDEN_SCAN_IDENTIFIERS:
-                if pattern.search(code):
-                    errors.append(
-                        f"{relative(root, path)}: forbidden scan-boundary "
-                        f"Windows API or access token {name!r}"
-                    )
-
+    crate_root = root / IO_WINDOWS_CRATE_ROOT
+    crate_text = read_text(root, crate_root, errors) if crate_root.is_file() else None
+    if crate_text is None:
+        errors.append(f"{IO_WINDOWS_CRATE_ROOT.as_posix()}: missing crate root")
+    elif "#![deny(unsafe_op_in_unsafe_fn)]" not in crate_text:
+        errors.append(
+            f"{IO_WINDOWS_CRATE_ROOT.as_posix()}: unsafe operations must be denied in unsafe fn"
+        )
     return inspected
 
 
@@ -408,14 +584,23 @@ def validate_frontend(root: Path, desktop: Path, errors: list[str]) -> int:
         text = read_text(root, path, errors)
         if text is None:
             continue
+        if re.search(r"(?:^|[._-])(?:mock|fake|demo)(?:[._-]|$)", path.name, re.IGNORECASE):
+            errors.append(
+                f"{relative(root, path)}: mock, fake, and demo production files are forbidden"
+            )
         for pattern, message in SIMULATION_PATTERNS:
             if pattern.search(text):
                 errors.append(f"{relative(root, path)}: {message} is forbidden")
         commands.update(INVOKE_PATTERN.findall(text))
 
-    if not commands:
+    removed_image_command = joined("select_", "and_", "scan_", "image")
+    if removed_image_command in commands:
         errors.append(
-            "apps/desktop/src: no literal Tauri command invocation was found"
+            "apps/desktop/src: removed image command is forbidden"
+        )
+    for command in sorted(ALLOWED_COMMANDS - commands):
+        errors.append(
+            f"apps/desktop/src: missing Tauri command invocation {command!r}"
         )
     for command in sorted(commands - ALLOWED_COMMANDS):
         errors.append(
@@ -540,10 +725,29 @@ def validate_tauri_sources(root: Path, tauri: Path, errors: list[str]) -> int:
             combined += "\n" + text
     if "#![forbid(unsafe_code)]" not in combined:
         errors.append("apps/desktop/src-tauri/src: unsafe code is not forbidden")
-    if "select_and_scan_image" not in combined:
-        errors.append(
-            "apps/desktop/src-tauri/src: real scan command is not registered"
+    registrations = re.findall(
+        r"generate_handler!\s*\[(.*?)\]",
+        combined,
+        re.DOTALL,
+    )
+    registered_commands: set[str] = set()
+    for registration in registrations:
+        registered_commands.update(
+            match.group(1)
+            for match in re.finditer(
+                r"(?:^|,)\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*"
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*(?=,|$)",
+                registration,
+            )
         )
+    if registered_commands != ALLOWED_COMMANDS:
+        errors.append(
+            "apps/desktop/src-tauri/src: backend command registration must be "
+            f"exactly {sorted(ALLOWED_COMMANDS)!r}"
+        )
+    removed_image_command = joined("select_", "and_", "scan_", "image")
+    if removed_image_command in combined:
+        errors.append("apps/desktop/src-tauri/src: removed image command is forbidden")
     for forbidden_command in (
         "list_physical_drives",
         "pause_scan",
@@ -580,6 +784,133 @@ def validate_tauri_sources(root: Path, tauri: Path, errors: list[str]) -> int:
         errors.append("apps/desktop/src-tauri: Windows manifest must run asInvoker")
     if re.search(r"requireAdministrator|highestAvailable", manifest_text):
         errors.append("apps/desktop/src-tauri: Windows manifest must run asInvoker")
+    legacy_dpi_aware = re.search(
+        r"<dpiAware\b[^>]*>\s*true/pm\s*</dpiAware>",
+        manifest_text,
+        flags=re.IGNORECASE,
+    )
+    per_monitor_v2 = re.search(
+        r"<dpiAwareness\b[^>]*>\s*PerMonitorV2\s*,\s*PerMonitor\s*</dpiAwareness>",
+        manifest_text,
+        flags=re.IGNORECASE,
+    )
+    if legacy_dpi_aware is None or per_monitor_v2 is None:
+        errors.append(
+            "apps/desktop/src-tauri: Windows manifest must declare "
+            "PerMonitorV2 DPI awareness with the true/pm fallback"
+        )
+    return inspected
+
+
+def validate_broker_boundary(root: Path, errors: list[str]) -> int:
+    inspected = 0
+    transport_path = root / IO_WINDOWS_TRANSPORT_CONFIG
+    transport = (
+        read_text(root, transport_path, errors)
+        if transport_path.is_file()
+        else None
+    )
+    if transport is None:
+        errors.append(
+            f"{IO_WINDOWS_TRANSPORT_CONFIG.as_posix()}: missing fixed broker configuration"
+        )
+    else:
+        inspected += 1
+        expected_name = 'const BROKER_FILE_NAME: &str = "undelete-master-broker.exe";'
+        transport_code = mask_rust_comments_and_literals(transport)
+        sibling_span = rust_item_span(
+            transport_code,
+            "broker_executable_from_current",
+        )
+        sibling_code = (
+            transport_code[sibling_span[0]:sibling_span[1]]
+            if sibling_span is not None
+            else ""
+        )
+        if (
+            expected_name not in transport
+            or "current_executable.is_absolute()" not in compact(sibling_code)
+            or ".parent()" not in sibling_code
+            or ".join(BROKER_FILE_NAME)" not in compact(sibling_code)
+        ):
+            errors.append(
+                f"{relative(root, transport_path)}: broker must be a fixed sibling executable"
+            )
+
+    windows_path = root / IO_WINDOWS_SOURCE
+    windows_text = (
+        read_text(root, windows_path, errors) if windows_path.is_file() else None
+    )
+    if windows_text is not None:
+        inspected += 1
+        windows_code = mask_rust_comments_and_literals(windows_text)
+        launch_span = rust_item_span(windows_code, "launch_elevated_broker")
+        launch_code = (
+            windows_code[launch_span[0]:launch_span[1]]
+            if launch_span is not None
+            else ""
+        )
+        launch_text = (
+            windows_text[launch_span[0]:launch_span[1]]
+            if launch_span is not None
+            else ""
+        )
+        required_code = (
+            "std::env::current_exe",
+            "broker_executable_from_current",
+            ".canonicalize()",
+            ".parent()",
+            ".file_name()",
+            "ShellExecuteExW",
+        )
+        if (
+            launch_span is None
+            or any(token not in launch_code for token in required_code)
+            or '"runas"' not in launch_text
+            or '"undelete-master-broker.exe"' not in launch_text
+        ):
+            errors.append(
+                f"{relative(root, windows_path)}: elevated launch must use runas "
+                "with the canonical fixed sibling broker"
+            )
+
+    broker_root = root / BROKER_ROOT
+    broker_manifest = broker_root / "undelete-master-broker.manifest"
+    manifest = (
+        read_text(root, broker_manifest, errors)
+        if broker_manifest.is_file()
+        else None
+    )
+    if manifest is None:
+        errors.append(
+            f"{relative(root, broker_manifest)}: missing broker elevation manifest"
+        )
+    else:
+        inspected += 1
+        if (
+            'level="requireAdministrator"' not in manifest
+            or 'uiAccess="false"' not in manifest
+            or re.search(r"level=\"(?:asInvoker|highestAvailable)\"", manifest)
+        ):
+            errors.append(
+                f"{relative(root, broker_manifest)}: broker manifest must "
+                "requireAdministrator with uiAccess false"
+            )
+
+    broker_source = broker_root / "src" / "lib.rs"
+    source = (
+        read_text(root, broker_source, errors)
+        if broker_source.is_file()
+        else None
+    )
+    if source is None:
+        errors.append(f"{relative(root, broker_source)}: missing broker source")
+    else:
+        inspected += 1
+        if "#![forbid(unsafe_code)]" not in source:
+            errors.append(
+                f"{relative(root, broker_source)}: elevated broker must forbid unsafe code"
+            )
     return inspected
 
 
@@ -600,6 +931,7 @@ def validate_repository(root: Path) -> tuple[list[str], int]:
     inspected += validate_tauri_sources(root, tauri, errors)
     inspected += validate_io_windows_manifest(root, errors)
     inspected += validate_rust_safety_boundary(root, errors)
+    inspected += validate_broker_boundary(root, errors)
     return errors, inspected
 
 

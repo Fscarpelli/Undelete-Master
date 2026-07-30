@@ -92,7 +92,10 @@ fn fat32_recovers_deleted_files_byte_exact() {
     assert_eq!(out.candidates.len(), 1);
 
     let cand = find(&out.candidates, "Foto de Família.jpg");
-    assert!(cand.name_certain, "LFN must give the exact name");
+    assert!(
+        !cand.name_certain,
+        "a deleted LFN is useful name evidence, but its checksum cannot be verified"
+    );
     assert_eq!(cand.size, 5000);
     let ext = extract_candidate(&reader, cand).unwrap();
     assert_eq!(
@@ -160,6 +163,41 @@ fn fat32_deleted_directory_tree_is_navigable() {
     assert_ne!(file.metadata_confidence, MetadataConfidence::High);
     let ext = extract_candidate(&reader, file).unwrap();
     assert_eq!(ext.bytes, data);
+}
+
+#[test]
+fn fat_deleted_directory_cleared_chain_001_marks_scan_partial() {
+    let mut builder = FatImageBuilder::new("fat32-deleted-dir-cleared-chain", FatKind::Fat32);
+    let deleted_dir = builder.add_dir(NodeParent::Root, "Arquivo", true);
+    builder.add_file(
+        NodeParent::Node(deleted_dir),
+        "known-child.txt",
+        b"known child".to_vec(),
+        true,
+        FatFileOptions::default(),
+    );
+
+    let (image, _) = builder.build();
+    let output = um_fs_fat::scan_fat(&MemImageReader::new(
+        "fat32-deleted-dir-cleared-chain",
+        image,
+    ))
+    .expect("scan deleted directory fixture");
+
+    assert!(
+        output
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "known-child.txt"),
+        "the known first-cluster child should still be reported"
+    );
+    assert!(
+        !output.is_complete,
+        "a cleared directory chain cannot prove that the inspected first cluster held every child"
+    );
+    assert!(output.warnings.iter().any(|warning| {
+        warning.contains("Arquivo") && warning.contains("only its first cluster")
+    }));
 }
 
 #[test]

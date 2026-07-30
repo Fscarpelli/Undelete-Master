@@ -1,16 +1,15 @@
+import { isTauri } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
-import { desktopRuntimeAvailable } from "./api/desktop";
 import { AppShell, type Screen } from "./components/AppShell";
 import { translate, type MessageKey } from "./i18n/messages";
-import { useImageScan } from "./state/imageScan";
 import { usePreferences } from "./state/preferences";
+import { useStorageScan } from "./state/storageScan";
 import { AnalysisView } from "./views/AnalysisView";
 import { HelpView } from "./views/HelpView";
 import { SettingsView } from "./views/SettingsView";
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("analysis");
-  const { state: scanState, start: startScan } = useImageScan();
   const {
     preferences,
     persistenceAvailable,
@@ -18,7 +17,8 @@ export function App() {
     setTheme,
     setReducedMotion,
   } = usePreferences();
-  const runtimeAvailable = desktopRuntimeAvailable();
+  const runtimeAvailable = isTauri();
+  const storage = useStorageScan(runtimeAvailable);
   const t = useMemo(
     () => (key: MessageKey) => translate(preferences.locale, key),
     [preferences.locale],
@@ -31,8 +31,14 @@ export function App() {
           runtimeAvailable={runtimeAvailable}
           locale={preferences.locale}
           t={t}
-          scanState={scanState}
-          startScan={startScan}
+          state={storage.state}
+          refreshInventory={storage.refreshInventory}
+          selectVolume={storage.selectVolume}
+          selectFolder={storage.selectFolder}
+          clearFolder={storage.clearFolder}
+          startScan={storage.startScan}
+          loadMore={storage.loadMore}
+          resetScan={storage.resetScan}
         />
       )}
       {screen === "settings" && (

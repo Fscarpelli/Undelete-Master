@@ -14,4 +14,8 @@ pub mod runs;
 mod scan;
 
 pub use boot::NtfsBoot;
-pub use scan::{scan_ntfs, NtfsScanOutput};
+pub use scan::{
+    scan_ntfs, NtfsCandidatePathEvidence, NtfsDirectoryNode, NtfsDirectoryResolution,
+    NtfsNamespace, NtfsNamespaceIndex, NtfsNamespaceIndexError, NtfsNamespacePath, NtfsNodeRef,
+    NtfsPathState, NtfsScanOutput, NtfsScopeMembership,
+};

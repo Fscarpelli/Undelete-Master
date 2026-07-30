@@ -1,62 +1,92 @@
 # SDD-012 — Test and Validation Plan
 
-Status: Normative; local deterministic gates implemented, external acceptance partial
+Status: Normative; connected-volume final evidence pending
 
-## Pull-request gates
+## Mandatory same-revision gates
 
-- Rust format, Clippy with warnings denied, workspace tests and release build.
-- Frontend lockfile install with lifecycle scripts disabled, lint, strict
-  TypeScript, Vitest and Vite build.
-- Unelevated Tauri `--no-bundle` executable build on the Windows runner.
-- Documentation IDs, statuses, implementation paths, tests and local links.
-- Static destructive-storage and real-only desktop boundary validators.
-- No real disk, raw device, VHD attach, format, trim, lock or dismount command.
+Run from the repository root:
 
-The canonical frontend lockfile is `apps/desktop/pnpm-lock.yaml`; CI uses
-`pnpm install --frozen-lockfile --ignore-scripts`. The static storage guard
-reviews workflows and enumerated first-party executable surfaces, including
-local helpers and package scripts. The real-only guard rejects production mock
-providers, simulation timers/randomness, unapproved invokes/capabilities,
-privileged plugins, remote CSP sources and elevation.
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-## Current evidence levels
+Run from `apps/desktop`:
 
-| Level | Implemented evidence | Remaining evidence |
+```text
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+Also run the documentation, CI-safety and real-only desktop validators and
+build the native desktop and broker from the same frozen revision. A focused
+test is useful evidence but never replaces a required full gate.
+
+## Prohibited validation
+
+Ordinary local and pull-request tests must not:
+
+- open a real disk, mounted volume or `PhysicalDriveN`;
+- attach or initialize a VHD;
+- format, trim, repair, lock, dismount, mount or delete storage;
+- launch a real scan automatically;
+- depend on a sample production provider.
+
+Tests use deterministic in-repository images, synthetic readers, in-memory
+protocol transports and disposable temporary ordinary files/directories.
+Read-only live inventory may be inspected manually, but inventory is not proof
+that a real source scan succeeded.
+
+## Required evidence layers
+
+| Layer | Required checks | Current disposition |
 | --- | --- | --- |
-| Unit/property | Focused parser bounds, canonical/reciprocal GPT copy selection, NTFS logical-MFT/signature/attribute completeness, FAT table-allocation and directory traversal/chain/depth completeness, DTO/schema, error privacy, preferences, focus and CSP regressions; the frozen-tree full workspace/frontend suites pass. | Broader fuzz/property corpora. |
-| Integration | Focused deterministic NTFS/FAT/partition scans and Tauri-to-CLI parity paths; the frozen-tree workspace/frontend gates pass. | External forensic corpora and packaged/native integration. |
-| Frontend | Focused runtime, concurrency, schema/status, partial-caveat, privacy, preferences, navigation-focus, scroll-table accessibility, forced-colors and development-CSP tests; lint, typecheck, 28 tests, and production build pass on the frozen code tree. | Native assistive-technology, 200% zoom and visual acceptance. |
-| Native build | Source/config tests cover CSP, capability and `asInvoker` declarations. | Final same-revision native executable build, extracted-manifest inspection, packaged smoke, signing, clean-machine, update and uninstall. |
-| Security | CI static guards and hostile path regression tests. | Broker, sandbox and restore boundary tests. |
-| Performance | Parser work limits only. | Benchmarks, cancellation and large real corpora. |
+| Windows inventory | local/mapped/composite policy, opaque IDs, display grouping, decimal strings, no native paths | Focused tests present; final full gate pending |
+| Folder authority | NTFS-only, remote/reparse/cross-volume refusal, volume serial and record/sequence binding | Focused tests present; native acceptance pending |
+| Protocol v2 | exact ten-message schema, one-megabyte cap, malformed frames, sequence replay/gap, nonce mismatch | Focused tests present; final full gate pending |
+| Broker lifecycle | fixed sibling, manifests, current-user pipe, peer PID/liveness, timeout, close/shutdown | Focused tests present; packaged evidence pending |
+| Read path | exact geometry, checked ranges, one-megabyte chunking, source change, 256-and-one-second cadence | Synthetic tests present; no real scan claim |
+| Scanner | deterministic NTFS/FAT/partition candidates, partial truth and namespace ancestry | Focused tests present; external corpora pending |
+| Desktop DTO/state | four commands, schema 1, decimal strings, 100-row pages, scan-bound cursors, 32 scopes/4 sessions | Focused tests present; final full gate pending |
+| Frontend | fail closed, real inventory flow, folder cancel, scan/page flow, privacy, stale/duplicate control, a11y | 28-test suite reported during implementation; final frozen revision pending |
+| Static safety | no source mutation, no physical-disk production authority, exact API/opcode/command allowlists, no real-device CI | Validator update and final run pending |
+| Native package | both binaries, hashes, fixed sibling layout, extracted `asInvoker`/`requireAdministrator` manifests | Pending |
+| Native UX | actual Tauri window, inventory only, required sizes, focus/zoom/forced colors | Pending |
+| Remote | pushed revision and successful GitHub Actions conclusions | Pending |
+| Release | Authenticode, clean machine, SBOM/licensing and endpoint-security disposition | Pending |
 
-Only deterministic synthetic images or temporary regular files may be used in
-ordinary tests. A passing local component suite is not proof of complete
-real-world recovery support.
+## Focused regression families
 
-The focused regression set for the current behavior includes
-`NTFS-BITMAP-BOUND-004`, `CLI-PROBE-ERROR-PRIVACY-001`,
-`NTFS-MFT-SIZE-001`, `NTFS-RECORD-SIGNATURE-001`,
-`NTFS-ATTRIBUTE-BOUNDS-001`, `NTFS-ATTRIBUTE-LIST-PARTIAL-001`,
-`FAT-COMPLETENESS-001` through `FAT-COMPLETENESS-004`,
-`FAT-TABLE-BOUND-001`, `FAT-DEPTH-BOUND-001`,
-`FAT-DIRECTORY-CHAIN-BOUND-001`,
-`CLI-IMAGE-FAT-PARTIAL-001`, `PART-GPT-BACKUP-001` through
-`PART-GPT-BACKUP-005`, `PART-GPT-PROTECTIVE-001`,
-`DESKTOP-VOLUME-SCAN-ERROR-001`, `DESKTOP-SCAN-STATUS-001`,
-`DESKTOP-PARTIAL-SCAN-STATUS-001`, `DESKTOP-FAT-PARTIAL-001`,
-`DESKTOP-NAVIGATION-FOCUS-001`,
-`DESKTOP-FORCED-COLORS-FOCUS-001`, and `DESKTOP-DEV-CSP-001`.
-The UI/CSP subset also includes `DESKTOP-VOLUME-TABLE-A11Y-001` and
-`DESKTOP-DEV-CSP-002`.
-This list records targeted evidence; it does not replace any required command
-or native acceptance gate.
+- `WINDOWS-INVENTORY-*`, `WINDOWS-FOLDER-SCOPE-*`,
+  `WINDOWS-RAW-READ-PLAN-*`, `WINDOWS-NAMED-PIPE-*`;
+- `BROKER-PROTOCOL-ARCH-*`, `BROKER-PROTOCOL-MALFORMED-*`,
+  `BROKER-PROTOCOL-SESSION-*`, `BROKER-PROTOCOL-BOUNDS-*`;
+- `BROKER-CLIENT-PROTOCOL-*`, `BROKER-CLIENT-READER-*`,
+  `BROKER-CLIENT-ARCH-*`;
+- `ELEVATED-BROKER-ARCH-*`, `ELEVATED-BROKER-SESSION-*`,
+  `ELEVATED-BROKER-ARGS-*`, `ELEVATED-BROKER-REVALIDATION-*`;
+- `DESKTOP-INVENTORY-*`, `DESKTOP-FOLDER-SCOPE-*`,
+  `DESKTOP-PAGINATION-*`, `DESKTOP-CANDIDATE-*`,
+  `DESKTOP-STATE-*`, `DESKTOP-REQUEST-ID-*`;
+- `WIN-REAL-INVENTORY-*`, `WIN-FOLDER-CANCEL-*`,
+  `WIN-REAL-SCAN-*`, `WIN-CANDIDATE-PAGINATION-*`,
+  `WIN-DUPLICATE-SCAN-*`, `WIN-ERROR-PRIVACY-*`,
+  `WIN-STALE-UNMOUNT-*`, `WIN-VOLUME-RADIO-A11Y-*`,
+  `WIN-CANDIDATE-TABLE-A11Y-*`, `WIN-PARTIAL-UNKNOWN-*`.
+
+Existing GPT, NTFS, FAT and image-CLI regressions remain required because the
+desktop reuses those parsers.
 
 ## Evidence rule
 
-`Verified` requires a command, source identity, result and retained artifact.
-The frozen-code local command results are retained in the
-[2026-07-29 evidence record](../evidence/real-only-desktop-2026-07-29.md).
-Until remote CI and native/package acceptance evidence are attached, the
-desktop slice as a whole remains `Implemented-unverified`; independently
-testable component requirements may be `Verified`.
+`Verified` requires an exact revision, command, exit status and retained
+artifact or log. Native evidence also requires executable hashes, manifest
+levels and screenshot provenance. Remote evidence requires the workflow URL
+and conclusions.
+
+The [connected-volume evidence record](../evidence/windows-volume-scan-2026-07-29.md)
+must remain explicit about pending gates and the absence of a real-volume scan.
+No component result may be generalized to signed production readiness.

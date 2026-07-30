@@ -103,6 +103,11 @@ class DocumentationValidatorTests(unittest.TestCase):
                 r"\n### SDD-REAL-012\b.*?(?=\n### SDD-|\n## |\Z)",
                 "SDD-REAL-012",
             ),
+            (
+                "docs/specs/018-windows-volume-and-folder-scan.md",
+                r"\n### SDD-WIN-013\b.*?(?=\n### SDD-|\n## |\Z)",
+                "SDD-WIN-013",
+            ),
         )
         for relative, pattern, missing_id in fixtures:
             with self.subTest(missing_id=missing_id), tempfile.TemporaryDirectory() as directory:
@@ -177,6 +182,26 @@ class DocumentationValidatorTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "real-only matrix" in error and "SDD-REAL-012" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_docs_windows_matrix_001_rejects_missing_sdd018_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.copy_repository_fixture(directory)
+            path = root / "docs/traceability-matrix.md"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            changed = "\n".join(
+                line for line in lines if not line.startswith("| SDD-WIN-013 |")
+            )
+            path.write_text(changed + "\n", encoding="utf-8")
+
+            errors, _ = validator.validate_repository(root)
+
+        self.assertTrue(
+            any(
+                "connected-volume matrix" in error and "SDD-WIN-013" in error
                 for error in errors
             ),
             errors,
@@ -480,6 +505,8 @@ class DocumentationValidatorTests(unittest.TestCase):
         self.assertEqual(stats["catalog_frs"], 58)
         self.assertEqual(stats["nfrs"], 8)
         self.assertEqual(stats["sdd016_requirements"], 11)
+        self.assertEqual(stats["sdd017_requirements"], 12)
+        self.assertEqual(stats["sdd018_requirements"], 13)
         self.assertEqual(stats["adr_topics"], 17)
 
 

@@ -12,8 +12,10 @@
     "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
-    "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "broker:dev": "cargo build -p um-elevated-broker",
+    "broker:release": "cargo build --release -p um-elevated-broker",
+    "desktop:dev": "pnpm broker:dev && tauri dev",
+    "desktop:build": "pnpm broker:release && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

@@ -1,54 +1,91 @@
 # SDD-010 — UX, UI, and Accessibility
 
-Status: image-only desktop slice `Implemented-unverified`
+Status: connected-volume desktop `Implemented-unverified`
 
 ## Current information architecture
 
-The production application contains only:
+The production desktop contains:
 
-- **Analysis:** choose and scan one regular image in Tauri, then render its real
-  aggregate report.
-- **Settings:** language, theme and reduced motion; every control has immediate
-  effect and local persistence.
-- **Help:** implemented scope, safety boundary, absent features and correct
-  interpretation of candidate counts.
+- **Analysis:** load observed mounted volumes into honest logical groups,
+  select one eligible volume, optionally select one NTFS folder, start the real
+  scan and browse real candidate pages.
+- **Settings:** language, theme and reduced motion, each with immediate effect
+  and local persistence.
+- **Help:** supported scope, read-only boundary, UAC explanation, result
+  interpretation and absent features.
 
-Physical sources, scan modes, percentage/ETA, pause/resume/cancel, individual
-candidate rows, restore, preview and sessions are absent until real backends
-exist.
+The browser build fails closed with a desktop-runtime-required state and invokes
+no storage command. It never substitutes sample disks or candidates.
+
+## Analysis flow
+
+1. Inventory loads without UAC.
+2. Each real mounted volume is a labelled radio in a logical group that does
+   not claim a physical disk number.
+3. Unsupported volumes remain non-selectable with their real warning.
+4. Choosing another volume clears the previous folder authority and scan.
+5. An eligible NTFS volume enables the native folder picker. Canceling the
+   dialog changes no scope.
+6. Starting a scan may open UAC for the read-only broker. Inventory and folder
+   selection do not claim to require elevation.
+7. The pending state is indeterminate; there is no invented percentage or ETA.
+8. A completed scan shows real filesystem/status/counts/warnings and the first
+   page of at most 100 real candidates.
+9. “Load more” appends the next scan-bound page without removing prior rows.
+
+Logical group cards are presentation only, not physical-disk maps or
+whole-disk controls. The UI never claims to scan unmounted partitions or all
+bytes of a physical disk.
 
 ## Trust presentation
 
-- Browser-only execution displays a runtime-required state and invokes no data
-  command.
-- The verified read-only seal appears only on a successfully returned report.
-- “Metadata candidate” is not synonymous with “recoverable file.”
-- Every volume displays its required scan status. When any recognized NTFS or
-  FAT volume is `partial`, the analysis view displays a localized coverage
-  caveat and does not present the observed candidate count as exhaustive.
-- Parser warnings are untrusted bounded text and render only as React text.
-- No implicit fallback or generated state may fabricate a result.
+- The results collection uses a neutral “Discovered candidates” label and an
+  always-visible note that state, confidence and score estimate metadata
+  quality; they do not prove intact or recoverable content.
+- A live-volume result is not described as a snapshot.
+- Recognized NTFS/FAT `partial` status remains visible.
+- In folder mode, `unknownCandidates` is separate from matched results; unknown
+  ancestry is not represented as outside.
+- Candidate state, confidence and score are scanner evidence, not certainty.
+- Directories display no recoverability score.
+- Parser warnings and recovered paths render only as text. A path that exceeds
+  the 512-scalar IPC display bound is visibly elided and receives a bounded
+  candidate-derived reference so silent common-prefix collisions do not make
+  distinct rows appear identical.
+- No restore, preview, open, execute or Explorer action appears.
+- UAC denial, source disappearance, unsupported scope, broker failure and
+  incompatible report have stable localized states.
 
 ## Accessibility contract
 
-The current flow uses native buttons, selects, checkbox and table semantics;
-visible focus; named status/progress states; keyboard navigation; forced-color
-styles; light/dark themes; and reduced-motion behavior. Navigation moves
-programmatic focus to the newly selected view's level-one heading. In Windows
-forced-colors mode, focusable controls use an explicit `Highlight` outline and
-do not depend on a box shadow. The horizontally scrollable volume-table
-container is a keyboard-focusable named region, and the table has a visually
-hidden localized caption with the same accessible name. The layout remains
-usable at the Tauri minimum window and reflows below it for browser inspection.
+The interface uses native buttons, radio groups, selects, checkbox and table
+semantics; visible focus; named status regions; keyboard navigation;
+forced-color rules; light/dark themes; and reduced-motion behavior.
 
-Focused tests cover the fail-closed state, native cancellation,
-duplicate/stale responses, real and partial report presentation, localized
-errors, effective preferences, navigation heading focus, and forced-colors
-focus rules. Relevant IDs are `DESKTOP-PARTIAL-SCAN-STATUS-001`,
-`DESKTOP-FAT-PARTIAL-001`,
-`DESKTOP-NAVIGATION-FOCUS-001`,
-`DESKTOP-FORCED-COLORS-FOCUS-001`, and
-`DESKTOP-EFFECTIVE-PREFS-001`, and
-`DESKTOP-VOLUME-TABLE-A11Y-001`. Native visual, 200% zoom, and
-assistive-technology acceptance remain open and are not replaced by
-source/CSS/component inspection or screenshots.
+The Windows application manifest declares both the `true/pm` fallback and
+`PerMonitorV2, PerMonitor`. At 150% scaling, the native WebView client and UI
+Automation root have identical physical dimensions, so Windows DPI
+virtualization does not conceal controls or warnings.
+
+Navigation moves focus to the new level-one heading. Every volume radio has an
+accessible label. The candidate table is inside a keyboard-focusable named
+region, includes an accessible caption and directionally isolates recovered
+paths. Focus does not depend only on shadow or color.
+
+Focused component and native-adapter tests cover volume-radio labels,
+candidate-table naming and the metadata-quality caveat, long-path
+disambiguation, unknown/partial truth, browser fail-closed behavior, real
+inventory, empty inventory, native folder cancellation, scan/page flow,
+duplicate submission, sanitized errors, late unmount responses, heading focus
+and effective preferences.
+
+Native 150% bounds and clipping acceptance is verified. Native 200% zoom,
+forced-colors on Windows and assistive-technology acceptance remain pending. A
+browser component render or screenshot does not replace actual Tauri
+acceptance.
+
+## Explicitly absent interactions
+
+No image picker, physical-disk scan control, cancellation, pause, resume,
+progress percentage, ETA, restore, preview, session history, carving, exFAT,
+repair or content execution is presented as functional.
