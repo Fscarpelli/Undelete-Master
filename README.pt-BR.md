@@ -6,9 +6,10 @@ evidências.
 
 > **Estado de desenvolvimento:** o desktop já detecta armazenamentos locais
 > conectados, analisa um volume montado escolhido pelo usuário e, em NTFS, pode
-> limitar os resultados a uma pasta selecionada. A restauração ainda não está
-> implementada. Não use esta pré-versão como único meio para recuperar dados
-> importantes.
+> limitar os resultados a uma pasta selecionada. Um modo explícito para o
+> volume NTFS inteiro também executa carving limitado de JPEGs contíguos no
+> espaço comprovadamente livre. A restauração ainda não está implementada. Não
+> use esta pré-versão como único meio para recuperar dados importantes.
 
 [English](README.md)
 
@@ -27,8 +28,16 @@ evidências.
   origem e não possui API de escrita, trim, formatação, lock, dismount,
   restauração ou comando genérico de dispositivo.
 - Varredura defensiva de metadados NTFS e FAT12/16/32, com resultados reais,
-  limitados e paginados. No filtro de pasta NTFS, somente ancestrais comprovados
-  aparecem; ancestralidade desconhecida é contabilizada separadamente.
+  limitados e paginados. A enumeração NTFS informa cobertura quantitativa da
+  MFT e não para mais no antigo prefixo de 64 MiB. No filtro de pasta NTFS,
+  somente ancestrais comprovados aparecem; ancestralidade desconhecida é
+  contabilizada separadamente.
+- Modo explícito de análise profunda de JPEG para o volume NTFS inteiro. Ele
+  envia ao carver somente regiões que um snapshot validado do `$Bitmap`
+  comprova estarem livres, valida a estrutura de forma incremental e limitada,
+  e registra faixa física, SHA-256, versão do validador, cobertura e limites de
+  trabalho. O modo nunca se expande silenciosamente para espaço alocado ou
+  desconhecido.
 - CLI separada `undelete-master scan-image` para arquivos-imagem locais comuns,
   com JSON sanitizado.
 - Testes determinísticos de fixtures e protocolo. Nenhum teste automatizado
@@ -44,9 +53,11 @@ metadados não é garantia de que seu conteúdo possa ser recuperado.
 
 O desktop não analisa o disco físico inteiro, partição desmontada, volume
 multidisco, compartilhamento de rede, unidade óptica ou RAM disk. O filtro por
-pasta exige NTFS. Restauração, prévia, sessões persistentes, carving, exFAT,
-pausa/retomada, cancelamento e instalador assinado ainda não estão
-implementados. Consulte as
+pasta exige NTFS. O carving está limitado a JPEGs contíguos no espaço NTFS
+comprovadamente livre; outros formatos, reconstrução fragmentada, análise RAW
+de sistema danificado e carving de pasta ainda não existem. Restauração,
+prévia, sessões persistentes, pausa/retomada, cancelamento e instalador assinado
+também não estão implementados. Consulte as
 [limitações conhecidas](docs/specs/015-known-limitations.md).
 
 ## Segurança
@@ -116,7 +127,9 @@ volumes montados conectados descrito acima e não oferece seleção de imagem.
 
 - [Especificação mestre](UNDELETE_MASTER_CODEX_MASTER_SPEC.md)
 - [SDD-018 — volumes e pastas no Windows](docs/specs/018-windows-volume-and-folder-scan.md)
+- [SDD-019 — cobertura NTFS e análise JPEG profunda limitada](docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md)
 - [ADR-0023 — broker somente leitura e escopo de pasta](docs/adr/0023-windows-read-only-broker-and-folder-scope.md)
+- [ADR-0024 — MFT em streaming e carving limitado](docs/adr/0024-streaming-mft-and-bounded-content-carving.md)
 - [Requisitos funcionais](docs/specs/001-functional-requirements.md)
 - [Arquitetura](docs/specs/004-architecture.md)
 - [Segurança e privacidade](docs/specs/011-security-and-privacy.md)

@@ -1,10 +1,17 @@
 # Contrato de dados do desktop connected-storage real-only
 
-Versão do schema: `1`
+Versões do schema:
+
+- inventário e seleção de pasta: `1`;
+- resumo do scan: `3`;
+- página de candidatos: `2`.
+
 Fonte normativa:
-[SDD-018](specs/018-windows-volume-and-folder-scan.md)
+[SDD-018](specs/018-windows-volume-and-folder-scan.md) e
+[SDD-019](specs/019-ntfs-coverage-and-jpeg-deep-scan.md)
 Decisão arquitetural:
-[ADR-0023](adr/0023-windows-read-only-broker-and-folder-scope.md)
+[ADR-0023](adr/0023-windows-read-only-broker-and-folder-scope.md) e
+[ADR-0024](adr/0024-streaming-mft-and-bounded-content-carving.md)
 
 Este contrato substitui o contrato de imagem do SDD-017 apenas no desktop. O
 CLI continua aceitando imagens regulares.
@@ -15,6 +22,7 @@ O WebView pode enviar:
 
 - `requestId` curto e sem caracteres de controle;
 - IDs opacos de volume, escopo, scan e cursor;
+- o literal fechado de modo `metadata` ou `deepJpeg`;
 - `limit = 100` no pedido de página.
 
 O WebView não pode enviar nem receber:
@@ -44,6 +52,7 @@ Retorna `StorageInventory`.
 ```ts
 interface SelectScanFolderRequest {
   requestId: string;
+  generation: string;
   volumeId: string;
 }
 ```
@@ -56,12 +65,18 @@ nativo e não muda o escopo atual.
 ```ts
 interface ScanStorageVolumeRequest {
   requestId: string;
+  generation: string;
   volumeId: string;
   scopeId: string | null;
+  mode: "metadata" | "deepJpeg";
 }
 ```
 
 Retorna `ScanSummary`. `scopeId = null` pede o volume montado inteiro.
+`metadata` é o modo padrão mantido pelo estado do frontend. `deepJpeg` é
+aceito nativamente somente com `scopeId = null` e volume NTFS; pasta, FAT,
+filesystem não reconhecido e modo desconhecido falham fechados antes da
+abertura do broker.
 
 ### `get_candidate_page`
 
@@ -77,7 +92,8 @@ interface GetCandidatePageRequest {
 Retorna `CandidatePage`. O backend rejeita qualquer limite diferente de 100.
 
 Não há comando de imagem, scan de disco físico, cancelamento, restore, preview,
-abrir conteúdo ou sessão persistente.
+abrir conteúdo ou sessão persistente. O `deepJpeg` não é um comando separado:
+é um modo explícito do comando de volume já autorizado.
 
 ## 3. Inventário
 
@@ -161,22 +177,52 @@ type SupportedFileSystem =
   | "unrecognized";
 
 type ScanStatus = "complete" | "partial" | "unrecognized";
+type ScanMode = "metadata" | "deepJpeg";
 
 interface ScanScope {
   kind: "volume" | "folder";
   label: string;
 }
 
+interface MftScanCoverage {
+  recordsDeclared: string;  // decimal u64
+  recordsAvailable: string; // decimal u64
+  recordsExamined: string;  // decimal u64
+  bytesDeclared: string;    // decimal u64
+  bytesAvailable: string;   // decimal u64
+  bytesExamined: string;    // decimal u64
+}
+
+interface JpegCarveCoverage {
+  bytesRequested: string;       // decimal u64
+  bytesScanned: string;         // decimal u64 e <= bytesRequested
+  signaturesAttempted: string;  // decimal u64
+  validationBytesRead: string;  // decimal u64
+  partial: boolean;
+  readErrorCount: string;       // decimal u64
+  candidateLimitReached: boolean;
+  candidateByteLimitHits: string; // decimal u64
+  signatureAttemptLimitReached: boolean;
+  validationByteLimitReached: boolean;
+  rejectedSignatures: string;   // decimal u64
+  truncatedSignatures: string;  // decimal u64
+  regionsSubmitted: string;     // decimal u64
+  regionLimitReached: boolean;
+}
+
 interface ScanSummary {
-  schemaVersion: 1;
+  schemaVersion: 3;
   scanId: string;
   sourceLabel: string;
   scope: ScanScope;
+  scanMode: ScanMode;
   fileSystem: SupportedFileSystem;
   scanStatus: ScanStatus;
   totalCandidates: string;   // decimal u64
   matchedCandidates: string; // decimal u64
   unknownCandidates: string; // decimal u64
+  mftCoverage: MftScanCoverage | null;
+  jpegCarveCoverage: JpegCarveCoverage | null;
   warnings: string[];
 }
 ```
@@ -184,13 +230,58 @@ interface ScanSummary {
 `fileSystem = "unrecognized"` exige `scanStatus = "unrecognized"` e vice-versa.
 NTFS e FAT reconhecidos usam `complete` ou `partial`.
 
+Um NTFS reconhecido retorna `mftCoverage`; FAT e `unrecognized` retornam
+`mftCoverage = null`. Os campos significam:
+
+- `recordsDeclared`/`bytesDeclared`: tamanho lógico confiável declarado pelo
+  stream `$MFT`;
+- `recordsAvailable`/`bytesAvailable`: registros inteiros presentes no prefixo
+  inicializado, fisicamente mapeado e limitado à origem;
+- `recordsExamined`/`bytesExamined`: registros inteiros tentados dentro do teto
+  explícito de trabalho.
+
+Os contadores usam strings decimais para preservar `u64` além do limite seguro
+de `number` no JavaScript. Eles medem somente a cobertura de metadados MFT, não
+bytes de um deep scan/carving. Igualdade entre os três contadores não implica
+`complete`: record corrompido, atributo não resolvido, namespace saturado ou
+outra evidência pode manter `scanStatus = "partial"`. Se o teto ou prefixo
+confiável impedir a enumeração declarada, o status não pode ser `complete`.
+
+O resumo v3 ainda não contém `partialReasons[]` estruturado para MFT. Até esse
+campo existir em uma revisão futura, `scanStatus` e `warnings` limitados
+preservam o motivo de incompletude de metadados.
+
+As combinações válidas são:
+
+- `scanMode = "metadata"` exige `jpegCarveCoverage = null`;
+- `scanMode = "deepJpeg"` exige `scope.kind = "volume"`,
+  `fileSystem = "ntfs"` e `jpegCarveCoverage != null`;
+- cobertura JPEG parcial exige `scanStatus = "partial"`;
+- limite de tentativas ou de bytes de validação atingido exige
+  `jpegCarveCoverage.partial = true`.
+
+Em deep scan, `bytesRequested` é a soma das regiões NTFS coalescidas e
+comprovadamente `FreeInSnapshot`, não o tamanho total do volume.
+`bytesScanned` mede bytes legíveis visitados pela busca de assinatura;
+releituras incrementais de candidatos aparecem separadamente em
+`validationBytesRead`. A ausência ou desconfiança do `$Bitmap` produz zero
+regiões, cobertura parcial e warning sanitizado; nunca amplia para RAW.
+O perfil nativo atual limita chunks a 1 MiB, cada JPEG a 128 MiB, a saída a
+10.000 candidatos, a admissão a 65.536 regiões/16 TiB, as tentativas a
+10.000.000 e as releituras de validação a 8 GiB.
+
 Em scan de volume, todos os candidatos observados são “matched” para fins de
 entrega. Em escopo de pasta, somente ancestrais `Match` entram nas páginas;
 ancestrais `Unknown` entram apenas em `unknownCandidates`; `NoMatch` não entra
 em nenhuma dessas duas contagens de entrega.
 
 Nenhuma contagem prova conteúdo intacto. Em `partial`, ela é observada dentro da
-cobertura atingida, não exaustiva.
+cobertura atingida, não exaustiva. A interface mostra registros examinados sobre
+declarados. Zero parcial é descrito como zero dentro da cobertura observada;
+zero completo em `metadata` significa apenas que nenhum candidato por
+metadados foi encontrado. Em `deepJpeg`, zero vale somente para metadados e
+JPEGs contíguos dentro das regiões/limites informados; não exclui outros
+formatos, fragmentação, regiões ou técnicas.
 
 ## 6. Candidatos e paginação
 
@@ -219,6 +310,13 @@ type PathState =
   | "orphaned"
   | "ambiguous";
 
+type DiscoveryMethod =
+  | "ntfsMetadata"
+  | "fatMetadata"
+  | "exfatMetadata"
+  | "carving"
+  | "recycleBin";
+
 interface CandidateRow {
   id: string;
   displayPath: string;
@@ -228,17 +326,27 @@ interface CandidateRow {
   metadataConfidence: MetadataConfidence;
   recoverabilityScore: number | null;
   pathState: PathState;
+  method: DiscoveryMethod;
+  contentSha256: string | null; // 64 hex lowercase
+  validator: "jpeg-structural-v1" | null;
   warnings: string[];
 }
 
 interface CandidatePage {
-  schemaVersion: 1;
+  schemaVersion: 2;
   scanId: string;
   cursor: string | null;
   nextCursor: string | null;
   candidates: CandidateRow[]; // no máximo 100 na API de produção
 }
 ```
+
+`contentSha256` e `validator` aparecem juntos ou ambos são `null`. Um candidato
+`method = "carving"` é sempre arquivo e exige a dupla de evidência. Um
+candidato por metadados pode receber a mesma dupla somente após o Rust provar
+um vínculo de range físico exato e não ambíguo; o método original continua
+`ntfsMetadata`. Bytes recuperados, offset físico e path nativo não atravessam
+o DTO.
 
 Arquivos têm score inteiro de 0 a 100. Diretórios obrigatoriamente têm
 `recoverabilityScore = null`. Score não é garantia de recuperação.
@@ -269,9 +377,10 @@ apagar as anteriores e rejeita IDs repetidos.
 O estado excedente é evicto; não existe persistência silenciosa de path ou
 resultado.
 
-A tabela usa o rótulo neutro “Candidatos encontrados” e mostra, antes das
-linhas, que estado, confiança e score estimam apenas a qualidade dos metadados:
-eles não comprovam conteúdo íntegro ou recuperável.
+A tabela usa o rótulo neutro “Candidatos encontrados”. Método, evidência e
+validador são separados: score/confiança não garantem recuperação, e um
+`jpeg-structural-v1` válido comprova somente o envelope estrutural dos bytes
+contíguos hashados, não uma decodificação visual segura.
 
 ## 8. Erros estáveis
 
@@ -289,6 +398,7 @@ eles não comprovam conteúdo íntegro ou recuperável.
 | `BROKER_PROTOCOL` | O protocolo falhou fechado. |
 | `SOURCE_IO` | A leitura da origem falhou. |
 | `SCAN_CORRUPT` | Estrutura reconhecida está corrompida. |
+| `SCAN_MODE_UNSUPPORTED` | O modo não existe ou não é permitido para filesystem/escopo. |
 | `SCAN_INTERNAL` | O worker/coordenador não concluiu. |
 | `REPORT_INCOMPATIBLE` | O DTO não satisfaz este contrato. |
 
@@ -301,13 +411,18 @@ não incluem path, GUID, pipe, handle, raw OS error, offset, bytes ou backtrace.
 - inventário carregando, atualizando, vazio, pronto ou com erro;
 - volume selecionado ou nenhum;
 - pasta selecionando, cancelada, vinculada ou removida;
+- modo `metadata` ou `deepJpeg`, com deep desabilitado para pasta/não-NTFS;
 - scan idle, executando, concluído ou com erro;
 - página idle, carregando ou com erro;
 - resultado `complete`, `partial` ou `unrecognized`;
-- ancestralidade desconhecida explicitamente contada.
+- ancestralidade desconhecida explicitamente contada;
+- cobertura JPEG completa/parcial, bytes, regiões, tentativas, validação e
+  flags de limite;
+- método e hash/validador de conteúdo quando a evidência nativa existe.
 
 Não há progressão por timer, percentual inventado, resultado de fallback nem
-linha sintética.
+linha sintética. O deep scan usa indicador indeterminado e declara que não há
+percentual, ETA ou cancelamento nesta versão.
 
 ## 10. Acessibilidade e apresentação segura
 

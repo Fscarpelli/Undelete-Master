@@ -64,8 +64,8 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-030 | Quick scan | Scan deleted filesystem metadata, reconstruct extents, and assess allocation evidence. | Partial |
-| FR-031 | Deep scan | Add bounded raw metadata, unallocated carving, slack, and prioritized validation. | Not started |
+| FR-030 | Quick scan | Scan deleted filesystem metadata, reconstruct extents, and assess allocation evidence. NTFS now enumerates beyond the former 64 MiB MFT prefix in bounded batches, and quantitative MFT counters reach the report and desktop; machine-readable partial reasons and the broader compatibility matrix remain incomplete. | Partial |
+| FR-031 | Deep scan | Add bounded raw metadata, unallocated carving, slack, and prioritized validation. An explicit whole-volume NTFS mode now submits only hardened `$Bitmap`-proven free regions to an incremental contiguous-JPEG validator with structured budgets/coverage; slack, fragments, broader formats, progress/cancellation and final validation remain absent. | Partial |
 | FR-032 | Image first | Create a resumable, hashed, error-mapped image on another disk without writing the source. | Not started |
 | FR-033 | Open existing image | Open regular `.img/.dd/.raw` without UAC and pass it through the same bounded parsers. | Partial |
 | FR-034 | Analysis regions | Advanced mode selects valid metadata, unallocated, slack, whole-partition, or explicit ranges. | Not started |
@@ -84,11 +84,11 @@ criteria**, and **Status** fields.
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
 | FR-050 | Any extension via metadata | Recover metadata-backed files regardless of extension when extents are valid. | Partial |
-| FR-051 | Known-format carving | Carve only recognized/configured formats with bounded validators and provenance. | Not started |
+| FR-051 | Known-format carving | Carve only recognized/configured formats with bounded validators and provenance. The allocation-aware whole-NTFS JPEG slice carries structural checks, physical range, SHA-256 and validator evidence through the product DTO; only contiguous JPEG is implemented and final/external-corpus evidence is incomplete. | Partial |
 | FR-052 | Deleted folders | Reconstruct deleted folders without implying all descendants are selected. | Partial |
 | FR-053 | Descendant selection | Parent checkbox state is explicit and never restores historical descendants silently. | Not started |
 | FR-054 | Orphans | Group candidates with uncertain parents under stable orphan groupings. | Partial |
-| FR-055 | Evidence merge | Merge metadata/carved evidence only with range/content agreement and preserve provenance. | Not started |
+| FR-055 | Evidence merge | Merge metadata/carved evidence only with range/content agreement and preserve provenance. Exact contiguous range corroboration is implemented for one unambiguous NTFS metadata owner; ambiguous owners preserve a separate carving and generalized merge remains absent. | Partial |
 
 ## Results workspace
 

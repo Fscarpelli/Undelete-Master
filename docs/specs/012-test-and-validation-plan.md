@@ -1,6 +1,7 @@
 # SDD-012 — Test and Validation Plan
 
-Status: Normative; connected-volume final evidence pending
+Status: Normative; same-revision local gates passed, native/remote/release
+evidence pending
 
 ## Mandatory same-revision gates
 
@@ -44,15 +45,15 @@ that a real source scan succeeded.
 
 | Layer | Required checks | Current disposition |
 | --- | --- | --- |
-| Windows inventory | local/mapped/composite policy, opaque IDs, display grouping, decimal strings, no native paths | Focused tests present; final full gate pending |
+| Windows inventory | local/mapped/composite policy, opaque IDs, display grouping, decimal strings, no native paths | Same-revision synthetic/full gate passed; native observation remains pending |
 | Folder authority | NTFS-only, remote/reparse/cross-volume refusal, volume serial and record/sequence binding | Focused tests present; native acceptance pending |
-| Protocol v2 | exact ten-message schema, one-megabyte cap, malformed frames, sequence replay/gap, nonce mismatch | Focused tests present; final full gate pending |
+| Protocol v2 | exact ten-message schema, one-megabyte cap, malformed frames, sequence replay/gap, nonce mismatch | Same-revision full Rust gate passed; packaged binary evidence remains pending |
 | Broker lifecycle | fixed sibling, manifests, current-user pipe, peer PID/liveness, timeout, close/shutdown | Focused tests present; packaged evidence pending |
 | Read path | exact geometry, checked ranges, one-megabyte chunking, source change, 256-and-one-second cadence | Synthetic tests present; no real scan claim |
 | Scanner | deterministic NTFS/FAT/partition candidates, partial truth and namespace ancestry | Focused tests present; external corpora pending |
-| Desktop DTO/state | four commands, schema 1, decimal strings, 100-row pages, scan-bound cursors, 32 scopes/4 sessions | Focused tests present; final full gate pending |
-| Frontend | fail closed, real inventory flow, folder cancel, scan/page flow, privacy, stale/duplicate control, a11y | 28-test suite reported during implementation; final frozen revision pending |
-| Static safety | no source mutation, no physical-disk production authority, exact API/opcode/command allowlists, no real-device CI | Validator update and final run pending |
+| Desktop DTO/state | four commands, inventory/folder schema 1, summary schema 3, candidate-page schema 2, decimal strings, 100-row pages, scan-bound cursors, 32 scopes/4 sessions | Same-revision Rust/frontend gates passed; native acceptance remains pending |
+| Frontend | fail closed, real inventory flow, folder cancel, metadata/deep scan and paging, privacy, provenance, stale/duplicate control, a11y | Same-revision lint/typecheck/build and 41-test suite passed; native visual acceptance remains pending |
+| Static safety | no source mutation, no physical-disk production authority, exact API/opcode/command allowlists, no real-device CI | Same-revision validators passed: CI safety inspected 1 workflow/98 surfaces; real-only desktop inspected 94 files; 71 validator regressions passed |
 | Native package | both binaries, hashes, fixed sibling layout, extracted `asInvoker`/`requireAdministrator` manifests | Pending |
 | Native UX | actual Tauri window, inventory only, required sizes, focus/zoom/forced colors | Pending |
 | Remote | pushed revision and successful GitHub Actions conclusions | Pending |
@@ -89,4 +90,7 @@ and conclusions.
 
 The [connected-volume evidence record](../evidence/windows-volume-scan-2026-07-29.md)
 must remain explicit about pending gates and the absence of a real-volume scan.
-No component result may be generalized to signed production readiness.
+The [2026-07-30 recovery-hardening evidence](../evidence/recovery-hardening-2026-07-30.md)
+records the newer same-revision local command results and their exact
+uncommitted-snapshot boundary. No component result may be generalized to
+signed production readiness.

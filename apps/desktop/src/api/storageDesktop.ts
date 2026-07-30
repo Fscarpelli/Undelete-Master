@@ -7,6 +7,7 @@ import {
   StorageContractError,
   type CandidatePage,
   type FolderSelection,
+  type ScanMode,
   type ScanSummary,
   type StorageInventory,
 } from "./storage";
@@ -19,6 +20,7 @@ export type StorageErrorCode =
   | "SOURCE_IDENTITY_CHANGED"
   | "FOLDER_SCOPE_UNSUPPORTED"
   | "FOLDER_SCOPE_MISMATCH"
+  | "SCAN_MODE_UNSUPPORTED"
   | "UAC_CANCELLED"
   | "BROKER_UNAVAILABLE"
   | "BROKER_PROTOCOL"
@@ -35,6 +37,7 @@ const KNOWN_ERROR_CODES = new Set<StorageErrorCode>([
   "SOURCE_IDENTITY_CHANGED",
   "FOLDER_SCOPE_UNSUPPORTED",
   "FOLDER_SCOPE_MISMATCH",
+  "SCAN_MODE_UNSUPPORTED",
   "UAC_CANCELLED",
   "BROKER_UNAVAILABLE",
   "BROKER_PROTOCOL",
@@ -116,6 +119,7 @@ export async function scanStorageVolume(
   generation: string,
   volumeId: string,
   scopeId: string | null,
+  mode: ScanMode,
 ): Promise<ScanSummary> {
   requireDesktop();
   const response = await invoke<unknown>("scan_storage_volume", {
@@ -123,6 +127,7 @@ export async function scanStorageVolume(
     generation,
     volumeId,
     scopeId,
+    mode,
   });
   return parseResponse(parseScanSummary, response);
 }

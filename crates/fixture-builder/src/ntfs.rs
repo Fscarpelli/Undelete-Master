@@ -1,24 +1,21 @@
 //! Deterministic minimal-but-valid NTFS volume image builder.
 //!
-//! Geometry: 512-byte sectors, 4096-byte clusters, 1024 clusters (4 MiB),
-//! 64 MFT records of 1024 bytes at LCN 4, `$Bitmap` data at LCN 20 and user
-//! data from LCN 24 upward.
+//! Default geometry: 512-byte sectors, 4096-byte clusters, 1024 clusters
+//! (4 MiB), 64 MFT records of 1024 bytes at LCN 4, `$Bitmap` data at LCN 20
+//! and user data from LCN 24 upward. Tests that exercise scanner coverage may
+//! request a larger, still deterministic MFT layout.
 
 use crate::manifest::{ExpectedCandidate, FixtureManifest};
 use crate::sha256_hex;
 
 const SECTOR: usize = 512;
 const CLUSTER: usize = 4096;
-const TOTAL_CLUSTERS: u64 = 1024;
-const TOTAL_SECTORS: u64 = TOTAL_CLUSTERS * 8;
+const DEFAULT_TOTAL_CLUSTERS: u64 = 1024;
 const MFT_LCN: u64 = 4;
-const MFT_RECORDS: u64 = 64;
+const DEFAULT_MFT_RECORDS: u64 = 64;
 const RECORD_SIZE: usize = 1024;
-const MFT_CLUSTERS: u64 = (MFT_RECORDS * RECORD_SIZE as u64) / CLUSTER as u64;
-const BITMAP_LCN: u64 = MFT_LCN + MFT_CLUSTERS; // 20
-const FIRST_DATA_LCN: u64 = BITMAP_LCN + 4; // 24
 const ROOT_RECORD: u64 = 5;
-const FIRST_USER_RECORD: u64 = 16;
+const DEFAULT_FIRST_USER_RECORD: u64 = 16;
 
 /// Fixed FILETIME for deterministic fixtures: 2024-01-15 12:00:00 UTC.
 const FIXED_UNIX_MS: i64 = 1_705_320_000_000;
@@ -56,6 +53,9 @@ struct Node {
 pub struct NtfsImageBuilder {
     fixture_id: String,
     nodes: Vec<Node>,
+    orphan_contents: Vec<Vec<u8>>,
+    mft_records: u64,
+    first_user_record: u64,
 }
 
 impl NtfsImageBuilder {
@@ -63,7 +63,28 @@ impl NtfsImageBuilder {
         Self {
             fixture_id: fixture_id.to_string(),
             nodes: Vec::new(),
+            orphan_contents: Vec::new(),
+            mft_records: DEFAULT_MFT_RECORDS,
+            first_user_record: DEFAULT_FIRST_USER_RECORD,
         }
+    }
+
+    /// Places fixture nodes at a caller-selected MFT record boundary.
+    ///
+    /// This is intended for deterministic scanner coverage tests. It does not
+    /// model MFT growth and never touches a host disk.
+    pub fn with_mft_layout(mut self, mft_records: u64, first_user_record: u64) -> Self {
+        assert!(
+            first_user_record >= DEFAULT_FIRST_USER_RECORD,
+            "user records overlap reserved NTFS records"
+        );
+        assert!(
+            first_user_record < mft_records,
+            "first user record must be inside the MFT"
+        );
+        self.mft_records = mft_records;
+        self.first_user_record = first_user_record;
+        self
     }
 
     pub fn add_dir(&mut self, parent: NodeParent, name: &str, deleted: bool) -> usize {
@@ -97,6 +118,16 @@ impl NtfsImageBuilder {
         self.nodes.len() - 1
     }
 
+    /// Places unreferenced bytes in free clusters without creating an MFT
+    /// record. This models content that only a signature carver can discover.
+    pub fn add_orphan_content(&mut self, content: Vec<u8>) {
+        assert!(
+            !content.is_empty(),
+            "orphan fixture content cannot be empty"
+        );
+        self.orphan_contents.push(content);
+    }
+
     fn parent_path(&self, node: &Node) -> Vec<String> {
         let mut parts = Vec::new();
         let mut current = node.parent;
@@ -111,29 +142,38 @@ impl NtfsImageBuilder {
     /// Assembles the image and the truth manifest.
     pub fn build(&self) -> (Vec<u8>, FixtureManifest) {
         assert!(
-            self.nodes.len() as u64 <= MFT_RECORDS - FIRST_USER_RECORD,
+            self.nodes.len() as u64 <= self.mft_records - self.first_user_record,
             "too many fixture nodes"
         );
-        let image_len = TOTAL_CLUSTERS as usize * CLUSTER + SECTOR; // + backup boot
+        let mft_bytes = self
+            .mft_records
+            .checked_mul(RECORD_SIZE as u64)
+            .expect("fixture MFT size overflow");
+        let mft_clusters = mft_bytes.div_ceil(CLUSTER as u64);
+        let bitmap_lcn = MFT_LCN + mft_clusters;
+        let first_data_lcn = bitmap_lcn + 4;
+        let total_clusters = DEFAULT_TOTAL_CLUSTERS.max(first_data_lcn + 256);
+        let total_sectors = total_clusters * (CLUSTER / SECTOR) as u64;
+        let image_len = total_clusters as usize * CLUSTER + SECTOR; // + backup boot
         let mut image = vec![0u8; image_len];
 
         // --- boot sector (and backup copy at the end) ---
-        let boot = build_boot_sector();
+        let boot = build_boot_sector(total_sectors);
         image[..SECTOR].copy_from_slice(&boot);
-        let backup_off = TOTAL_CLUSTERS as usize * CLUSTER;
+        let backup_off = total_clusters as usize * CLUSTER;
         image[backup_off..backup_off + SECTOR].copy_from_slice(&boot);
 
         // --- allocation bitmap ---
-        let mut bitmap = vec![0u8; (TOTAL_CLUSTERS / 8) as usize];
+        let mut bitmap = vec![0u8; total_clusters.div_ceil(8) as usize];
         let mut mark = |cluster: u64| {
             bitmap[(cluster / 8) as usize] |= 1 << (cluster % 8);
         };
-        for c in 0..FIRST_DATA_LCN {
+        for c in 0..first_data_lcn {
             mark(c);
         }
 
         // --- allocate content clusters and write file data ---
-        let mut next_lcn = FIRST_DATA_LCN;
+        let mut next_lcn = first_data_lcn;
         struct Placement {
             runs: Vec<(u64, u64)>, // (lcn, cluster_count)
             resident: bool,
@@ -173,7 +213,7 @@ impl NtfsImageBuilder {
                 next_lcn += clusters_needed;
                 vec![r]
             };
-            assert!(next_lcn < TOTAL_CLUSTERS, "fixture volume out of space");
+            assert!(next_lcn < total_clusters, "fixture volume out of space");
             // Write content into the image following the runs.
             let mut written = 0usize;
             for (lcn, count) in &runs {
@@ -199,6 +239,19 @@ impl NtfsImageBuilder {
             placements.push(Placement { runs, resident });
         }
 
+        // Unreferenced carving fixtures occupy physically free clusters and
+        // deliberately have no MFT metadata.
+        for content in &self.orphan_contents {
+            let clusters_needed = (content.len() as u64).div_ceil(CLUSTER as u64);
+            let start_lcn = next_lcn;
+            next_lcn = next_lcn
+                .checked_add(clusters_needed)
+                .expect("orphan fixture placement overflow");
+            assert!(next_lcn < total_clusters, "fixture volume out of space");
+            let offset = start_lcn as usize * CLUSTER;
+            image[offset..offset + content.len()].copy_from_slice(content);
+        }
+
         // Post-delete overwrites: scramble bytes and mark clusters allocated.
         for (node, placement) in self.nodes.iter().zip(&placements) {
             for (ov_off, ov_len) in &node.options.overwrite_ranges {
@@ -219,7 +272,7 @@ impl NtfsImageBuilder {
         }
 
         // Write the bitmap data cluster.
-        let bm_off = BITMAP_LCN as usize * CLUSTER;
+        let bm_off = bitmap_lcn as usize * CLUSTER;
         image[bm_off..bm_off + bitmap.len()].copy_from_slice(&bitmap);
 
         // --- MFT records ---
@@ -238,17 +291,8 @@ impl NtfsImageBuilder {
                 false,
                 &[
                     attr_std_info(),
-                    attr_file_name(
-                        ROOT_RECORD,
-                        5,
-                        "$MFT",
-                        false,
-                        MFT_RECORDS * RECORD_SIZE as u64,
-                    ),
-                    attr_data_nonresident(
-                        &[(MFT_LCN, MFT_CLUSTERS)],
-                        MFT_RECORDS * RECORD_SIZE as u64,
-                    ),
+                    attr_file_name(ROOT_RECORD, 5, "$MFT", false, mft_bytes),
+                    attr_data_nonresident(&[(MFT_LCN, mft_clusters)], mft_bytes),
                 ],
             ),
         );
@@ -296,17 +340,20 @@ impl NtfsImageBuilder {
                 &[
                     attr_std_info(),
                     attr_file_name(ROOT_RECORD, 5, "$Bitmap", false, bitmap.len() as u64),
-                    attr_data_nonresident(&[(BITMAP_LCN, 1)], bitmap.len() as u64),
+                    attr_data_nonresident(
+                        &[(bitmap_lcn, bitmap.len().div_ceil(CLUSTER) as u64)],
+                        bitmap.len() as u64,
+                    ),
                 ],
             ),
         );
 
         // User records.
         for (idx, (node, placement)) in self.nodes.iter().zip(&placements).enumerate() {
-            let record_no = FIRST_USER_RECORD + idx as u64;
+            let record_no = self.first_user_record + idx as u64;
             let (parent_record, parent_seq_at_creation) = match node.parent {
                 NodeParent::Root => (ROOT_RECORD, 5u16),
-                NodeParent::Node(p) => (FIRST_USER_RECORD + p as u64, 1u16),
+                NodeParent::Node(p) => (self.first_user_record + p as u64, 1u16),
             };
             // Sequence: 1 while alive; bumped to 2 when the record is freed.
             let seq = if node.deleted { 2 } else { 1 };
@@ -369,7 +416,7 @@ impl NtfsImageBuilder {
     }
 }
 
-fn build_boot_sector() -> [u8; SECTOR] {
+fn build_boot_sector(total_sectors: u64) -> [u8; SECTOR] {
     let mut s = [0u8; SECTOR];
     s[0] = 0xEB;
     s[1] = 0x52;
@@ -378,7 +425,7 @@ fn build_boot_sector() -> [u8; SECTOR] {
     s[11..13].copy_from_slice(&(SECTOR as u16).to_le_bytes());
     s[13] = (CLUSTER / SECTOR) as u8;
     s[21] = 0xF8; // media descriptor
-    s[40..48].copy_from_slice(&TOTAL_SECTORS.to_le_bytes());
+    s[40..48].copy_from_slice(&total_sectors.to_le_bytes());
     s[48..56].copy_from_slice(&MFT_LCN.to_le_bytes());
     s[56..64].copy_from_slice(&2u64.to_le_bytes()); // $MFTMirr LCN (unused)
     s[64] = 0xF6; // -10 => 1024-byte file records

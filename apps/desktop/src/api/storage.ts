@@ -1,8 +1,11 @@
 export const STORAGE_CONTRACT_SCHEMA_VERSION = 1;
+export const SCAN_SUMMARY_SCHEMA_VERSION = 3;
+export const CANDIDATE_PAGE_SCHEMA_VERSION = 2;
 
 const UNSIGNED_DECIMAL = /^(0|[1-9][0-9]*)$/;
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MOUNT_LABEL = /^[A-Za-z]:$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 const MAX_U64 = 18_446_744_073_709_551_615n;
 const MAX_DISKS = 128;
 const MAX_VOLUMES_PER_DISK = 128;
@@ -25,7 +28,14 @@ export type SupportedFileSystem =
   | "fat32"
   | "unrecognized";
 export type ScanStatus = "complete" | "partial" | "unrecognized";
+export type ScanMode = "metadata" | "deepJpeg";
 export type CandidateKind = "file" | "directory";
+export type DiscoveryMethod =
+  | "ntfsMetadata"
+  | "fatMetadata"
+  | "exfatMetadata"
+  | "carving"
+  | "recycleBin";
 export type CandidateState =
   | "exactEvidence"
   | "likelyComplete"
@@ -78,6 +88,32 @@ export interface ScanScope {
   label: string;
 }
 
+export interface MftScanCoverage {
+  recordsDeclared: string;
+  recordsAvailable: string;
+  recordsExamined: string;
+  bytesDeclared: string;
+  bytesAvailable: string;
+  bytesExamined: string;
+}
+
+export interface JpegCarveCoverage {
+  bytesRequested: string;
+  bytesScanned: string;
+  signaturesAttempted: string;
+  validationBytesRead: string;
+  partial: boolean;
+  readErrorCount: string;
+  candidateLimitReached: boolean;
+  candidateByteLimitHits: string;
+  signatureAttemptLimitReached: boolean;
+  validationByteLimitReached: boolean;
+  rejectedSignatures: string;
+  truncatedSignatures: string;
+  regionsSubmitted: string;
+  regionLimitReached: boolean;
+}
+
 export interface FolderSelection {
   schemaVersion: 1;
   scopeId: string;
@@ -86,15 +122,18 @@ export interface FolderSelection {
 }
 
 export interface ScanSummary {
-  schemaVersion: 1;
+  schemaVersion: 3;
   scanId: string;
   sourceLabel: string;
   scope: ScanScope;
+  scanMode: ScanMode;
   fileSystem: SupportedFileSystem;
   scanStatus: ScanStatus;
   totalCandidates: string;
   matchedCandidates: string;
   unknownCandidates: string;
+  mftCoverage: MftScanCoverage | null;
+  jpegCarveCoverage: JpegCarveCoverage | null;
   warnings: string[];
 }
 
@@ -107,11 +146,14 @@ export interface CandidateRow {
   metadataConfidence: MetadataConfidence;
   recoverabilityScore: number | null;
   pathState: PathState;
+  method: DiscoveryMethod;
+  contentSha256: string | null;
+  validator: string | null;
   warnings: string[];
 }
 
 export interface CandidatePage {
-  schemaVersion: 1;
+  schemaVersion: 2;
   scanId: string;
   cursor: string | null;
   nextCursor: string | null;
@@ -316,6 +358,83 @@ function scope(value: unknown): ScanScope {
   };
 }
 
+function mftCoverage(value: unknown): MftScanCoverage | null {
+  if (value === null) {
+    return null;
+  }
+  const item = record(value);
+  exactKeys(item, [
+    "recordsDeclared",
+    "recordsAvailable",
+    "recordsExamined",
+    "bytesDeclared",
+    "bytesAvailable",
+    "bytesExamined",
+  ]);
+  return {
+    recordsDeclared: decimal(item.recordsDeclared),
+    recordsAvailable: decimal(item.recordsAvailable),
+    recordsExamined: decimal(item.recordsExamined),
+    bytesDeclared: decimal(item.bytesDeclared),
+    bytesAvailable: decimal(item.bytesAvailable),
+    bytesExamined: decimal(item.bytesExamined),
+  };
+}
+
+function jpegCarveCoverage(value: unknown): JpegCarveCoverage | null {
+  if (value === null) {
+    return null;
+  }
+  const item = record(value);
+  exactKeys(item, [
+    "bytesRequested",
+    "bytesScanned",
+    "signaturesAttempted",
+    "validationBytesRead",
+    "partial",
+    "readErrorCount",
+    "candidateLimitReached",
+    "candidateByteLimitHits",
+    "signatureAttemptLimitReached",
+    "validationByteLimitReached",
+    "rejectedSignatures",
+    "truncatedSignatures",
+    "regionsSubmitted",
+    "regionLimitReached",
+  ]);
+  const coverage = {
+    bytesRequested: decimal(item.bytesRequested),
+    bytesScanned: decimal(item.bytesScanned),
+    signaturesAttempted: decimal(item.signaturesAttempted),
+    validationBytesRead: decimal(item.validationBytesRead),
+    partial: boolean(item.partial),
+    readErrorCount: decimal(item.readErrorCount),
+    candidateLimitReached: boolean(item.candidateLimitReached),
+    candidateByteLimitHits: decimal(item.candidateByteLimitHits),
+    signatureAttemptLimitReached: boolean(
+      item.signatureAttemptLimitReached,
+    ),
+    validationByteLimitReached: boolean(
+      item.validationByteLimitReached,
+    ),
+    rejectedSignatures: decimal(item.rejectedSignatures),
+    truncatedSignatures: decimal(item.truncatedSignatures),
+    regionsSubmitted: decimal(item.regionsSubmitted),
+    regionLimitReached: boolean(item.regionLimitReached),
+  };
+  if (BigInt(coverage.bytesScanned) > BigInt(coverage.bytesRequested)) {
+    throw new StorageContractError();
+  }
+  if (
+    !coverage.partial &&
+    (coverage.signatureAttemptLimitReached ||
+      coverage.validationByteLimitReached)
+  ) {
+    throw new StorageContractError();
+  }
+  return coverage;
+}
+
 export function parseScanSummary(value: unknown): ScanSummary {
   const item = record(value);
   exactKeys(item, [
@@ -323,14 +442,17 @@ export function parseScanSummary(value: unknown): ScanSummary {
     "scanId",
     "sourceLabel",
     "scope",
+    "scanMode",
     "fileSystem",
     "scanStatus",
     "totalCandidates",
     "matchedCandidates",
     "unknownCandidates",
+    "mftCoverage",
+    "jpegCarveCoverage",
     "warnings",
   ]);
-  if (item.schemaVersion !== STORAGE_CONTRACT_SCHEMA_VERSION) {
+  if (item.schemaVersion !== SCAN_SUMMARY_SCHEMA_VERSION) {
     throw new StorageContractError();
   }
   const fileSystem = oneOf(item.fileSystem, [
@@ -350,16 +472,33 @@ export function parseScanSummary(value: unknown): ScanSummary {
   ) {
     throw new StorageContractError();
   }
+  const parsedScope = scope(item.scope);
+  const scanMode = oneOf(item.scanMode, ["metadata", "deepJpeg"]);
+  const parsedJpegCoverage = jpegCarveCoverage(item.jpegCarveCoverage);
+  const validMetadataScan =
+    scanMode === "metadata" && parsedJpegCoverage === null;
+  const validDeepScan =
+    scanMode === "deepJpeg" &&
+    parsedScope.kind === "volume" &&
+    fileSystem === "ntfs" &&
+    parsedJpegCoverage !== null &&
+    (!parsedJpegCoverage.partial || scanStatus === "partial");
+  if (!validMetadataScan && !validDeepScan) {
+    throw new StorageContractError();
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     scanId: opaqueId(item.scanId),
     sourceLabel: text(item.sourceLabel),
-    scope: scope(item.scope),
+    scope: parsedScope,
+    scanMode,
     fileSystem,
     scanStatus,
     totalCandidates: decimal(item.totalCandidates),
     matchedCandidates: decimal(item.matchedCandidates),
     unknownCandidates: decimal(item.unknownCandidates),
+    mftCoverage: mftCoverage(item.mftCoverage),
+    jpegCarveCoverage: parsedJpegCoverage,
     warnings: warningList(item.warnings),
   };
 }
@@ -379,6 +518,9 @@ function candidate(value: unknown): CandidateRow {
     "metadataConfidence",
     "recoverabilityScore",
     "pathState",
+    "method",
+    "contentSha256",
+    "validator",
     "warnings",
   ]);
   const kind = oneOf(item.kind, ["file", "directory"]);
@@ -391,6 +533,33 @@ function candidate(value: unknown): CandidateRow {
     score <= 100;
   const validDirectoryScore = kind === "directory" && score === null;
   if (!validFileScore && !validDirectoryScore) {
+    throw new StorageContractError();
+  }
+  const method = oneOf(item.method, [
+    "ntfsMetadata",
+    "fatMetadata",
+    "exfatMetadata",
+    "carving",
+    "recycleBin",
+  ]);
+  const contentSha256 =
+    item.contentSha256 === null ? null : item.contentSha256;
+  if (
+    contentSha256 !== null &&
+    (typeof contentSha256 !== "string" || !SHA256_HEX.test(contentSha256))
+  ) {
+    throw new StorageContractError();
+  }
+  const validator =
+    item.validator === null ? null : text(item.validator);
+  const hasJpegEvidence =
+    contentSha256 !== null && validator === "jpeg-structural-v1";
+  const hasNoContentEvidence =
+    contentSha256 === null && validator === null;
+  if (
+    (!hasJpegEvidence && !hasNoContentEvidence) ||
+    (method === "carving" && (kind !== "file" || !hasJpegEvidence))
+  ) {
     throw new StorageContractError();
   }
   return {
@@ -424,6 +593,9 @@ function candidate(value: unknown): CandidateRow {
       "orphaned",
       "ambiguous",
     ]),
+    method,
+    contentSha256,
+    validator,
     warnings: warningList(item.warnings),
   };
 }
@@ -438,7 +610,7 @@ export function parseCandidatePage(value: unknown): CandidatePage {
     "candidates",
   ]);
   if (
-    item.schemaVersion !== STORAGE_CONTRACT_SCHEMA_VERSION ||
+    item.schemaVersion !== CANDIDATE_PAGE_SCHEMA_VERSION ||
     !Array.isArray(item.candidates) ||
     item.candidates.length > MAX_CANDIDATES_PER_PAGE
   ) {
@@ -449,7 +621,7 @@ export function parseCandidatePage(value: unknown): CandidatePage {
     throw new StorageContractError();
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     scanId: opaqueId(item.scanId),
     cursor: nullableOpaqueId(item.cursor),
     nextCursor: nullableOpaqueId(item.nextCursor),

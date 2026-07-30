@@ -33,7 +33,45 @@ pub struct VolumeReport {
     /// filesystem.
     pub scan_status: VolumeScanStatus,
     pub candidate_count: usize,
+    /// Quantitative coverage of the NTFS master file table when the recognized
+    /// filesystem exposes that evidence. Other filesystems leave this absent;
+    /// future deep/content coverage remains a separate concern.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mft_coverage: Option<MftScanCoverage>,
+    /// Content coverage for an explicitly requested JPEG deep scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_carve_coverage: Option<JpegCarveCoverage>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MftScanCoverage {
+    pub records_declared: u64,
+    pub records_available: u64,
+    pub records_examined: u64,
+    pub bytes_declared: u64,
+    pub bytes_available: u64,
+    pub bytes_examined: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JpegCarveCoverage {
+    pub bytes_requested: u64,
+    pub bytes_scanned: u64,
+    pub signatures_attempted: u64,
+    pub validation_bytes_read: u64,
+    pub partial: bool,
+    pub read_error_count: u64,
+    pub candidate_limit_reached: bool,
+    pub candidate_byte_limit_hits: u64,
+    pub signature_attempt_limit_reached: bool,
+    pub validation_byte_limit_reached: bool,
+    pub rejected_signatures: u64,
+    pub truncated_signatures: u64,
+    pub regions_submitted: u64,
+    pub region_limit_reached: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -5,8 +5,10 @@ source preservation and evidence-based results.
 
 > **Development status:** the desktop can discover connected local storage,
 > scan a selected mounted volume, and optionally restrict NTFS results to a
-> selected folder. File restore is not implemented. Do not use this pre-release
-> as the only means of recovering important data.
+> selected folder. An explicit whole-volume NTFS mode also performs bounded
+> contiguous-JPEG carving over bitmap-proven free space. File restore is not
+> implemented. Do not use this pre-release as the only means of recovering
+> important data.
 
 [Português do Brasil](README.pt-BR.md)
 
@@ -24,8 +26,15 @@ source preservation and evidence-based results.
   volume identities and bounded reads, revalidates source identity, and has no
   write, trim, format, lock, dismount, restore, or generic device-command API.
 - Defensive NTFS and FAT12/16/32 metadata scanning with bounded, paginated
-  candidate results. Folder-scoped NTFS results include only candidates whose
-  ancestry can be proven; unknown ancestry is counted separately.
+  candidate results. NTFS enumeration reports quantitative MFT coverage and no
+  longer stops at the former 64 MiB prefix. Folder-scoped NTFS results include
+  only candidates whose ancestry can be proven; unknown ancestry is counted
+  separately.
+- An explicit deep-JPEG mode for a whole NTFS volume. It submits only ranges
+  that a validated `$Bitmap` snapshot proves free, uses bounded incremental
+  structural validation, and records physical range, SHA-256, validator
+  version, coverage, and work-limit evidence. It never silently expands into
+  allocated or unknown space.
 - A separate headless `undelete-master scan-image` CLI for ordinary local image
   files with privacy-preserving JSON.
 - Deterministic synthetic-fixture and protocol tests. No automated test scans an
@@ -42,9 +51,11 @@ a guarantee that its content can be recovered.
 
 The desktop does not scan a whole physical disk, unmounted partition,
 multi-disk volume, network share, optical drive, or RAM disk. Folder scope is
-currently NTFS-only. Restore, preview, persistent sessions, carving, exFAT,
-pause/resume, cancellation, and a signed installer are not implemented. See
-[known limitations](docs/specs/015-known-limitations.md).
+currently NTFS-only. Carving is limited to contiguous JPEGs in proven-free NTFS
+space; other formats, fragmented reconstruction, damaged-filesystem RAW
+scanning, and folder carving are not implemented. Restore, preview, persistent
+sessions, pause/resume, cancellation, and a signed installer are also absent.
+See [known limitations](docs/specs/015-known-limitations.md).
 
 ## Safety
 
@@ -112,7 +123,9 @@ mounted-volume workflow described above and does not expose image selection.
 
 - [Master specification](UNDELETE_MASTER_CODEX_MASTER_SPEC.md)
 - [SDD-018 Windows volume and folder scan](docs/specs/018-windows-volume-and-folder-scan.md)
+- [SDD-019 NTFS coverage and bounded JPEG deep scan](docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md)
 - [ADR-0023 read-only broker and folder scope](docs/adr/0023-windows-read-only-broker-and-folder-scope.md)
+- [ADR-0024 streaming MFT and bounded content carving](docs/adr/0024-streaming-mft-and-bounded-content-carving.md)
 - [Functional requirements](docs/specs/001-functional-requirements.md)
 - [Architecture](docs/specs/004-architecture.md)
 - [Security and privacy](docs/specs/011-security-and-privacy.md)

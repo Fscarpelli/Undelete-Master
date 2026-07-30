@@ -15,7 +15,8 @@ mod scan;
 
 pub use boot::NtfsBoot;
 pub use scan::{
-    scan_ntfs, NtfsCandidatePathEvidence, NtfsDirectoryNode, NtfsDirectoryResolution,
-    NtfsNamespace, NtfsNamespaceIndex, NtfsNamespaceIndexError, NtfsNamespacePath, NtfsNodeRef,
-    NtfsPathState, NtfsScanOutput, NtfsScopeMembership,
+    scan_ntfs, NtfsAllocationSnapshot, NtfsCandidatePathEvidence, NtfsDirectoryNode,
+    NtfsDirectoryResolution, NtfsNamespace, NtfsNamespaceIndex, NtfsNamespaceIndexError,
+    NtfsNamespacePath, NtfsNodeRef, NtfsPathState, NtfsScanCoverage, NtfsScanOutput,
+    NtfsScopeMembership,
 };

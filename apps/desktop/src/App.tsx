@@ -36,6 +36,7 @@ export function App() {
           selectVolume={storage.selectVolume}
           selectFolder={storage.selectFolder}
           clearFolder={storage.clearFolder}
+          selectScanMode={storage.selectScanMode}
           startScan={storage.startScan}
           loadMore={storage.loadMore}
           resetScan={storage.resetScan}

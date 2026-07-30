@@ -5,17 +5,22 @@
 
 #![forbid(unsafe_code)]
 
+mod deep;
 mod report;
 
 use std::io;
 use std::path::Path;
 
-pub use report::{ImageScanReport, SourceReport, VolumeReport, VolumeScanStatus};
+pub use report::{
+    ImageScanReport, JpegCarveCoverage, MftScanCoverage, SourceReport, VolumeReport,
+    VolumeScanStatus,
+};
 use thiserror::Error;
+pub use um_carving::CarveEvidence;
 use um_core::{Candidate, Region, SourceReader};
 use um_fs_common::ScanError;
 use um_fs_fat::{scan_fat, FatVariant};
-use um_fs_ntfs::{scan_ntfs, NtfsNamespace};
+use um_fs_ntfs::{scan_ntfs, NtfsNamespace, NtfsScanCoverage};
 use um_io_common::{validate_local_regular_file, FileImageReader, RegionReader, SourcePathError};
 use um_partition::{discover, PartitionTableKind};
 
@@ -30,6 +35,14 @@ pub struct VolumeScanDetails {
     pub report: VolumeReport,
     pub candidates: Vec<Candidate>,
     pub ntfs_namespace: Option<NtfsNamespace>,
+    pub carve_evidence: Vec<CarveEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VolumeScanMode {
+    #[default]
+    MetadataOnly,
+    DeepJpeg,
 }
 
 #[derive(Debug, Error)]
@@ -57,6 +70,14 @@ pub enum CliError {
         #[source]
         source: ScanError,
     },
+    #[error("JPEG deep scan failed safely for volume {index}")]
+    DeepScan {
+        index: u32,
+        #[source]
+        source: um_carving::CarveError,
+    },
+    #[error("JPEG deep scan produced invalid bounded evidence for volume {index}")]
+    DeepScanResult { index: u32 },
 }
 
 /// Scans one ordinary image file and returns a sanitized metadata report.
@@ -133,8 +154,15 @@ pub fn scan_image_path(path: &Path) -> Result<ImageScanReport, CliError> {
 /// `SourceReader` authority and must supply a reader whose length is exactly
 /// the selected volume boundary.
 pub fn scan_volume_reader(reader: &dyn SourceReader) -> Result<VolumeScanDetails, CliError> {
+    scan_volume_reader_with_mode(reader, VolumeScanMode::MetadataOnly)
+}
+
+pub fn scan_volume_reader_with_mode(
+    reader: &dyn SourceReader,
+    mode: VolumeScanMode,
+) -> Result<VolumeScanDetails, CliError> {
     let region = Region::new(0, reader.len()).ok_or(CliError::EmptyImage)?;
-    scan_volume_details(0, region, reader)
+    scan_volume_details_with_mode(0, region, reader, mode)
 }
 
 fn validate_extension(path: &Path) -> Result<(), CliError> {
@@ -221,25 +249,57 @@ fn scan_volume_details(
     region: Region,
     reader: &dyn SourceReader,
 ) -> Result<VolumeScanDetails, CliError> {
+    scan_volume_details_with_mode(index, region, reader, VolumeScanMode::MetadataOnly)
+}
+
+fn scan_volume_details_with_mode(
+    index: u32,
+    region: Region,
+    reader: &dyn SourceReader,
+    mode: VolumeScanMode,
+) -> Result<VolumeScanDetails, CliError> {
     match scan_ntfs(reader) {
         Ok(output) => {
+            let metadata_complete = output.is_complete;
+            let mut warnings = output.warnings;
+            let (candidates, carve_evidence, jpeg_carve_coverage, deep_complete) = match mode {
+                VolumeScanMode::MetadataOnly => (output.candidates, Vec::new(), None, true),
+                VolumeScanMode::DeepJpeg => {
+                    let deep = deep::scan_ntfs_deep_jpeg(
+                        reader,
+                        index,
+                        output.candidates,
+                        output.allocation.as_ref(),
+                    )?;
+                    warnings.extend(deep.warnings);
+                    (
+                        deep.candidates,
+                        deep.evidence,
+                        Some(deep.coverage),
+                        deep.is_complete,
+                    )
+                }
+            };
             let report = VolumeReport {
                 index,
                 offset_bytes: region.offset,
                 length_bytes: region.len,
                 file_system: "ntfs".to_string(),
-                scan_status: if output.is_complete {
+                scan_status: if metadata_complete && deep_complete {
                     VolumeScanStatus::Complete
                 } else {
                     VolumeScanStatus::Partial
                 },
-                candidate_count: output.candidates.len(),
-                warnings: output.warnings,
+                candidate_count: candidates.len(),
+                mft_coverage: Some(output.coverage.into()),
+                jpeg_carve_coverage,
+                warnings,
             };
             Ok(VolumeScanDetails {
                 report,
-                candidates: output.candidates,
+                candidates,
                 ntfs_namespace: Some(output.namespace),
+                carve_evidence,
             })
         }
         Err(ScanError::NotRecognized(_)) => match scan_fat(reader) {
@@ -249,30 +309,52 @@ fn scan_volume_details(
                     FatVariant::Fat16 => "fat16",
                     FatVariant::Fat32 => "fat32",
                 };
+                let deep_requested = mode == VolumeScanMode::DeepJpeg;
+                let mut warnings = output.warnings;
+                if deep_requested {
+                    warnings.push(
+                        "JPEG deep scan was not run because trustworthy NTFS allocation evidence is required."
+                            .into(),
+                    );
+                }
                 let report = VolumeReport {
                     index,
                     offset_bytes: region.offset,
                     length_bytes: region.len,
                     file_system: file_system.to_string(),
-                    scan_status: if output.is_complete {
+                    scan_status: if output.is_complete && !deep_requested {
                         VolumeScanStatus::Complete
                     } else {
                         VolumeScanStatus::Partial
                     },
                     candidate_count: output.candidates.len(),
-                    warnings: output.warnings,
+                    mft_coverage: None,
+                    jpeg_carve_coverage: deep_requested.then(deep::unsupported_deep_coverage),
+                    warnings,
                 };
                 Ok(VolumeScanDetails {
                     report,
                     candidates: output.candidates,
                     ntfs_namespace: None,
+                    carve_evidence: Vec::new(),
                 })
             }
-            Err(ScanError::NotRecognized(_)) => Ok(VolumeScanDetails {
-                report: unrecognized_volume(index, region),
-                candidates: Vec::new(),
-                ntfs_namespace: None,
-            }),
+            Err(ScanError::NotRecognized(_)) => {
+                let mut report = unrecognized_volume(index, region);
+                if mode == VolumeScanMode::DeepJpeg {
+                    report.jpeg_carve_coverage = Some(deep::unsupported_deep_coverage());
+                    report.warnings.push(
+                        "JPEG deep scan was not run because trustworthy NTFS allocation evidence is required."
+                            .into(),
+                    );
+                }
+                Ok(VolumeScanDetails {
+                    report,
+                    candidates: Vec::new(),
+                    ntfs_namespace: None,
+                    carve_evidence: Vec::new(),
+                })
+            }
             Err(source) => Err(CliError::VolumeScan {
                 index,
                 file_system: "FAT",
@@ -295,7 +377,22 @@ fn unrecognized_volume(index: u32, region: Region) -> VolumeReport {
         file_system: "unrecognized".to_string(),
         scan_status: VolumeScanStatus::Unrecognized,
         candidate_count: 0,
+        mft_coverage: None,
+        jpeg_carve_coverage: None,
         warnings: Vec::new(),
+    }
+}
+
+impl From<NtfsScanCoverage> for MftScanCoverage {
+    fn from(coverage: NtfsScanCoverage) -> Self {
+        Self {
+            records_declared: coverage.records_declared,
+            records_available: coverage.records_available,
+            records_examined: coverage.records_examined,
+            bytes_declared: coverage.bytes_declared,
+            bytes_available: coverage.bytes_available,
+            bytes_examined: coverage.bytes_examined,
+        }
     }
 }
 

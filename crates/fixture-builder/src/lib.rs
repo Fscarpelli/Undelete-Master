@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod carving;
 pub mod exfat;
 pub mod fat;
 pub mod manifest;

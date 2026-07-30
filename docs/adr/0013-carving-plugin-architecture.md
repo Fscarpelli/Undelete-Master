@@ -21,4 +21,7 @@ read-only regions and emit evidence with physical provenance.
 No plugin executes recovered bytes, loads external code, or performs network or
 source writes. Overlap arbitration, malformed structures, decompression bombs,
 timeouts, deterministic outputs, and external-corpus false-positive tests are
-required. Carving is not implemented in the current increment.
+required. The general plugin registry is not implemented.
+[ADR-0024](0024-streaming-mft-and-bounded-content-carving.md) accepts and
+integrates a narrower first built-in contiguous-JPEG slice over proven-free
+whole-volume NTFS regions without accepting the remaining plugin architecture.

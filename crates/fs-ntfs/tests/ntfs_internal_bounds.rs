@@ -15,6 +15,7 @@ use um_io_common::MemImageReader;
 const MFT_OFFSET: usize = 4 * 4096;
 const RECORD_SIZE: usize = 1024;
 const MFT_RECORDS: usize = 64;
+const MFT_BATCH_BYTES: usize = 1024 * 1024;
 
 struct CountingReader {
     inner: MemImageReader,
@@ -94,6 +95,26 @@ fn set_unnamed_data_initialized_size(image: &mut [u8], record_no: usize, initial
 fn set_unnamed_data_size(image: &mut [u8], record_no: usize, data_size: u64) {
     let (attribute, _) = unnamed_nonresident_data_attribute(image, record_no);
     image[attribute + 48..attribute + 56].copy_from_slice(&data_size.to_le_bytes());
+}
+
+fn set_record_flags(image: &mut [u8], record_no: usize, flags: u16) {
+    let record_start = MFT_OFFSET + record_no * RECORD_SIZE;
+    image[record_start + 22..record_start + 24].copy_from_slice(&flags.to_le_bytes());
+}
+
+fn set_record_base_reference(image: &mut [u8], record_no: usize, base_record: u64) {
+    let record_start = MFT_OFFSET + record_no * RECORD_SIZE;
+    image[record_start + 32..record_start + 40].copy_from_slice(&base_record.to_le_bytes());
+}
+
+fn set_unnamed_data_attribute_flags(image: &mut [u8], record_no: usize, flags: u16) {
+    let (attribute, _) = unnamed_nonresident_data_attribute(image, record_no);
+    image[attribute + 12..attribute + 14].copy_from_slice(&flags.to_le_bytes());
+}
+
+fn set_unnamed_data_starting_vcn(image: &mut [u8], record_no: usize, starting_vcn: u64) {
+    let (attribute, _) = unnamed_nonresident_data_attribute(image, record_no);
+    image[attribute + 16..attribute + 24].copy_from_slice(&starting_vcn.to_le_bytes());
 }
 
 fn set_unnamed_data_runlist(
@@ -386,6 +407,84 @@ fn sparse_bitmap_run_cannot_prove_clusters_free() {
 }
 
 #[test]
+fn ntfs_bitmap_authority_002_rejects_untrusted_record_or_stream_semantics() {
+    const BITMAP_RECORD: usize = 6;
+    const ATTR_FLAG_COMPRESSED: u16 = 0x0001;
+    const ATTR_FLAG_ENCRYPTED: u16 = 0x4000;
+    const ATTR_FLAG_SPARSE: u16 = 0x8000;
+    type BitmapMutation = (&'static str, fn(&mut [u8]));
+
+    let mutations: [BitmapMutation; 7] = [
+        ("inactive", |image| {
+            set_record_flags(image, BITMAP_RECORD, 0)
+        }),
+        ("directory", |image| {
+            set_record_flags(image, BITMAP_RECORD, 0x0003)
+        }),
+        ("extension", |image| {
+            set_record_base_reference(image, BITMAP_RECORD, 1)
+        }),
+        ("compressed", |image| {
+            set_unnamed_data_attribute_flags(image, BITMAP_RECORD, ATTR_FLAG_COMPRESSED)
+        }),
+        ("encrypted", |image| {
+            set_unnamed_data_attribute_flags(image, BITMAP_RECORD, ATTR_FLAG_ENCRYPTED)
+        }),
+        ("sparse-flag", |image| {
+            set_unnamed_data_attribute_flags(image, BITMAP_RECORD, ATTR_FLAG_SPARSE)
+        }),
+        ("nonzero-starting-vcn", |image| {
+            set_unnamed_data_starting_vcn(image, BITMAP_RECORD, 1)
+        }),
+    ];
+
+    for (case, mutate) in mutations {
+        let mut builder = NtfsImageBuilder::new(&format!("ntfs-bitmap-authority-{case}"));
+        builder.add_file(
+            NodeParent::Root,
+            "bitmap-authority.bin",
+            deterministic_bytes(0xB17A, 4096),
+            true,
+            FileOptions {
+                force_resident: Some(false),
+                ..Default::default()
+            },
+        );
+        let (mut image, _) = builder.build();
+        mutate(&mut image);
+        let reader_label = format!("bitmap-authority-{case}");
+
+        let output = um_fs_ntfs::scan_ntfs(&MemImageReader::new(&reader_label, image))
+            .expect("metadata scan must survive by dropping untrusted allocation evidence");
+        let candidate = output
+            .candidates
+            .iter()
+            .find(|candidate| candidate.name == "bitmap-authority.bin")
+            .expect("deleted fixture candidate");
+
+        assert!(
+            output.allocation.is_none(),
+            "{case} $Bitmap semantics must not become allocation authority"
+        );
+        assert!(
+            candidate
+                .extents
+                .iter()
+                .all(|extent| extent.availability == ExtentAvailability::Unknown),
+            "{case} $Bitmap semantics must leave allocation unknown"
+        );
+        assert!(
+            output
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("$Bitmap record or stream semantics")),
+            "{case} must retain one sanitized authority warning: {:?}",
+            output.warnings
+        );
+    }
+}
+
+#[test]
 fn sparse_mft_tail_is_excluded_from_trusted_scan_prefix() {
     let builder = NtfsImageBuilder::new("ntfs-sparse-mft");
     let (mut image, _) = builder.build();
@@ -430,4 +529,37 @@ fn repeated_corrupt_mft_records_have_bounded_retained_warnings() {
         .iter()
         .any(|warning| warning.contains("MFT record warnings suppressed: 47")));
     assert!(!output.is_complete);
+}
+
+#[test]
+fn ntfs_mft_batch_001_large_mft_uses_bounded_bulk_reads() {
+    const FIRST_RECORD_AFTER_64_MIB: u64 = (64 * 1024 * 1024) / RECORD_SIZE as u64;
+
+    let mut builder = NtfsImageBuilder::new("ntfs-batched-large-mft")
+        .with_mft_layout(FIRST_RECORD_AFTER_64_MIB + 4, FIRST_RECORD_AFTER_64_MIB);
+    builder.add_file(
+        NodeParent::Root,
+        "batched-candidate.txt",
+        b"bounded MFT batch reads".to_vec(),
+        true,
+        FileOptions::default(),
+    );
+    let (image, _) = builder.build();
+    let reader = CountingReader::new("ntfs-batched-large-mft", image);
+
+    let output = um_fs_ntfs::scan_ntfs(&reader).expect("large MFT scan");
+    let reads = reader.read_offsets();
+
+    assert!(output
+        .candidates
+        .iter()
+        .any(|candidate| candidate.name == "batched-candidate.txt"));
+    assert!(
+        reads.iter().all(|(_, len)| *len <= MFT_BATCH_BYTES),
+        "scanner issued an oversized read: {reads:?}"
+    );
+    assert!(
+        reads.iter().any(|(_, len)| *len == MFT_BATCH_BYTES),
+        "large MFT should be read in bulk rather than one record per request"
+    );
 }

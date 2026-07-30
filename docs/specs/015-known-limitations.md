@@ -1,16 +1,20 @@
 # SDD-015 — Known Limitations
 
-Status: Current as of 2026-07-29
+Status: Current as of 2026-07-30
 
 ## Product status
 
 This repository is not a production data-recovery release. The desktop now has
-an implemented real mounted-volume workflow, but its final native, package,
-remote, signing and endpoint-security gates remain pending. No real-volume scan
-has been executed as acceptance evidence.
+an implemented real mounted-volume metadata workflow, but its final native,
+package, remote, signing and endpoint-security gates remain pending. An
+interactive scan reported by the product owner is diagnostic input, not
+retained acceptance evidence; no real-volume scan has been executed as a
+project acceptance test.
 
-The CLI continues to analyze approved regular image files. Neither desktop nor
-CLI restores data.
+The `scan-image` CLI process command continues to analyze approved regular
+image files in metadata mode. Neither desktop nor CLI restores data. The CLI
+library/Tauri/desktop now expose an explicit bounded whole-NTFS `deepJpeg`
+discovery mode; metadata remains the default.
 
 ## Source limitations
 
@@ -48,6 +52,9 @@ CLI restores data.
   incomplete, orphaned or ambiguous.
 - A folder-scoped scan still reads the containing volume's metadata; it is not
   an ordinary visible-file directory walk.
+- Folder scope is metadata-only. Deep JPEG is disabled in the UI and rejected
+  natively because a carved byte range cannot prove historical folder
+  ancestry.
 
 ## Filesystem and recovery limitations
 
@@ -55,17 +62,60 @@ CLI restores data.
   structures, not a complete compatibility matrix.
 - No production exFAT support; incomplete local exFAT work is outside release
   claims.
-- No carving, repair derivative, journal/recycle-bin enrichment, NTFS LZNT1,
-  full attribute-list/ADS/EFS workflow or damaged-volume reconstruction.
+- Product deep scan is limited to contiguous JPEG discovery on a whole mounted
+  NTFS volume. It is not a general raw, damaged-filesystem, slack-space,
+  fragment, or multi-format recovery engine. The `scan-image` process command
+  has no deep-mode flag.
+- No repair derivative, journal/recycle-bin enrichment, NTFS LZNT1, full
+  attribute-list/ADS/EFS workflow or damaged-volume reconstruction.
 - Recognized NTFS/FAT scans may be `partial`. Candidate counts then reflect only
   bounded observed coverage, not an exhaustive total.
-- NTFS MFT and allocation-bitmap work is bounded. Missing/torn records,
-  malformed ordinary attributes, unresolved `$ATTRIBUTE_LIST`, prefix limits
-  and extension merge failures can force partial status. Recursive namespace
-  expansion checks the 256-path per-name cap before descending into another
-  saturated sibling; saturation marks namespace/ancestry evidence incomplete,
-  keeps unproven membership `Unknown` and may force partial status rather than
-  overclaiming complete coverage.
+- The former 64 MiB MFT enumeration prefix was a confirmed defect: with 1 KiB
+  records it examined at most the first 65,536 records. The component now reads
+  the trusted MFT in bounded 1 MiB batches and exposes
+  declared/available/examined records and bytes, but an explicit
+  defense-in-depth ceiling of 8,388,608 records remains. Reaching that ceiling
+  is partial, not exhaustive.
+- MFT retained evidence has four separate ceilings: 100,000 deleted entries,
+  100,000 directories, 100,000 extension references, and 100,000 extension
+  streams merged into base records. Reaching any cap skips later evidence,
+  emits a bounded warning, and makes the metadata result partial even when
+  record examination continued. Nested evidence across retained base and
+  extension records is additionally capped at 400,000 names, 200,000 streams,
+  and 1,000,000 run elements. An over-budget record or extension merge is
+  omitted as a unit and the result becomes partial; external hostile-corpus
+  and long-running memory evidence is still incomplete.
+- Quantitative MFT coverage now propagates through CLI/Tauri/TypeScript, and the
+  desktop shows examined versus declared records with distinct complete/partial
+  zero messages. Machine-readable partial reasons and a complete byte/reason
+  presentation are still absent; bounded prose warnings remain the limiting
+  context. Even a complete metadata zero does not prove that content cannot be
+  found by an unimplemented technique.
+- NTFS MFT and allocation-bitmap work remains bounded. Missing/torn records,
+  malformed ordinary attributes, unresolved `$ATTRIBUTE_LIST`, trusted
+  initialized/physical prefix limits and extension merge failures can force
+  partial status. Recursive namespace expansion checks the 256-path per-name
+  cap before descending into another saturated sibling; saturation marks
+  namespace/ancestry evidence incomplete, keeps unproven membership `Unknown`
+  and may force partial status rather than overclaiming complete coverage.
+- The retained NTFS `$Bitmap` is still capped at 64 MiB. It becomes allocation
+  authority only for an active base non-directory record named `$Bitmap` under
+  the root, with exactly one unnamed stream, no attribute list or
+  compressed/encrypted/sparse flags, starting VCN zero, and coherent stream
+  sizes. The scanner exposes and the deep integrator submits coalesced physical
+  regions only for clusters explicitly proven free inside that snapshot.
+  Unknown/capped/untrusted suffixes are not free and never trigger a RAW
+  fallback.
+- JPEG carving is contiguous only. It does not reconstruct generic
+  fragmentation, decode pixels, prove visual integrity, infer original
+  name/path/date, or support the broader baseline format list.
+- The product deep profile is bounded to 1 MiB buffers, 128 MiB per contiguous
+  candidate, 10,000 candidates, 65,536 coalesced regions, 16 TiB of submitted
+  free space, 10,000,000 signature validations, and 8 GiB of aggregate
+  validation reads. Any reached budget makes coverage partial.
+- Exact-range corroboration is intentionally narrow. One unambiguous NTFS
+  metadata owner may receive the JPEG hash/validator; ambiguous multiple owners
+  retain a separate carving candidate. This is not general deduplication.
 - FAT copy disagreement/read failure, directory-chain damage/cycles and
   traversal limits can force partial status. A declared FAT table above 64 MiB
   is rejected before allocation.
@@ -74,7 +124,9 @@ CLI restores data.
   through carving.
 - Overwritten, trimmed, securely erased, encrypted-unavailable or physically
   unreadable bytes cannot be recreated. A name, metadata record or score does
-  not prove intact content.
+  not prove intact content. The product cannot reverse SSD TRIM/garbage
+  collection, break BitLocker/EFS, or guarantee consistency while Windows is
+  writing to the live system volume.
 
 ## Product-flow limitations
 
@@ -82,9 +134,14 @@ CLI restores data.
   containment.
 - No persistent sessions, checkpoint resume, import or export.
 - No pause, resume, cooperative cancellation, phase percentage or ETA.
+- The desktop deep scan is exposed with an honest indeterminate state and
+  explicit text that percentage, ETA and cancellation are absent. Closing or
+  interrupting that workflow has no supported cooperative checkpoint contract.
 - No hotplug subscription. Refresh is explicit; a disappearing source fails
   when native identity or I/O detects it.
-- No candidate content validation. Candidate rows contain metadata only.
+- Candidate-page schema 2 can expose the discovery method, lowercase SHA-256
+  and `jpeg-structural-v1` validator after native evidence-link validation.
+  It exposes no recovered bytes and is not a safe pixel decode or preview.
 - Candidate pages are fixed at at most 100 rows. Native memory retains at most
   32 folder scopes and 4 scan sessions; older authorities are evicted.
 - Browser execution is intentionally unavailable and has no fallback data.

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CandidateRow,
   FolderSelection,
+  ScanMode,
   ScanSummary,
   StorageInventory,
 } from "../api/storage";
@@ -31,6 +32,7 @@ export interface StorageWorkflowState {
   inventoryError: StorageErrorCode | null;
   selectedVolumeId: string | null;
   folderSelection: FolderSelection | null;
+  scanMode: ScanMode;
   folderPhase: FolderPhase;
   folderCancelled: boolean;
   scanPhase: ScanPhase;
@@ -56,6 +58,7 @@ function initialState(runtimeAvailable: boolean): StorageWorkflowState {
     inventoryError: null,
     selectedVolumeId: null,
     folderSelection: null,
+    scanMode: "metadata",
     folderPhase: "idle",
     folderCancelled: false,
     scanPhase: "idle",
@@ -153,6 +156,7 @@ export function useStorageScan(runtimeAvailable: boolean) {
           inventoryError: null,
           selectedVolumeId,
           folderSelection: null,
+          scanMode: "metadata",
           folderPhase: "idle",
           folderCancelled: false,
           ...clearScan(),
@@ -207,6 +211,7 @@ export function useStorageScan(runtimeAvailable: boolean) {
         ...current,
         selectedVolumeId: volumeId,
         folderSelection: null,
+        scanMode: "metadata",
         folderPhase: "idle",
         folderCancelled: false,
         ...clearScan(),
@@ -266,6 +271,7 @@ export function useStorageScan(runtimeAvailable: boolean) {
         setState((latest) => ({
           ...latest,
           folderSelection: selection,
+          scanMode: "metadata",
           folderPhase: "idle",
           folderCancelled: false,
           ...clearScan(),
@@ -301,6 +307,28 @@ export function useStorageScan(runtimeAvailable: boolean) {
     }));
   }, []);
 
+  const selectScanMode = useCallback((mode: ScanMode) => {
+    if (scanInFlight.current || folderInFlight.current) {
+      return;
+    }
+    setState((current) => {
+      const volume = current.inventory?.disks
+        .flatMap((disk) => disk.volumes)
+        .find((item) => item.id === current.selectedVolumeId);
+      const deepJpegAvailable =
+        current.folderSelection === null &&
+        volume?.fileSystem.toLocaleLowerCase("en-US") === "ntfs";
+      if (mode === "deepJpeg" && !deepJpegAvailable) {
+        return current;
+      }
+      return {
+        ...current,
+        scanMode: mode,
+        ...clearScan(),
+      };
+    });
+  }, []);
+
   const startScan = useCallback(async () => {
     const current = stateRef.current;
     const volumeId = current.selectedVolumeId;
@@ -312,6 +340,9 @@ export function useStorageScan(runtimeAvailable: boolean) {
       volumeId === null ||
       generation === undefined ||
       volume?.scanSupported !== true ||
+      (current.scanMode === "deepJpeg" &&
+        (current.folderSelection !== null ||
+          volume.fileSystem.toLocaleLowerCase("en-US") !== "ntfs")) ||
       scanInFlight.current ||
       folderInFlight.current
     ) {
@@ -325,6 +356,7 @@ export function useStorageScan(runtimeAvailable: boolean) {
       current.folderSelection?.volumeId === volumeId
         ? current.folderSelection.scopeId
         : null;
+    const scanMode = current.scanMode;
     let completedSummary: ScanSummary | null = null;
 
     setState((latest) => ({
@@ -345,12 +377,20 @@ export function useStorageScan(runtimeAvailable: boolean) {
         generation,
         volumeId,
         scopeId,
+        scanMode,
       );
       if (
         !mounted.current ||
         scanGeneration.current !== requestGeneration
       ) {
         return;
+      }
+      if (
+        completedSummary.scanMode !== scanMode ||
+        completedSummary.scope.kind !==
+          (scopeId === null ? "volume" : "folder")
+      ) {
+        throw new StorageCommandError("REPORT_INCOMPATIBLE");
       }
 
       const page = await getCandidatePage(
@@ -491,6 +531,7 @@ export function useStorageScan(runtimeAvailable: boolean) {
     selectVolume,
     selectFolder,
     clearFolder,
+    selectScanMode,
     startScan,
     loadMore,
     resetScan,

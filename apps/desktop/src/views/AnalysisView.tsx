@@ -17,7 +17,9 @@ import type {
   CandidateKind,
   CandidateRow,
   CandidateState,
+  DiscoveryMethod,
   MetadataConfidence,
+  ScanMode,
   StorageDisk,
   StorageVolume,
 } from "../api/storage";
@@ -34,6 +36,7 @@ export interface AnalysisViewProps {
   selectVolume: (volumeId: string) => void;
   selectFolder: () => Promise<void>;
   clearFolder: () => void;
+  selectScanMode: (mode: ScanMode) => void;
   startScan: () => Promise<void>;
   loadMore: () => Promise<void>;
   resetScan: () => void;
@@ -72,6 +75,14 @@ const confidenceLabels: Record<MetadataConfidence, MessageKey> = {
   high: "candidate.confidence.high",
   medium: "candidate.confidence.medium",
   low: "candidate.confidence.low",
+};
+
+const methodLabels: Record<DiscoveryMethod, MessageKey> = {
+  ntfsMetadata: "candidate.method.ntfsMetadata",
+  fatMetadata: "candidate.method.fatMetadata",
+  exfatMetadata: "candidate.method.exfatMetadata",
+  carving: "candidate.method.carving",
+  recycleBin: "candidate.method.recycleBin",
 };
 
 function selectedVolume(state: StorageWorkflowState): StorageVolume | null {
@@ -334,6 +345,7 @@ function ScopeControls({
   volume,
   selectFolder,
   clearFolder,
+  selectScanMode,
   startScan,
   t,
 }: {
@@ -341,10 +353,14 @@ function ScopeControls({
   volume: StorageVolume;
   selectFolder: () => Promise<void>;
   clearFolder: () => void;
+  selectScanMode: (mode: ScanMode) => void;
   startScan: () => Promise<void>;
   t: (key: MessageKey) => string;
 }) {
   const selecting = state.folderPhase === "selecting";
+  const deepJpegAvailable =
+    state.folderSelection === null &&
+    volume.fileSystem.toLocaleLowerCase("en-US") === "ntfs";
   return (
     <section className="scope-panel" aria-labelledby="scope-heading">
       <div className="scope-copy">
@@ -390,6 +406,56 @@ function ScopeControls({
         <p className="scope-limitation">
           <AlertTriangle size={16} aria-hidden="true" />
           {t("analysis.scope.unsupported")}
+        </p>
+      ) : null}
+
+      <fieldset className="scan-mode-list">
+        <legend>{t("analysis.mode.title")}</legend>
+        <label
+          className="scan-mode-option"
+          data-selected={state.scanMode === "metadata" ? "true" : "false"}
+        >
+          <input
+            type="radio"
+            name="scan-mode"
+            value="metadata"
+            checked={state.scanMode === "metadata"}
+            disabled={selecting}
+            onChange={() => selectScanMode("metadata")}
+          />
+          <span>
+            <strong>{t("analysis.mode.metadata.title")}</strong>
+            <small>{t("analysis.mode.metadata.body")}</small>
+          </span>
+        </label>
+        <label
+          className="scan-mode-option"
+          data-selected={state.scanMode === "deepJpeg" ? "true" : "false"}
+          data-disabled={!deepJpegAvailable ? "true" : "false"}
+        >
+          <input
+            type="radio"
+            name="scan-mode"
+            value="deepJpeg"
+            checked={state.scanMode === "deepJpeg"}
+            disabled={selecting || !deepJpegAvailable}
+            onChange={() => selectScanMode("deepJpeg")}
+          />
+          <span>
+            <strong>{t("analysis.mode.deepJpeg.title")}</strong>
+            <small>{t("analysis.mode.deepJpeg.body")}</small>
+          </span>
+        </label>
+      </fieldset>
+
+      {!deepJpegAvailable ? (
+        <p className="scope-limitation">
+          <AlertTriangle size={16} aria-hidden="true" />
+          {t(
+            state.folderSelection === null
+              ? "analysis.mode.ntfsBlocked"
+              : "analysis.mode.folderBlocked",
+          )}
         </p>
       ) : null}
 
@@ -440,6 +506,7 @@ function InventoryView({
   selectVolume,
   selectFolder,
   clearFolder,
+  selectScanMode,
   startScan,
 }: Omit<
   AnalysisViewProps,
@@ -501,6 +568,7 @@ function InventoryView({
           volume={volume}
           selectFolder={selectFolder}
           clearFolder={clearFolder}
+          selectScanMode={selectScanMode}
           startScan={startScan}
           t={t}
         />
@@ -510,8 +578,10 @@ function InventoryView({
 }
 
 function ScanPending({
+  mode,
   t,
 }: {
+  mode: ScanMode;
   t: (key: MessageKey) => string;
 }) {
   return (
@@ -525,7 +595,13 @@ function ScanPending({
         <LoaderCircle className="spinner" size={30} aria-hidden="true" />
         <div>
           <h2>{t("analysis.scan.pendingTitle")}</h2>
-          <p>{t("analysis.scan.pendingBody")}</p>
+          <p>
+            {t(
+              mode === "deepJpeg"
+                ? "analysis.scan.pendingDeepBody"
+                : "analysis.scan.pendingBody",
+            )}
+          </p>
         </div>
         <div
           className="indeterminate-track"
@@ -567,6 +643,15 @@ function CandidateRowView({
         </div>
       </th>
       <td>{t(kindLabels[candidate.kind])}</td>
+      <td>
+        <span>{t(methodLabels[candidate.method])}</span>
+        {candidate.method === "carving" ||
+        candidate.contentSha256 === null ? null : (
+          <span className="cell-secondary">
+            {t("candidate.method.jpegCorroborated")}
+          </span>
+        )}
+      </td>
       <td className="number-cell">
         <span>{formatInteger(candidate.sizeBytes, locale)} B</span>
         <span className="cell-secondary">
@@ -583,6 +668,28 @@ function CandidateRowView({
         {candidate.recoverabilityScore === null
           ? "—"
           : `${formatInteger(BigInt(candidate.recoverabilityScore), locale)}/100`}
+      </td>
+      <td>
+        {candidate.contentSha256 === null &&
+        candidate.validator === null ? (
+          <span className="cell-secondary">
+            {t("analysis.results.noContentEvidence")}
+          </span>
+        ) : (
+          <div className="candidate-evidence">
+            {candidate.validator === null ? null : (
+              <span>
+                {t("analysis.results.validator")}:{" "}
+                <bdi dir="auto">{candidate.validator}</bdi>
+              </span>
+            )}
+            {candidate.contentSha256 === null ? null : (
+              <code>
+                <bdi dir="ltr">{candidate.contentSha256}</bdi>
+              </code>
+            )}
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -643,6 +750,9 @@ function ResultsView({
     return null;
   }
 
+  const firstPageError =
+    state.candidates.length === 0 ? state.pageError : null;
+
   return (
     <div className="report">
       <header className="report-header">
@@ -677,6 +787,10 @@ function ResultsView({
           <strong>{t(`filesystem.${summary.fileSystem}`)}</strong>
         </div>
         <div className="metric">
+          <span>{t("analysis.results.mode")}</span>
+          <strong>{t(`scanMode.${summary.scanMode}`)}</strong>
+        </div>
+        <div className="metric">
           <span>{t("analysis.results.total")}</span>
           <strong>{formatInteger(summary.totalCandidates, locale)}</strong>
         </div>
@@ -688,7 +802,96 @@ function ResultsView({
           <span>{t("analysis.results.unknown")}</span>
           <strong>{formatInteger(summary.unknownCandidates, locale)}</strong>
         </div>
+        {summary.mftCoverage === null ? null : (
+          <div className="metric">
+            <span>{t("analysis.results.mftRecordsExamined")}</span>
+            <strong>
+              {formatInteger(summary.mftCoverage.recordsExamined, locale)} /{" "}
+              {formatInteger(summary.mftCoverage.recordsDeclared, locale)}
+            </strong>
+          </div>
+        )}
+        {summary.jpegCarveCoverage === null ? null : (
+          <div className="metric">
+            <span>{t("analysis.results.jpegBytesExamined")}</span>
+            <strong>
+              {formatBytes(summary.jpegCarveCoverage.bytesScanned, locale)} /{" "}
+              {formatBytes(summary.jpegCarveCoverage.bytesRequested, locale)}
+            </strong>
+          </div>
+        )}
       </div>
+
+      {summary.jpegCarveCoverage === null ? null : (
+        <section className="truth-note" role="note">
+          <ScanSearch size={18} aria-hidden="true" />
+          <div>
+            <strong>{t("analysis.results.jpegCoverageTitle")}</strong>
+            <p>{t("analysis.results.jpegCoverageBody")}</p>
+            <ul className="coverage-facts">
+              <li>
+                {t("analysis.results.jpegCoverageStatus")}:{" "}
+                {t(
+                  summary.jpegCarveCoverage.partial
+                    ? "analysis.results.jpegCoveragePartial"
+                    : "analysis.results.jpegCoverageComplete",
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegRegions")}:{" "}
+                {formatInteger(
+                  summary.jpegCarveCoverage.regionsSubmitted,
+                  locale,
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegSignaturesAttempted")}:{" "}
+                {formatInteger(
+                  summary.jpegCarveCoverage.signaturesAttempted,
+                  locale,
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegValidationBytes")}:{" "}
+                {formatBytes(
+                  summary.jpegCarveCoverage.validationBytesRead,
+                  locale,
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegSignatureLimit")}:{" "}
+                {t(
+                  summary.jpegCarveCoverage.signatureAttemptLimitReached
+                    ? "analysis.results.limitReached"
+                    : "analysis.results.limitNotReached",
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegValidationLimit")}:{" "}
+                {t(
+                  summary.jpegCarveCoverage.validationByteLimitReached
+                    ? "analysis.results.limitReached"
+                    : "analysis.results.limitNotReached",
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegRejected")}:{" "}
+                {formatInteger(
+                  summary.jpegCarveCoverage.rejectedSignatures,
+                  locale,
+                )}
+              </li>
+              <li>
+                {t("analysis.results.jpegTruncated")}:{" "}
+                {formatInteger(
+                  summary.jpegCarveCoverage.truncatedSignatures,
+                  locale,
+                )}
+              </li>
+            </ul>
+          </div>
+        </section>
+      )}
 
       {summary.scanStatus === "partial" ? (
         <section className="truth-note" role="note">
@@ -700,17 +903,19 @@ function ResultsView({
         </section>
       ) : null}
 
-      <section className="unknown-panel" aria-labelledby="unknown-heading">
-        <AlertTriangle size={20} aria-hidden="true" />
-        <div>
-          <h2 id="unknown-heading">{t("analysis.results.unknownTitle")}</h2>
-          <strong>
-            {formatInteger(summary.unknownCandidates, locale)}{" "}
-            {t("analysis.results.candidates")}
-          </strong>
-          <p>{t("analysis.results.unknownBody")}</p>
-        </div>
-      </section>
+      {summary.scope.kind === "folder" ? (
+        <section className="unknown-panel" aria-labelledby="unknown-heading">
+          <AlertTriangle size={20} aria-hidden="true" />
+          <div>
+            <h2 id="unknown-heading">{t("analysis.results.unknownTitle")}</h2>
+            <strong>
+              {formatInteger(summary.unknownCandidates, locale)}{" "}
+              {t("analysis.results.candidates")}
+            </strong>
+            <p>{t("analysis.results.unknownBody")}</p>
+          </div>
+        </section>
+      ) : null}
 
       <section className="report-section">
         <div className="section-heading">
@@ -725,9 +930,21 @@ function ResultsView({
         <p className="result-caveat" role="note">
           {t("analysis.results.caveat")}
         </p>
-        {state.candidates.length === 0 ? (
+        {firstPageError !== null ? (
+          <div className="table-action-error error-message" role="alert">
+            <span>{t(`error.${firstPageError}`)}</span>
+          </div>
+        ) : state.candidates.length === 0 ? (
           <div className="quiet-state">
-            {t("analysis.results.noCandidates")}
+            {t(
+              summary.scanMode === "deepJpeg"
+                ? summary.scanStatus === "partial"
+                  ? "analysis.results.noCandidatesDeepPartial"
+                  : "analysis.results.noCandidatesDeepComplete"
+                : summary.scanStatus === "partial"
+                  ? "analysis.results.noCandidatesPartial"
+                  : "analysis.results.noCandidatesComplete",
+            )}
           </div>
         ) : (
           <div
@@ -736,7 +953,7 @@ function ResultsView({
             aria-label={t("analysis.results.table")}
             tabIndex={0}
           >
-            <table>
+            <table className="candidate-table">
               <caption className="visually-hidden">
                 {t("analysis.results.table")}
               </caption>
@@ -744,10 +961,12 @@ function ResultsView({
                 <tr>
                   <th scope="col">{t("analysis.results.path")}</th>
                   <th scope="col">{t("analysis.results.kind")}</th>
+                  <th scope="col">{t("analysis.results.method")}</th>
                   <th scope="col">{t("analysis.results.size")}</th>
                   <th scope="col">{t("analysis.results.state")}</th>
                   <th scope="col">{t("analysis.results.confidence")}</th>
                   <th scope="col">{t("analysis.results.score")}</th>
+                  <th scope="col">{t("analysis.results.evidence")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -763,7 +982,7 @@ function ResultsView({
             </table>
           </div>
         )}
-        {state.pageError === null ? null : (
+        {state.pageError === null || firstPageError !== null ? null : (
           <div className="table-action-error error-message" role="alert">
             <span>{t(`error.${state.pageError}`)}</span>
           </div>
@@ -808,7 +1027,7 @@ export function AnalysisView(props: AnalysisViewProps) {
   }
 
   if (state.scanPhase === "scanning") {
-    return <ScanPending t={t} />;
+    return <ScanPending mode={state.scanMode} t={t} />;
   }
 
   if (

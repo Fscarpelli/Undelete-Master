@@ -93,20 +93,30 @@ const folder: FolderSelection = {
 };
 
 const summary: ScanSummary = {
-  schemaVersion: 1,
+  schemaVersion: 3,
   scanId: "scan-1",
   sourceLabel: "System (C:)",
   scope: { kind: "folder", label: "Documents" },
+  scanMode: "metadata",
   fileSystem: "ntfs",
   scanStatus: "partial",
   totalCandidates: "14",
   matchedCandidates: "9",
   unknownCandidates: "2",
+  mftCoverage: {
+    recordsDeclared: "120000",
+    recordsAvailable: "120000",
+    recordsExamined: "65536",
+    bytesDeclared: "122880000",
+    bytesAvailable: "122880000",
+    bytesExamined: "67108864",
+  },
+  jpegCarveCoverage: null,
   warnings: ["The active volume changed while it was being read."],
 };
 
 const firstPage: CandidatePage = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   scanId: "scan-1",
   cursor: null,
   nextCursor: "cursor-2",
@@ -120,13 +130,16 @@ const firstPage: CandidatePage = {
       metadataConfidence: "high",
       recoverabilityScore: 88,
       pathState: "reconstructed",
+      method: "ntfsMetadata",
+      contentSha256: null,
+      validator: null,
       warnings: [],
     },
   ],
 };
 
 const secondPage: CandidatePage = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   scanId: "scan-1",
   cursor: "cursor-2",
   nextCursor: null,
@@ -140,6 +153,9 @@ const secondPage: CandidatePage = {
       metadataConfidence: "medium",
       recoverabilityScore: 54,
       pathState: "incomplete",
+      method: "ntfsMetadata",
+      contentSha256: null,
+      validator: null,
       warnings: ["Some data extents could not be proven."],
     },
   ],
@@ -168,7 +184,16 @@ function mockRealFlow() {
         case "select_scan_folder":
           return Promise.resolve(folder);
         case "scan_storage_volume":
-          return Promise.resolve(summary);
+          return Promise.resolve(
+            payload.scopeId === null
+              ? {
+                  ...summary,
+                  scope: { kind: "volume", label: "System (C:)" },
+                  matchedCandidates: summary.totalCandidates,
+                  unknownCandidates: "0",
+                }
+              : summary,
+          );
         case "get_candidate_page":
           return Promise.resolve(
             payload.cursor === null ? firstPage : secondPage,
@@ -325,6 +350,7 @@ describe("real connected-storage desktop workflow", () => {
       generation: "inventory-7",
       volumeId: "volume-c",
       scopeId: "scope-documents",
+      mode: "metadata",
     });
     expect(tauri.invoke).toHaveBeenCalledWith("get_candidate_page", {
       requestId: expect.stringMatching(/^page-[0-9a-z-]+$/u),
@@ -363,6 +389,46 @@ describe("real connected-storage desktop workflow", () => {
       scanId: "scan-1",
       cursor: "cursor-2",
       limit: 100,
+    });
+  });
+
+  it("WIN-DEEP-COMMAND-001 sends an explicit deep JPEG mode for a whole NTFS volume", async () => {
+    const pending = deferred<ScanSummary>();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === "list_storage_sources") {
+        return Promise.resolve(inventory);
+      }
+      if (command === "scan_storage_volume") {
+        return pending.promise;
+      }
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /System.*C:/u }),
+    );
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Profunda para JPEG/u }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Analisar volume selecionado" }),
+    );
+
+    expect(
+      screen.getByText(/examinando regiões NTFS comprovadamente livres/u),
+    ).toBeTruthy();
+    expect(tauri.invoke).toHaveBeenCalledWith("scan_storage_volume", {
+      requestId: expect.stringMatching(/^scan-[0-9a-z-]+$/u),
+      generation: "inventory-7",
+      volumeId: "volume-c",
+      scopeId: null,
+      mode: "deepJpeg",
+    });
+
+    await act(async () => {
+      pending.reject({ code: "SCAN_INTERNAL" });
+      await pending.promise.catch(() => undefined);
     });
   });
 

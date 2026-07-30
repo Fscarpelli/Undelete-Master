@@ -3737,13 +3737,27 @@ name = "um-broker-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "um-carving"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "sha2",
+ "thiserror 2.0.19",
+ "um-core",
+ "um-fixture-builder",
+ "um-io-common",
+]
+
+[[package]]
 name = "um-cli"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.19",
+ "um-carving",
  "um-core",
  "um-fixture-builder",
  "um-fs-common",

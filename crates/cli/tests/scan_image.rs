@@ -37,6 +37,16 @@ fn cli_json_privacy_001_reports_ntfs_without_full_path() {
         report.volumes[0].candidate_count,
         manifest.expected_candidates.len()
     );
+    let coverage = report.volumes[0]
+        .mft_coverage
+        .as_ref()
+        .expect("NTFS reports quantitative MFT coverage");
+    assert_eq!(coverage.records_declared, 64);
+    assert_eq!(coverage.records_available, 64);
+    assert_eq!(coverage.records_examined, 64);
+    assert_eq!(coverage.bytes_declared, 65_536);
+    assert_eq!(coverage.bytes_available, 65_536);
+    assert_eq!(coverage.bytes_examined, 65_536);
 
     let json = serde_json::to_string(&report).unwrap();
     assert!(!json.contains(&temp.path().display().to_string()));

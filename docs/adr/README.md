@@ -37,6 +37,7 @@ subject to independent review.
 | [0021](0021-real-only-image-desktop.md) | Unelevated Tauri image desktop uses only the real scanner and fails closed without it | Accepted |
 | [0022](0022-windows-locality-boundary-and-path-identity.md) | Minimal read-only Windows locality FFI with explicit residual path-identity races | Accepted |
 | [0023](0023-windows-read-only-broker-and-folder-scope.md) | Mounted local volumes grouped under display-only disks, fixed read-only broker v2, and identity-bound NTFS folder scope; no `PhysicalDriveN` scan | Accepted |
+| [0024](0024-streaming-mft-and-bounded-content-carving.md) | Batched/retention-bounded MFT enumeration plus explicit allocation-gated whole-NTFS JPEG deep mode | Accepted |
 
 A new ADR supersedes an accepted decision; accepted history is never silently
 rewritten. Proposed records must be reviewed and moved to Accepted before their

@@ -80,13 +80,52 @@ pub struct AllocationMap {
     cluster_count: u64,
 }
 
-impl AllocationMap {
-    pub fn new(cluster_count: u64) -> Self {
-        let bytes = cluster_count.div_ceil(8) as usize;
-        Self {
-            bits: vec![0; bytes],
-            cluster_count,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreeClusterRun {
+    pub start_cluster: u64,
+    pub cluster_count: u64,
+}
+
+pub struct FreeClusterRuns<'a> {
+    map: &'a AllocationMap,
+    cursor: u64,
+    known_clusters: u64,
+}
+
+impl Iterator for FreeClusterRuns<'_> {
+    type Item = FreeClusterRun;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.cursor < self.known_clusters && self.map.is_allocated(self.cursor) != Some(false)
+        {
+            self.cursor += 1;
         }
+        if self.cursor >= self.known_clusters {
+            return None;
+        }
+
+        let start_cluster = self.cursor;
+        while self.cursor < self.known_clusters && self.map.is_allocated(self.cursor) == Some(false)
+        {
+            self.cursor += 1;
+        }
+        Some(FreeClusterRun {
+            start_cluster,
+            cluster_count: self.cursor - start_cluster,
+        })
+    }
+}
+
+impl AllocationMap {
+    pub fn new(cluster_count: u64) -> Option<Self> {
+        let bytes = usize::try_from(cluster_count.div_ceil(8)).ok()?;
+        let mut bits = Vec::new();
+        bits.try_reserve_exact(bytes).ok()?;
+        bits.resize(bytes, 0);
+        Some(Self {
+            bits,
+            cluster_count,
+        })
     }
 
     pub fn from_raw(bits: Vec<u8>, cluster_count: u64) -> Self {
@@ -98,6 +137,26 @@ impl AllocationMap {
 
     pub fn cluster_count(&self) -> u64 {
         self.cluster_count
+    }
+
+    /// Number of cluster states backed by bytes that were actually retained.
+    pub fn known_cluster_count(&self) -> u64 {
+        self.cluster_count
+            .min((self.bits.len() as u64).saturating_mul(8))
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.known_cluster_count() >= self.cluster_count
+    }
+
+    /// Coalesced runs whose allocation bits are present and explicitly clear.
+    /// Missing bitmap bytes are never inferred to mean free.
+    pub fn free_cluster_runs(&self) -> FreeClusterRuns<'_> {
+        FreeClusterRuns {
+            map: self,
+            cursor: 0,
+            known_clusters: self.known_cluster_count(),
+        }
     }
 
     pub fn set_allocated(&mut self, cluster: u64) {
@@ -143,7 +202,7 @@ mod tests {
 
     #[test]
     fn allocation_map() {
-        let mut m = AllocationMap::new(20);
+        let mut m = AllocationMap::new(20).expect("small allocation map");
         m.set_allocated(0);
         m.set_allocated(9);
         m.set_allocated(19);
@@ -155,11 +214,41 @@ mod tests {
     }
 
     #[test]
+    fn fs_map_allocation_002_rejects_unrepresentable_capacity_without_panicking() {
+        assert!(AllocationMap::new(u64::MAX).is_none());
+    }
+
+    #[test]
     fn fs_map_trunc_001_returns_unknown_for_missing_bitmap_bits() {
         let map = AllocationMap::from_raw(vec![0b1000_0000], 64);
 
+        assert_eq!(map.known_cluster_count(), 8);
+        assert!(!map.is_complete());
         assert_eq!(map.is_allocated(7), Some(true));
         assert_eq!(map.is_allocated(8), None);
         assert_eq!(map.is_allocated(63), None);
+    }
+
+    #[test]
+    fn fs_map_free_runs_001_never_crosses_allocated_or_unknown_clusters() {
+        let map = AllocationMap::from_raw(vec![0b0010_0101], 12);
+
+        assert_eq!(
+            map.free_cluster_runs().collect::<Vec<_>>(),
+            vec![
+                FreeClusterRun {
+                    start_cluster: 1,
+                    cluster_count: 1,
+                },
+                FreeClusterRun {
+                    start_cluster: 3,
+                    cluster_count: 2,
+                },
+                FreeClusterRun {
+                    start_cluster: 6,
+                    cluster_count: 2,
+                },
+            ]
+        );
     }
 }

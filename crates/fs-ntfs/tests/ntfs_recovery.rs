@@ -90,6 +90,104 @@ fn recovers_deleted_files_byte_exact() {
 }
 
 #[test]
+fn ntfs_mft_coverage_001_finds_deleted_record_beyond_legacy_64_mib_prefix() {
+    const FIRST_RECORD_AFTER_64_MIB: u64 = (64 * 1024 * 1024) / 1024;
+
+    let mut builder = NtfsImageBuilder::new("ntfs-mft-beyond-legacy-prefix")
+        .with_mft_layout(FIRST_RECORD_AFTER_64_MIB + 4, FIRST_RECORD_AFTER_64_MIB);
+    builder.add_file(
+        NodeParent::Root,
+        "deleted-after-prefix.txt",
+        b"the scanner must enumerate the trusted MFT, not only its first 64 MiB".to_vec(),
+        true,
+        FileOptions::default(),
+    );
+
+    let (image, manifest) = builder.build();
+    let reader = MemImageReader::new("ntfs-mft-beyond-legacy-prefix", image);
+    let output = um_fs_ntfs::scan_ntfs(&reader).expect("large synthetic MFT must remain scannable");
+
+    assert_eq!(
+        output.coverage.records_declared,
+        FIRST_RECORD_AFTER_64_MIB + 4
+    );
+    assert_eq!(
+        output.coverage.records_available,
+        output.coverage.records_declared
+    );
+    assert_eq!(
+        output.coverage.records_examined,
+        output.coverage.records_declared
+    );
+    assert_eq!(
+        output.coverage.bytes_examined,
+        output.coverage.records_examined * 1024
+    );
+    assert!(output.is_complete);
+
+    let candidate = find(&output.candidates, "deleted-after-prefix.txt");
+    let extracted =
+        extract_candidate(&reader, candidate).expect("candidate bytes must be extractable");
+    assert_eq!(
+        sha256_hex(&extracted.bytes),
+        manifest.expected_candidates[0].content_sha256
+    );
+}
+
+#[test]
+fn ntfs_allocation_snapshot_001_exposes_only_proven_free_regions() {
+    let content = deterministic_bytes(0xCAFE, 8192);
+    let mut builder = NtfsImageBuilder::new("ntfs-free-regions");
+    builder.add_file(
+        NodeParent::Root,
+        "deleted-free.jpg",
+        content,
+        true,
+        FileOptions {
+            force_resident: Some(false),
+            ..Default::default()
+        },
+    );
+    builder.add_file(
+        NodeParent::Root,
+        "active-allocated.jpg",
+        deterministic_bytes(0xBEEF, 8192),
+        false,
+        FileOptions {
+            force_resident: Some(false),
+            ..Default::default()
+        },
+    );
+
+    let (image, _) = builder.build();
+    let output = um_fs_ntfs::scan_ntfs(&MemImageReader::new("ntfs-free-regions", image))
+        .expect("allocation snapshot");
+    let snapshot = output
+        .allocation
+        .as_ref()
+        .expect("fixture has a trusted $Bitmap");
+    let free_regions: Vec<_> = snapshot.free_regions().collect();
+    let deleted = find(&output.candidates, "deleted-free.jpg");
+
+    assert!(snapshot.is_complete());
+    assert!(!free_regions.is_empty());
+    for extent in &deleted.extents {
+        let start = extent.physical_offset.expect("non-resident fixture extent");
+        let end = start + extent.len;
+        assert!(
+            free_regions
+                .iter()
+                .any(|region| { start >= region.offset && end <= region.offset + region.len }),
+            "deleted extent {start}..{end} must be inside a proven-free region"
+        );
+    }
+    assert!(
+        free_regions.iter().all(|region| region.offset >= 24 * 4096),
+        "allocated NTFS metadata must never be exposed as free"
+    );
+}
+
+#[test]
 fn reconstructs_paths_through_deleted_directories() {
     let mut b = NtfsImageBuilder::new("ntfs-tree");
     let projects = b.add_dir(NodeParent::Root, "Projetos", true);

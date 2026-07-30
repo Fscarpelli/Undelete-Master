@@ -2,29 +2,46 @@ use std::collections::{HashMap, HashSet};
 
 use um_core::{
     Candidate, CandidateKind, CandidateState, DiscoveryMethod, ExtentAvailability, ExtentRun,
-    MetadataConfidence, SourceReader, Timestamps,
+    MetadataConfidence, Region, SourceReader, Timestamps,
 };
 use um_fs_common::{le, AllocationMap, ScanError};
 
 use crate::attr::{
     extract_data_streams, iter_attributes, parse_file_name, parse_standard_information, AttrBody,
-    DataStream, DataStreamKind, FileNameAttr, StandardInformation, ATTR_ATTRIBUTE_LIST,
-    ATTR_FLAG_COMPRESSED, ATTR_FLAG_ENCRYPTED, NS_DOS,
+    DataStream, DataStreamKind, FileNameAttr, StandardInformation, ATTR_ATTRIBUTE_LIST, ATTR_DATA,
+    ATTR_FILE_NAME, ATTR_FLAG_COMPRESSED, ATTR_FLAG_ENCRYPTED, ATTR_FLAG_SPARSE, NS_DOS,
 };
 use crate::boot::NtfsBoot;
 use crate::record::{parse_file_record, FileRecord, RecordParseError};
-use crate::runs::RunElement;
+use crate::runs::{decode_runlist, RunElement};
 
 const ROOT_RECORD: u64 = 5;
 const BITMAP_RECORD: u64 = 6;
 const FIRST_USER_RECORD: u64 = 16;
 const MAX_PATH_DEPTH: usize = 255;
-// Defense-in-depth record ceiling. The byte budget below is normally stricter,
-// but retaining both bounds protects unusual record geometries.
-const MAX_MFT_RECORDS: u64 = 1_000_000;
-// At most 64 MiB of physically backed MFT records are parsed per scan. This
-// bounds aggregate allocation/parsing work independently of record size.
-const MAX_MFT_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+// Defense-in-depth work ceiling for hostile metadata. Records are processed in
+// bounded batches and only directories/deleted base records are retained, so
+// this limit no longer acts as a small prefix on ordinary Windows volumes.
+const MAX_MFT_RECORDS: u64 = 8 * 1024 * 1024;
+// One batch maps to at most one broker protocol request on Windows. Readers
+// remain free to split it further, while the scanner never allocates an entire
+// MFT or performs one IPC round-trip per ordinary record.
+const MFT_BATCH_BYTES: u64 = 1024 * 1024;
+// Parsing may examine millions of records, but retained metadata and product
+// output must remain bounded independently of that coverage. Active regular
+// files are discarded; these limits apply to the directory graph, deleted base
+// records, and extension references that are actually useful to recovery.
+const MAX_RETAINED_DELETED_ENTRIES: usize = 100_000;
+const MAX_RETAINED_DIRECTORY_ENTRIES: usize = 100_000;
+const MAX_RETAINED_EXTENSION_REFERENCES: usize = 100_000;
+const MAX_RETAINED_EXTENSION_STREAMS: usize = 100_000;
+// A record-count limit alone is insufficient because one retained record may
+// contain many hard-link names, alternate data streams, or fragmented runs.
+// These aggregate limits cover every nested element kept in `ParsedEntry`.
+// Extension streams remain subject to their stricter independent cap above.
+const MAX_RETAINED_ENTRY_NAMES: usize = 400_000;
+const MAX_RETAINED_ENTRY_STREAMS: usize = 200_000;
+const MAX_RETAINED_ENTRY_RUN_ELEMENTS: usize = 1_000_000;
 // Allocation metadata is advisory for recoverability classification. Retaining
 // the first 64 MiB covers 536,870,912 cluster states while bounding both the
 // source read and the backing Vec for hostile or unusually large volumes.
@@ -286,10 +303,58 @@ pub struct NtfsScanOutput {
     pub boot: NtfsBoot,
     pub candidates: Vec<Candidate>,
     pub namespace: NtfsNamespace,
+    pub coverage: NtfsScanCoverage,
+    pub allocation: Option<NtfsAllocationSnapshot>,
     pub warnings: Vec<String>,
     /// `false` when metadata bounds or skipped corrupt/unreadable records mean
     /// the scanner cannot claim it enumerated every possible MFT candidate.
     pub is_complete: bool,
+}
+
+/// Quantitative MFT coverage. These counters make a zero-result scan
+/// distinguishable from an exhaustive absence of deleted metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NtfsScanCoverage {
+    /// Records declared by the unnamed `$MFT::$DATA` logical size.
+    pub records_declared: u64,
+    /// Whole records inside the initialized, source-bounded physical prefix.
+    pub records_available: u64,
+    /// Records the scanner attempted within its explicit work ceiling.
+    pub records_examined: u64,
+    pub bytes_declared: u64,
+    pub bytes_available: u64,
+    pub bytes_examined: u64,
+}
+
+/// Trusted allocation evidence derived from `$Bitmap`.
+#[derive(Debug, Clone)]
+pub struct NtfsAllocationSnapshot {
+    cluster_size: u64,
+    map: AllocationMap,
+}
+
+impl NtfsAllocationSnapshot {
+    pub fn cluster_size(&self) -> u64 {
+        self.cluster_size
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.map.is_complete()
+    }
+
+    pub fn known_cluster_count(&self) -> u64 {
+        self.map.known_cluster_count()
+    }
+
+    /// Coalesces only bitmap-backed, explicitly free clusters into physical
+    /// source regions. Checked arithmetic drops impossible hostile ranges.
+    pub fn free_regions(&self) -> impl Iterator<Item = Region> + '_ {
+        self.map.free_cluster_runs().filter_map(|run| {
+            let offset = run.start_cluster.checked_mul(self.cluster_size)?;
+            let len = run.cluster_count.checked_mul(self.cluster_size)?;
+            Region::new(offset, len)
+        })
+    }
 }
 
 struct ParsedEntry {
@@ -316,7 +381,10 @@ fn read_stream_range(
 ) -> Result<Vec<u8>, ScanError> {
     let output_len = usize::try_from(len)
         .map_err(|_| ScanError::Corrupt("stream read length does not fit address space".into()))?;
-    let mut out = vec![0u8; output_len];
+    let mut out = Vec::new();
+    out.try_reserve_exact(output_len)
+        .map_err(|_| ScanError::Corrupt("stream read allocation failed safely".into()))?;
+    out.resize(output_len, 0);
     let mut filled = 0u64;
     let mut stream_pos = 0u64;
     for run in runs {
@@ -457,14 +525,11 @@ fn bounded_mft_record_count(
         return Err(ScanError::Corrupt("zero MFT record size".into()));
     }
     let available_records = initialized_stream_len / record_size;
-    let byte_budget_records = MAX_MFT_SCAN_BYTES / record_size;
-    let bounded = available_records
-        .min(MAX_MFT_RECORDS)
-        .min(byte_budget_records);
+    let bounded = available_records.min(MAX_MFT_RECORDS);
     if bounded < available_records {
         warnings.push(format!(
             "MFT scan work budget capped parsing at {bounded} of {available_records} records \
-             ({MAX_MFT_SCAN_BYTES} bytes maximum)"
+             ({MAX_MFT_RECORDS} records maximum)"
         ));
     }
     Ok(bounded)
@@ -510,6 +575,361 @@ impl MftWarningBudget {
             ));
         }
     }
+}
+
+#[derive(Default)]
+struct MftRetentionBudget {
+    deleted_entries: usize,
+    directory_entries: usize,
+    extension_references: usize,
+    extension_streams: usize,
+    entry_names: usize,
+    entry_streams: usize,
+    entry_run_elements: usize,
+    deleted_warning_emitted: bool,
+    directory_warning_emitted: bool,
+    extension_warning_emitted: bool,
+    extension_stream_warning_emitted: bool,
+    entry_evidence_warning_emitted: bool,
+    allocation_warning_emitted: bool,
+}
+
+#[derive(Clone, Copy)]
+struct EntryRetentionCost {
+    names: usize,
+    streams: usize,
+    run_elements: usize,
+}
+
+impl MftRetentionBudget {
+    fn planned_base_record_counts(
+        &mut self,
+        in_use: bool,
+        is_directory: bool,
+        is_complete: &mut bool,
+        warnings: &mut Vec<String>,
+    ) -> Option<(usize, usize)> {
+        let next_deleted = if in_use {
+            Some(self.deleted_entries)
+        } else {
+            self.deleted_entries.checked_add(1)
+        };
+        let next_directory = if is_directory {
+            self.directory_entries.checked_add(1)
+        } else {
+            Some(self.directory_entries)
+        };
+        let deleted_limit_reached =
+            next_deleted.is_none_or(|next| next > MAX_RETAINED_DELETED_ENTRIES);
+        let directory_limit_reached =
+            next_directory.is_none_or(|next| next > MAX_RETAINED_DIRECTORY_ENTRIES);
+        if deleted_limit_reached {
+            *is_complete = false;
+            if !self.deleted_warning_emitted {
+                warnings.push(format!(
+                    "MFT deleted-entry retention budget reached {MAX_RETAINED_DELETED_ENTRIES}; later candidates were not retained"
+                ));
+                self.deleted_warning_emitted = true;
+            }
+        }
+        if directory_limit_reached {
+            *is_complete = false;
+            if !self.directory_warning_emitted {
+                warnings.push(format!(
+                    "MFT directory retention budget reached {MAX_RETAINED_DIRECTORY_ENTRIES}; later path evidence was not retained"
+                ));
+                self.directory_warning_emitted = true;
+            }
+        }
+        if deleted_limit_reached || directory_limit_reached {
+            return None;
+        }
+        Some((next_deleted?, next_directory?))
+    }
+
+    fn base_record_slot_available(
+        &mut self,
+        in_use: bool,
+        is_directory: bool,
+        is_complete: &mut bool,
+        warnings: &mut Vec<String>,
+    ) -> bool {
+        self.planned_base_record_counts(in_use, is_directory, is_complete, warnings)
+            .is_some()
+    }
+
+    fn admit_base_record(
+        &mut self,
+        in_use: bool,
+        is_directory: bool,
+        cost: EntryRetentionCost,
+        is_complete: &mut bool,
+        warnings: &mut Vec<String>,
+    ) -> bool {
+        let Some((next_deleted, next_directory)) =
+            self.planned_base_record_counts(in_use, is_directory, is_complete, warnings)
+        else {
+            return false;
+        };
+        let Some(next_names) = self.entry_names.checked_add(cost.names) else {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        };
+        let Some(next_streams) = self.entry_streams.checked_add(cost.streams) else {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        };
+        let Some(next_run_elements) = self.entry_run_elements.checked_add(cost.run_elements) else {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        };
+        if next_names > MAX_RETAINED_ENTRY_NAMES
+            || next_streams > MAX_RETAINED_ENTRY_STREAMS
+            || next_run_elements > MAX_RETAINED_ENTRY_RUN_ELEMENTS
+        {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        }
+
+        self.deleted_entries = next_deleted;
+        self.directory_entries = next_directory;
+        self.entry_names = next_names;
+        self.entry_streams = next_streams;
+        self.entry_run_elements = next_run_elements;
+        true
+    }
+
+    fn admit_extension_reference(
+        &mut self,
+        is_complete: &mut bool,
+        warnings: &mut Vec<String>,
+    ) -> bool {
+        if self.extension_references >= MAX_RETAINED_EXTENSION_REFERENCES {
+            *is_complete = false;
+            if !self.extension_warning_emitted {
+                warnings.push(format!(
+                    "MFT extension-reference retention budget reached {MAX_RETAINED_EXTENSION_REFERENCES}; later data streams were not retained"
+                ));
+                self.extension_warning_emitted = true;
+            }
+            return false;
+        }
+        self.extension_references = self.extension_references.saturating_add(1);
+        true
+    }
+
+    fn admit_extension_streams(
+        &mut self,
+        count: usize,
+        run_element_count: usize,
+        is_complete: &mut bool,
+        warnings: &mut Vec<String>,
+    ) -> bool {
+        let Some(next) = self.extension_streams.checked_add(count) else {
+            *is_complete = false;
+            if !self.extension_stream_warning_emitted {
+                warnings.push(
+                    "MFT extension-stream retention budget overflowed; later data streams were not retained"
+                        .into(),
+                );
+                self.extension_stream_warning_emitted = true;
+            }
+            return false;
+        };
+        if next > MAX_RETAINED_EXTENSION_STREAMS {
+            *is_complete = false;
+            if !self.extension_stream_warning_emitted {
+                warnings.push(format!(
+                    "MFT extension-stream retention budget reached {MAX_RETAINED_EXTENSION_STREAMS}; later data streams were not retained"
+                ));
+                self.extension_stream_warning_emitted = true;
+            }
+            return false;
+        }
+        let Some(next_entry_streams) = self.entry_streams.checked_add(count) else {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        };
+        let Some(next_entry_run_elements) = self.entry_run_elements.checked_add(run_element_count)
+        else {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        };
+        if next_entry_streams > MAX_RETAINED_ENTRY_STREAMS
+            || next_entry_run_elements > MAX_RETAINED_ENTRY_RUN_ELEMENTS
+        {
+            self.note_entry_evidence_limit(is_complete, warnings);
+            return false;
+        }
+        self.extension_streams = next;
+        self.entry_streams = next_entry_streams;
+        self.entry_run_elements = next_entry_run_elements;
+        true
+    }
+
+    fn note_entry_evidence_limit(&mut self, is_complete: &mut bool, warnings: &mut Vec<String>) {
+        *is_complete = false;
+        if !self.entry_evidence_warning_emitted {
+            warnings.push(format!(
+                "MFT retained-entry evidence budget reached (names {MAX_RETAINED_ENTRY_NAMES}, streams {MAX_RETAINED_ENTRY_STREAMS}, run elements {MAX_RETAINED_ENTRY_RUN_ELEMENTS}); over-budget records or streams were not retained"
+            ));
+            self.entry_evidence_warning_emitted = true;
+        }
+    }
+
+    fn note_allocation_failure(&mut self, is_complete: &mut bool, warnings: &mut Vec<String>) {
+        *is_complete = false;
+        if !self.allocation_warning_emitted {
+            warnings.push(
+                "MFT metadata retention allocation failed; later recovery evidence was skipped"
+                    .into(),
+            );
+            self.allocation_warning_emitted = true;
+        }
+    }
+}
+
+fn retained_run_element_count(streams: &[DataStream]) -> Option<usize> {
+    streams.iter().try_fold(0usize, |total, stream| {
+        let stream_runs = match &stream.kind {
+            DataStreamKind::Resident { .. } => 0,
+            DataStreamKind::NonResident { runs, .. } => runs.len(),
+        };
+        total.checked_add(stream_runs)
+    })
+}
+
+fn retain_base_entry(
+    record_no: u64,
+    entry: ParsedEntry,
+    entries: &mut HashMap<u64, ParsedEntry>,
+    retention_budget: &mut MftRetentionBudget,
+    is_complete: &mut bool,
+    warnings: &mut Vec<String>,
+) -> bool {
+    let Some(run_element_count) = retained_run_element_count(&entry.streams) else {
+        retention_budget.note_entry_evidence_limit(is_complete, warnings);
+        return false;
+    };
+    if entries.try_reserve(1).is_err() {
+        retention_budget.note_allocation_failure(is_complete, warnings);
+        return false;
+    }
+    if !retention_budget.admit_base_record(
+        entry.in_use,
+        entry.is_directory,
+        EntryRetentionCost {
+            names: entry.names.len(),
+            streams: entry.streams.len(),
+            run_elements: run_element_count,
+        },
+        is_complete,
+        warnings,
+    ) {
+        return false;
+    }
+    entries.insert(record_no, entry);
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_mft_record(
+    raw: &[u8],
+    record_no: u64,
+    logical_offset: u64,
+    boot: &NtfsBoot,
+    mft_runs: &[RunElement],
+    entries: &mut HashMap<u64, ParsedEntry>,
+    extension_data: &mut HashMap<u64, Vec<u64>>,
+    retention_budget: &mut MftRetentionBudget,
+    is_complete: &mut bool,
+    warning_budget: &mut MftWarningBudget,
+    warnings: &mut Vec<String>,
+) {
+    let rec = match parse_file_record(raw, boot.bytes_per_sector) {
+        Ok(record) => record,
+        Err(RecordParseError::NotAFileRecord) if raw.iter().all(|byte| *byte == 0) => return,
+        Err(RecordParseError::NotAFileRecord) => {
+            *is_complete = false;
+            warning_budget.push(
+                warnings,
+                format!("MFT record {record_no} has no FILE signature; skipped"),
+            );
+            return;
+        }
+        Err(RecordParseError::FixupMismatch) => {
+            *is_complete = false;
+            warning_budget.push(
+                warnings,
+                format!("MFT record {record_no} has torn sectors (fixup mismatch); skipped"),
+            );
+            return;
+        }
+        Err(RecordParseError::Corrupt(message)) => {
+            *is_complete = false;
+            warning_budget.push(
+                warnings,
+                format!("MFT record {record_no} corrupt: {message}"),
+            );
+            return;
+        }
+    };
+
+    if rec.base_record != 0 {
+        // Deleted base records are the only current candidates that need data
+        // from extension records. Avoid retaining the extension graph of every
+        // active file on large system volumes.
+        if !rec.in_use && retention_budget.admit_extension_reference(is_complete, warnings) {
+            if extension_data.try_reserve(1).is_err() {
+                retention_budget.note_allocation_failure(is_complete, warnings);
+                return;
+            }
+            let references = extension_data.entry(rec.base_record).or_default();
+            if references.try_reserve(1).is_err() {
+                retention_budget.note_allocation_failure(is_complete, warnings);
+                return;
+            }
+            references.push(record_no);
+        }
+        return;
+    }
+
+    // Active regular files cannot become undelete candidates. Directories are
+    // retained for path reconstruction; free user records are retained for
+    // candidate construction. This keeps memory proportional to useful
+    // recovery evidence rather than to every live file in the volume.
+    if !rec.is_directory && (rec.in_use || record_no < FIRST_USER_RECORD) {
+        return;
+    }
+    if !retention_budget.base_record_slot_available(
+        rec.in_use,
+        rec.is_directory,
+        is_complete,
+        warnings,
+    ) {
+        return;
+    }
+
+    let physical_offset =
+        stream_phys_offset(mft_runs, boot.cluster_size, logical_offset).unwrap_or(0);
+    let (entry, attributes_complete) = parse_entry(&rec, boot, physical_offset);
+    if !attributes_complete {
+        *is_complete = false;
+        warning_budget.push(
+            warnings,
+            format!(
+                "MFT record {record_no} has incomplete or unresolved attributes; metadata may be incomplete"
+            ),
+        );
+    }
+    retain_base_entry(
+        record_no,
+        entry,
+        entries,
+        retention_budget,
+        is_complete,
+        warnings,
+    );
 }
 
 /// Parses a resident `$ATTRIBUTE_LIST` value, returning referenced extension
@@ -922,85 +1342,142 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         &mut warnings,
     );
 
-    // Pass 1: parse all records.
+    let records_declared = mft_data_size / record_size;
+    let records_available = trusted_mft_prefix.len / record_size;
+    let bytes_available = records_available
+        .checked_mul(record_size)
+        .ok_or_else(|| ScanError::Corrupt("available MFT byte count overflow".into()))?;
+    let bytes_examined = record_count
+        .checked_mul(record_size)
+        .ok_or_else(|| ScanError::Corrupt("examined MFT byte count overflow".into()))?;
+    let coverage = NtfsScanCoverage {
+        records_declared,
+        records_available,
+        records_examined: record_count,
+        bytes_declared: mft_data_size,
+        bytes_available,
+        bytes_examined,
+    };
+
+    // Pass 1: parse the trusted MFT in bounded batches. Only directories and
+    // free base records are retained; active regular files are classified and
+    // discarded immediately.
     let mut entries: HashMap<u64, ParsedEntry> = HashMap::new();
     let mut extension_data: HashMap<u64, Vec<u64>> = HashMap::new(); // base -> ext record nos
     let mut mft_warning_budget = MftWarningBudget::default();
-    for record_no in 0..record_count {
-        let logical = record_no
+    let mut mft_retention_budget = MftRetentionBudget::default();
+    let records_per_batch = (MFT_BATCH_BYTES / record_size).max(1);
+    let mut batch_start_record = 0u64;
+    while batch_start_record < record_count {
+        let batch_record_count = (record_count - batch_start_record).min(records_per_batch);
+        let logical = batch_start_record
             .checked_mul(record_size)
             .ok_or_else(|| ScanError::Corrupt("MFT record offset overflow".into()))?;
-        let raw = match read_stream_range(reader, &mft_runs, cluster_size, logical, record_size) {
-            Ok(b) => b,
+        let batch_len = batch_record_count
+            .checked_mul(record_size)
+            .ok_or_else(|| ScanError::Corrupt("MFT batch length overflow".into()))?;
+
+        match read_stream_range(reader, &mft_runs, cluster_size, logical, batch_len) {
+            Ok(batch) => {
+                if !batch.iter().all(|byte| *byte == 0) {
+                    for batch_index in 0..batch_record_count {
+                        let record_no = batch_start_record + batch_index;
+                        let start_u64 = batch_index.checked_mul(record_size).ok_or_else(|| {
+                            ScanError::Corrupt("MFT batch record offset overflow".into())
+                        })?;
+                        let end_u64 = start_u64.checked_add(record_size).ok_or_else(|| {
+                            ScanError::Corrupt("MFT batch record end overflow".into())
+                        })?;
+                        let start = usize::try_from(start_u64).map_err(|_| {
+                            ScanError::Corrupt(
+                                "MFT batch record offset does not fit address space".into(),
+                            )
+                        })?;
+                        let end = usize::try_from(end_u64).map_err(|_| {
+                            ScanError::Corrupt(
+                                "MFT batch record end does not fit address space".into(),
+                            )
+                        })?;
+                        let record_logical = logical.checked_add(start_u64).ok_or_else(|| {
+                            ScanError::Corrupt("MFT record logical offset overflow".into())
+                        })?;
+                        process_mft_record(
+                            &batch[start..end],
+                            record_no,
+                            record_logical,
+                            &boot,
+                            &mft_runs,
+                            &mut entries,
+                            &mut extension_data,
+                            &mut mft_retention_budget,
+                            &mut is_complete,
+                            &mut mft_warning_budget,
+                            &mut warnings,
+                        );
+                    }
+                }
+            }
             Err(_) => {
-                is_complete = false;
-                mft_warning_budget.push(
-                    &mut warnings,
-                    format!("MFT record {record_no} unreadable; skipped"),
-                );
-                continue;
+                // Isolate a bad range rather than losing the whole batch.
+                for batch_index in 0..batch_record_count {
+                    let record_no = batch_start_record + batch_index;
+                    let record_logical = record_no
+                        .checked_mul(record_size)
+                        .ok_or_else(|| ScanError::Corrupt("MFT record offset overflow".into()))?;
+                    match read_stream_range(
+                        reader,
+                        &mft_runs,
+                        cluster_size,
+                        record_logical,
+                        record_size,
+                    ) {
+                        Ok(raw) => process_mft_record(
+                            &raw,
+                            record_no,
+                            record_logical,
+                            &boot,
+                            &mft_runs,
+                            &mut entries,
+                            &mut extension_data,
+                            &mut mft_retention_budget,
+                            &mut is_complete,
+                            &mut mft_warning_budget,
+                            &mut warnings,
+                        ),
+                        Err(_) => {
+                            is_complete = false;
+                            mft_warning_budget.push(
+                                &mut warnings,
+                                format!("MFT record {record_no} unreadable; skipped"),
+                            );
+                        }
+                    }
+                }
             }
-        };
-        let rec = match parse_file_record(&raw, boot.bytes_per_sector) {
-            Ok(r) => r,
-            Err(RecordParseError::NotAFileRecord) if raw.iter().all(|byte| *byte == 0) => continue,
-            Err(RecordParseError::NotAFileRecord) => {
-                is_complete = false;
-                mft_warning_budget.push(
-                    &mut warnings,
-                    format!("MFT record {record_no} has no FILE signature; skipped"),
-                );
-                continue;
-            }
-            Err(RecordParseError::FixupMismatch) => {
-                is_complete = false;
-                mft_warning_budget.push(
-                    &mut warnings,
-                    format!("MFT record {record_no} has torn sectors (fixup mismatch); skipped"),
-                );
-                continue;
-            }
-            Err(RecordParseError::Corrupt(msg)) => {
-                is_complete = false;
-                mft_warning_budget.push(
-                    &mut warnings,
-                    format!("MFT record {record_no} corrupt: {msg}"),
-                );
-                continue;
-            }
-        };
-        if rec.base_record != 0 {
-            // Extension record: remember for its base.
-            extension_data
-                .entry(rec.base_record)
-                .or_default()
-                .push(record_no);
-            continue;
         }
-        let phys = stream_phys_offset(&mft_runs, cluster_size, logical).unwrap_or(0);
-        let (entry, attributes_complete) = parse_entry(&rec, &boot, phys);
-        if !attributes_complete {
-            is_complete = false;
-            mft_warning_budget.push(
-                &mut warnings,
-                format!(
-                    "MFT record {record_no} has incomplete or unresolved attributes; metadata may be incomplete"
-                ),
-            );
-        }
-        entries.insert(record_no, entry);
+
+        batch_start_record = batch_start_record
+            .checked_add(batch_record_count)
+            .ok_or_else(|| ScanError::Corrupt("MFT batch cursor overflow".into()))?;
     }
     // Pass 2: merge $DATA streams from extension records referenced by
     // resident attribute lists.
-    let mut merged: Vec<(u64, Vec<DataStream>)> = Vec::new();
-    for (&record_no, entry) in &entries {
-        if !entry
-            .warnings
-            .iter()
-            .any(|w| w.starts_with("has attribute list"))
-        {
-            continue;
+    let mut merge_targets = Vec::new();
+    merge_targets
+        .try_reserve(extension_data.len().min(entries.len()))
+        .map_err(|_| ScanError::Corrupt("extension merge allocation failed safely".into()))?;
+    for &record_no in extension_data.keys() {
+        if entries.get(&record_no).is_some_and(|entry| {
+            entry
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("has attribute list"))
+        }) {
+            merge_targets.push(record_no);
         }
+    }
+    merge_targets.sort_unstable();
+    'merge_targets: for record_no in merge_targets {
         let mut extra = Vec::new();
         if let Some(ext_recs) = extension_data.get(&record_no) {
             for &ext_no in ext_recs {
@@ -1028,7 +1505,36 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
                                 );
                             }
                             let mut w = Vec::new();
-                            extra.extend(extract_data_streams(&attrs, boot.total_clusters, &mut w));
+                            let streams = extract_data_streams(&attrs, boot.total_clusters, &mut w);
+                            if !w.is_empty() {
+                                is_complete = false;
+                                mft_warning_budget.push(
+                                    &mut warnings,
+                                    format!(
+                                        "MFT extension record {ext_no} contains unusable data streams; candidate extents may be incomplete"
+                                    ),
+                                );
+                            }
+                            let Some(run_element_count) = retained_run_element_count(&streams)
+                            else {
+                                mft_retention_budget
+                                    .note_entry_evidence_limit(&mut is_complete, &mut warnings);
+                                break 'merge_targets;
+                            };
+                            if !mft_retention_budget.admit_extension_streams(
+                                streams.len(),
+                                run_element_count,
+                                &mut is_complete,
+                                &mut warnings,
+                            ) {
+                                break 'merge_targets;
+                            }
+                            if extra.try_reserve(streams.len()).is_err() {
+                                mft_retention_budget
+                                    .note_allocation_failure(&mut is_complete, &mut warnings);
+                                break 'merge_targets;
+                            }
+                            extra.extend(streams);
                         }
                         Err(_) => {
                             is_complete = false;
@@ -1053,12 +1559,13 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
             }
         }
         if !extra.is_empty() {
-            merged.push((record_no, extra));
-        }
-    }
-    for (record_no, extra) in merged {
-        if let Some(e) = entries.get_mut(&record_no) {
-            e.streams.extend(extra);
+            if let Some(entry) = entries.get_mut(&record_no) {
+                if entry.streams.try_reserve(extra.len()).is_err() {
+                    mft_retention_budget.note_allocation_failure(&mut is_complete, &mut warnings);
+                    break 'merge_targets;
+                }
+                entry.streams.extend(extra);
+            }
         }
     }
     mft_warning_budget.finish(&mut warnings);
@@ -1067,6 +1574,9 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
 
     // Pass 3: build candidates from records marked free.
     let mut candidates = Vec::new();
+    candidates
+        .try_reserve(mft_retention_budget.deleted_entries.min(entries.len()))
+        .map_err(|_| ScanError::Corrupt("candidate result allocation failed safely".into()))?;
     for (&record_no, entry) in &entries {
         if entry.in_use || record_no < FIRST_USER_RECORD {
             continue;
@@ -1114,11 +1624,15 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         });
     }
     candidates.sort_by_key(|c| c.id);
+    let is_complete = namespace.is_complete;
+    let allocation = allocation.map(|map| NtfsAllocationSnapshot { cluster_size, map });
 
     Ok(NtfsScanOutput {
         boot,
         candidates,
         namespace,
+        coverage,
+        allocation,
         warnings,
         is_complete,
     })
@@ -1235,21 +1749,72 @@ fn load_allocation_map(
             .push("$Bitmap record has malformed attributes; extent availability unknown".into());
         return None;
     }
-    let mut w = Vec::new();
-    let streams = extract_data_streams(&attrs, boot.total_clusters, &mut w);
+    let has_bitmap_name = attrs.iter().any(|attribute| {
+        attribute.type_id == ATTR_FILE_NAME
+            && matches!(
+                &attribute.body,
+                AttrBody::Resident { value, .. }
+                    if parse_file_name(value).is_some_and(|name| {
+                        name.name == "$Bitmap" && name.parent_record == ROOT_RECORD
+                    })
+            )
+    });
+    let mut unnamed_data = attrs
+        .iter()
+        .filter(|attribute| attribute.type_id == ATTR_DATA && attribute.name.is_none());
+    let data_attribute = unnamed_data.next();
+    let record_and_stream_semantics_trusted = rec.in_use
+        && !rec.is_directory
+        && rec.base_record == 0
+        && has_bitmap_name
+        && !attrs
+            .iter()
+            .any(|attribute| attribute.type_id == ATTR_ATTRIBUTE_LIST)
+        && data_attribute.is_some()
+        && unnamed_data.next().is_none()
+        && data_attribute.is_some_and(|attribute| {
+            attribute.flags & (ATTR_FLAG_COMPRESSED | ATTR_FLAG_ENCRYPTED | ATTR_FLAG_SPARSE) == 0
+                && match &attribute.body {
+                    AttrBody::Resident { .. } => true,
+                    AttrBody::NonResident {
+                        starting_vcn,
+                        data_size,
+                        initialized_size,
+                        allocated_size,
+                        ..
+                    } => {
+                        *starting_vcn == 0
+                            && initialized_size <= data_size
+                            && data_size <= allocated_size
+                    }
+                }
+        });
+    if !record_and_stream_semantics_trusted {
+        warnings.push(
+            "$Bitmap record or stream semantics are not trustworthy; extent availability unknown"
+                .into(),
+        );
+        return None;
+    }
+
     let expected = boot.total_clusters.div_ceil(8);
-    match streams.iter().find(|s| s.name.is_none()) {
-        Some(DataStream {
-            kind:
-                DataStreamKind::NonResident {
-                    data_size,
-                    initialized_size,
-                    runs,
-                },
+    match &data_attribute?.body {
+        AttrBody::NonResident {
+            data_size,
+            initialized_size,
+            runlist,
             ..
-        }) => {
+        } => {
+            let runs = match decode_runlist(runlist, boot.total_clusters) {
+                Ok(runs) => runs,
+                Err(_) => {
+                    warnings
+                        .push("$Bitmap stream bounds invalid; extent availability unknown".into());
+                    return None;
+                }
+            };
             let trusted_bitmap_prefix = match trusted_physical_stream_prefix_len(
-                runs,
+                &runs,
                 boot.cluster_size,
                 reader.len(),
                 *data_size,
@@ -1280,7 +1845,7 @@ fn load_allocation_map(
                 ));
             }
             let take = bounded_bitmap_read_len(expected, trusted_bitmap_prefix.len, warnings);
-            match read_stream_range(reader, runs, boot.cluster_size, 0, take) {
+            match read_stream_range(reader, &runs, boot.cluster_size, 0, take) {
                 Ok(bits) => Some(allocation_map_from_bytes(
                     bits,
                     expected,
@@ -1293,17 +1858,18 @@ fn load_allocation_map(
                 }
             }
         }
-        Some(DataStream {
-            kind:
-                DataStreamKind::Resident {
-                    value_offset_in_record,
-                    len,
-                },
-            ..
-        }) => {
+        AttrBody::Resident {
+            value,
+            value_offset_in_record,
+        } => {
             let phys = stream_phys_offset(mft_runs, boot.cluster_size, logical)?
                 .checked_add(*value_offset_in_record as u64)?;
-            let take = usize::try_from(bounded_bitmap_read_len(expected, *len, warnings)).ok()?;
+            let take = usize::try_from(bounded_bitmap_read_len(
+                expected,
+                value.len() as u64,
+                warnings,
+            ))
+            .ok()?;
             match reader.read_vec_at(phys, take) {
                 Ok(bits) => Some(allocation_map_from_bytes(
                     bits,
@@ -1313,10 +1879,6 @@ fn load_allocation_map(
                 )),
                 Err(_) => None,
             }
-        }
-        None => {
-            warnings.push("$Bitmap has no data stream; extent availability unknown".into());
-            None
         }
     }
 }
@@ -1733,14 +2295,73 @@ mod tests {
     #[test]
     fn ntfs_mft_bound_003_caps_record_iteration() {
         let mut warnings = Vec::new();
-        let available_bytes = MAX_MFT_SCAN_BYTES + 1024;
+        let available_bytes = (MAX_MFT_RECORDS + 1) * 1024;
 
         let count = bounded_mft_record_count(available_bytes, 1024, &mut warnings).unwrap();
 
-        assert_eq!(count, MAX_MFT_SCAN_BYTES / 1024);
+        assert_eq!(count, MAX_MFT_RECORDS);
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("MFT scan work budget")));
+    }
+
+    #[test]
+    fn ntfs_mft_retention_004_bounds_entries_extensions_and_warning_growth() {
+        let mut warnings = Vec::new();
+        let mut complete = true;
+        let mut budget = MftRetentionBudget {
+            deleted_entries: MAX_RETAINED_DELETED_ENTRIES,
+            directory_entries: MAX_RETAINED_DIRECTORY_ENTRIES,
+            extension_references: MAX_RETAINED_EXTENSION_REFERENCES,
+            extension_streams: MAX_RETAINED_EXTENSION_STREAMS,
+            ..MftRetentionBudget::default()
+        };
+
+        let no_nested_evidence = EntryRetentionCost {
+            names: 0,
+            streams: 0,
+            run_elements: 0,
+        };
+        assert!(!budget.admit_base_record(
+            false,
+            false,
+            no_nested_evidence,
+            &mut complete,
+            &mut warnings
+        ));
+        assert!(!budget.admit_base_record(
+            true,
+            true,
+            no_nested_evidence,
+            &mut complete,
+            &mut warnings
+        ));
+        assert!(!budget.admit_extension_reference(&mut complete, &mut warnings));
+        assert!(!budget.admit_extension_streams(1, 0, &mut complete, &mut warnings));
+        assert!(!complete);
+        assert_eq!(warnings.len(), 4);
+
+        assert!(!budget.admit_base_record(
+            false,
+            false,
+            no_nested_evidence,
+            &mut complete,
+            &mut warnings
+        ));
+        assert!(!budget.admit_base_record(
+            true,
+            true,
+            no_nested_evidence,
+            &mut complete,
+            &mut warnings
+        ));
+        assert!(!budget.admit_extension_reference(&mut complete, &mut warnings));
+        assert!(!budget.admit_extension_streams(1, 0, &mut complete, &mut warnings));
+        assert_eq!(
+            warnings.len(),
+            4,
+            "each exhausted budget must retain only one aggregate warning"
+        );
     }
 
     #[test]
@@ -1842,6 +2463,137 @@ mod tests {
             record_phys_offset: 0,
             warnings: Vec::new(),
         }
+    }
+
+    fn retention_entry(name_count: usize, stream_run_counts: &[usize]) -> ParsedEntry {
+        let names: Vec<FileNameAttr> = (0..name_count)
+            .map(|index| {
+                namespace_name(
+                    &format!("retained-{index}"),
+                    ROOT_RECORD,
+                    1,
+                    crate::attr::NS_WIN32,
+                )
+            })
+            .collect();
+        let mut entry = namespace_entry(1, false, false, names, true);
+        entry.streams = stream_run_counts
+            .iter()
+            .map(|&run_count| DataStream {
+                name: None,
+                flags: 0,
+                kind: DataStreamKind::NonResident {
+                    data_size: run_count as u64,
+                    initialized_size: run_count as u64,
+                    runs: vec![
+                        RunElement {
+                            cluster_count: 1,
+                            lcn: Some(1),
+                        };
+                        run_count
+                    ],
+                },
+            })
+            .collect();
+        entry
+    }
+
+    #[test]
+    fn ntfs_mft_retention_005_rejects_entire_base_entry_for_each_nested_budget() {
+        fn assert_rejected(mut budget: MftRetentionBudget, entry: ParsedEntry) {
+            let name_count = entry.names.len();
+            let stream_count = entry.streams.len();
+            let run_element_count =
+                retained_run_element_count(&entry.streams).expect("small test costs fit");
+            let initial_names = budget.entry_names;
+            let initial_streams = budget.entry_streams;
+            let initial_runs = budget.entry_run_elements;
+            let mut entries = HashMap::new();
+            let mut complete = true;
+            let mut warnings = Vec::new();
+
+            assert!(!retain_base_entry(
+                42,
+                entry,
+                &mut entries,
+                &mut budget,
+                &mut complete,
+                &mut warnings,
+            ));
+            assert!(entries.is_empty(), "an over-budget entry must be dropped");
+            assert_eq!(budget.deleted_entries, 0);
+            assert_eq!(budget.directory_entries, 0);
+            assert_eq!(budget.entry_names, initial_names);
+            assert_eq!(budget.entry_streams, initial_streams);
+            assert_eq!(budget.entry_run_elements, initial_runs);
+            assert!(!complete);
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("retained-entry evidence budget"));
+
+            assert!(!budget.admit_base_record(
+                false,
+                false,
+                EntryRetentionCost {
+                    names: name_count,
+                    streams: stream_count,
+                    run_elements: run_element_count,
+                },
+                &mut complete,
+                &mut warnings,
+            ));
+            assert_eq!(
+                warnings.len(),
+                1,
+                "nested-budget saturation must retain one aggregate warning"
+            );
+        }
+
+        assert_rejected(
+            MftRetentionBudget {
+                entry_names: MAX_RETAINED_ENTRY_NAMES - 1,
+                ..MftRetentionBudget::default()
+            },
+            retention_entry(2, &[]),
+        );
+        assert_rejected(
+            MftRetentionBudget {
+                entry_streams: MAX_RETAINED_ENTRY_STREAMS,
+                ..MftRetentionBudget::default()
+            },
+            retention_entry(1, &[0]),
+        );
+        assert_rejected(
+            MftRetentionBudget {
+                entry_run_elements: MAX_RETAINED_ENTRY_RUN_ELEMENTS - 1,
+                ..MftRetentionBudget::default()
+            },
+            retention_entry(1, &[2]),
+        );
+    }
+
+    #[test]
+    fn ntfs_mft_retention_006_extension_merge_obeys_global_nested_budget() {
+        let mut warnings = Vec::new();
+        let mut complete = true;
+        let mut budget = MftRetentionBudget {
+            entry_streams: MAX_RETAINED_ENTRY_STREAMS,
+            ..MftRetentionBudget::default()
+        };
+
+        assert!(!budget.admit_extension_streams(1, 0, &mut complete, &mut warnings));
+        assert_eq!(budget.extension_streams, 0);
+        assert_eq!(warnings.len(), 1);
+
+        budget.entry_streams = 0;
+        budget.entry_run_elements = usize::MAX;
+        assert!(!budget.admit_extension_streams(1, 1, &mut complete, &mut warnings));
+        assert_eq!(budget.extension_streams, 0);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "all nested evidence limits share one aggregate warning"
+        );
+        assert!(!complete);
     }
 
     fn namespace_root(entries: &mut HashMap<u64, ParsedEntry>) -> NtfsNodeRef {

@@ -45,15 +45,25 @@ describe("native connected-storage commands", () => {
         label: "Documents",
       })
       .mockResolvedValueOnce({
-        schemaVersion: 1,
+        schemaVersion: 3,
         scanId: "scan-1",
         sourceLabel: "OS (C:)",
         scope: { kind: "folder", label: "Documents" },
+        scanMode: "metadata",
         fileSystem: "ntfs",
         scanStatus: "complete",
         totalCandidates: "1",
         matchedCandidates: "1",
         unknownCandidates: "0",
+        mftCoverage: {
+          recordsDeclared: "64",
+          recordsAvailable: "64",
+          recordsExamined: "64",
+          bytesDeclared: "65536",
+          bytesAvailable: "65536",
+          bytesExamined: "65536",
+        },
+        jpegCarveCoverage: null,
         warnings: [],
       });
 
@@ -63,6 +73,7 @@ describe("native connected-storage commands", () => {
       "inventory-1",
       "volume-1",
       "scope-1",
+      "metadata",
     );
 
     expect(tauri.invoke.mock.calls).toEqual([
@@ -81,6 +92,7 @@ describe("native connected-storage commands", () => {
           generation: "inventory-1",
           volumeId: "volume-1",
           scopeId: "scope-1",
+          mode: "metadata",
         },
       ],
     ]);
@@ -97,7 +109,7 @@ describe("native connected-storage commands", () => {
 
   it("requests bounded candidate pages of at most 100 rows", async () => {
     tauri.invoke.mockResolvedValue({
-      schemaVersion: 1,
+      schemaVersion: 2,
       scanId: "scan-1",
       cursor: null,
       nextCursor: null,

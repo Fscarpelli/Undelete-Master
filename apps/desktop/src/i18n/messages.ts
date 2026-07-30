@@ -8,7 +8,7 @@ const ptBR = {
 
   "analysis.title": "Unidades conectadas",
   "analysis.subtitle":
-    "Escolha um volume local real para procurar metadados de arquivos recuperáveis em modo somente leitura.",
+    "Escolha um volume local real para procurar metadados recuperáveis e, opcionalmente, JPEGs em regiões livres, sempre em modo somente leitura.",
   "analysis.runtime.title": "Aplicativo desktop necessário",
   "analysis.runtime.body":
     "A detecção de unidades está disponível somente no aplicativo Tauri instalado. O navegador não acessa discos e nunca exibe inventário substituto.",
@@ -36,9 +36,9 @@ const ptBR = {
   "analysis.volume.free": "livres",
   "analysis.scope.title": "Escopo da análise",
   "analysis.scope.wholeVolume":
-    "O volume inteiro será lido em modo RAW. Escolher uma pasta é opcional e filtra os candidatos depois da análise.",
+    "O escopo cobre todo o volume em modo somente leitura. A técnica escolhida define se serão examinados apenas metadados ou também regiões NTFS livres para JPEG; escolher uma pasta mantém somente o modo de metadados.",
   "analysis.scope.folderBody":
-    "O volume inteiro será lido em modo RAW; os resultados serão filtrados pela identidade comprovada da pasta.",
+    "A análise atual examina os metadados do sistema de arquivos do volume; os resultados são filtrados pela identidade comprovada da pasta.",
   "analysis.scope.folderLabel": "Pasta selecionada",
   "analysis.scope.chooseFolder": "Escolher pasta",
   "analysis.scope.changeFolder": "Trocar pasta",
@@ -49,19 +49,50 @@ const ptBR = {
     "A troca da pasta foi cancelada. O filtro anterior continua selecionado.",
   "analysis.scope.unsupported":
     "Este volume não oferece uma identidade de pasta segura; a análise continuará no volume inteiro.",
+  "analysis.mode.title": "Técnica de análise",
+  "analysis.mode.metadata.title": "Metadados (padrão)",
+  "analysis.mode.metadata.body":
+    "Examina estruturas reais do sistema de arquivos. É a opção mais rápida, mas não procura assinaturas no espaço livre; um resultado zero não prova que nada possa ser recuperado.",
+  "analysis.mode.deepJpeg.title": "Profunda para JPEG",
+  "analysis.mode.deepJpeg.body":
+    "Além dos metadados, examina regiões NTFS comprovadamente livres em busca de JPEGs estruturalmente válidos. Pode levar bastante tempo e aplica limites seguros; nesta versão funciona apenas no volume inteiro e somente para JPEG.",
+  "analysis.mode.folderBlocked":
+    "A análise profunda para JPEG exige o volume inteiro. Remova o filtro de pasta para habilitá-la.",
+  "analysis.mode.ntfsBlocked":
+    "A análise profunda para JPEG está disponível somente para volumes NTFS.",
   "analysis.scan.start": "Analisar volume selecionado",
   "analysis.scan.pendingTitle": "Análise em andamento",
   "analysis.scan.pendingBody":
     "O mecanismo está lendo o volume e validando metadados reais. Esta versão não oferece cancelamento, percentual ou previsão; mantenha o aplicativo aberto até a conclusão.",
+  "analysis.scan.pendingDeepBody":
+    "O mecanismo está validando metadados e examinando regiões NTFS comprovadamente livres por assinaturas JPEG. Esta análise pode demorar bastante; não há percentual, previsão nem cancelamento nesta versão.",
   "analysis.scan.errorTitle": "Não foi possível concluir a análise",
 
   "analysis.results.readOnly": "Origem validada · somente leitura",
   "analysis.results.newScan": "Voltar aos volumes",
   "analysis.results.scope": "Escopo",
   "analysis.results.fileSystem": "Sistema de arquivos",
+  "analysis.results.mode": "Técnica",
   "analysis.results.total": "Total observado",
-  "analysis.results.matched": "Correspondências verificadas",
+  "analysis.results.matched": "Candidatos no escopo",
   "analysis.results.unknown": "Ancestralidade desconhecida",
+  "analysis.results.mftRecordsExamined": "Registros MFT examinados",
+  "analysis.results.jpegBytesExamined": "Bytes JPEG examinados",
+  "analysis.results.jpegCoverageTitle": "Cobertura profunda limitada",
+  "analysis.results.jpegCoverageBody":
+    "A busca profunda verifica JPEGs contíguos e estruturalmente válidos somente nas regiões NTFS comprovadamente livres e dentro dos limites informados. Ela não cobre outros formatos, fragmentação arbitrária, bytes sobrescritos, criptografados ou descartados por TRIM.",
+  "analysis.results.jpegCoverageStatus": "Estado da cobertura JPEG",
+  "analysis.results.jpegCoveragePartial": "Parcial",
+  "analysis.results.jpegCoverageComplete": "Concluída no limite informado",
+  "analysis.results.jpegRegions": "Regiões examinadas",
+  "analysis.results.jpegSignaturesAttempted": "Tentativas de validação",
+  "analysis.results.jpegValidationBytes": "Bytes lidos na validação",
+  "analysis.results.jpegSignatureLimit": "Limite de tentativas",
+  "analysis.results.jpegValidationLimit": "Limite de bytes de validação",
+  "analysis.results.limitReached": "Atingido",
+  "analysis.results.limitNotReached": "Não atingido",
+  "analysis.results.jpegRejected": "Assinaturas rejeitadas",
+  "analysis.results.jpegTruncated": "Assinaturas truncadas",
   "analysis.results.partialTitle": "Cobertura parcial",
   "analysis.results.partialBody":
     "O scanner encontrou uma limitação segura ou metadados mutáveis/corrompidos. O resultado não é apresentado como exaustivo.",
@@ -75,12 +106,23 @@ const ptBR = {
   "analysis.results.loaded": "carregados",
   "analysis.results.path": "Caminho reconstruído",
   "analysis.results.kind": "Tipo",
+  "analysis.results.method": "Método",
   "analysis.results.size": "Tamanho",
   "analysis.results.state": "Estado",
   "analysis.results.confidence": "Confiança",
   "analysis.results.score": "Pontuação",
-  "analysis.results.noCandidates":
-    "Nenhum candidato foi retornado para este escopo.",
+  "analysis.results.evidence": "Evidência de conteúdo",
+  "analysis.results.validator": "Validador",
+  "analysis.results.noContentEvidence":
+    "Sem hash ou validador de conteúdo",
+  "analysis.results.noCandidatesPartial":
+    "Nenhum candidato por metadados foi encontrado na cobertura examinada. A análise foi parcial e não é exaustiva; isso não significa que não existam bytes recuperáveis.",
+  "analysis.results.noCandidatesComplete":
+    "Nenhum candidato por metadados foi encontrado na cobertura concluída. Isso não prova que não existam bytes recuperáveis por outras técnicas.",
+  "analysis.results.noCandidatesDeepPartial":
+    "Nenhum candidato por metadados ou JPEG estrutural foi encontrado na cobertura examinada. A análise profunda foi parcial e não é exaustiva; outros formatos, regiões ou técnicas ainda podem produzir resultados.",
+  "analysis.results.noCandidatesDeepComplete":
+    "Nenhum candidato por metadados ou JPEG estrutural foi encontrado na cobertura informada. Isso não prova que não existam bytes recuperáveis por outros formatos, fragmentação ou técnicas.",
   "analysis.results.loadMore": "Carregar mais",
   "analysis.results.loadingMore": "Carregando",
   "analysis.results.warnings": "Avisos do scanner",
@@ -88,6 +130,8 @@ const ptBR = {
 
   "scope.volume": "Volume inteiro",
   "scope.folder": "Pasta verificada",
+  "scanMode.metadata": "Metadados",
+  "scanMode.deepJpeg": "Profunda para JPEG",
   "filesystem.ntfs": "NTFS",
   "filesystem.fat12": "FAT12",
   "filesystem.fat16": "FAT16",
@@ -103,6 +147,12 @@ const ptBR = {
 
   "candidate.kind.file": "Arquivo",
   "candidate.kind.directory": "Pasta",
+  "candidate.method.ntfsMetadata": "Metadados NTFS",
+  "candidate.method.fatMetadata": "Metadados FAT",
+  "candidate.method.exfatMetadata": "Metadados exFAT",
+  "candidate.method.carving": "Carving de assinatura JPEG",
+  "candidate.method.recycleBin": "Lixeira",
+  "candidate.method.jpegCorroborated": "Corroborado por validação JPEG",
   "candidate.state.exactEvidence": "Evidência exata",
   "candidate.state.likelyComplete": "Provavelmente completo",
   "candidate.state.completeUnvalidated": "Completo, não validado",
@@ -139,7 +189,7 @@ const ptBR = {
     "Como a análise de volumes funciona e quais limites protegem seus dados.",
   "help.available.title": "Disponível agora",
   "help.available.body":
-    "Detecta volumes locais montados reais sem elevação, permite uma pasta opcional, analisa o volume em modo RAW e mostra candidatos reais em páginas limitadas.",
+    "Detecta volumes locais montados reais sem elevação, permite uma pasta opcional no modo de metadados e oferece busca profunda por JPEGs contíguos em regiões NTFS comprovadamente livres. Os resultados e a cobertura são reais e limitados.",
   "help.safety.title": "Somente leitura, sempre",
   "help.safety.body":
     "A interface consulta o inventário sem elevação. Ao iniciar a análise, o broker solicitado pelo UAC apenas revalida a identidade escolhida e faz leituras limitadas; ele não grava, bloqueia, desmonta, formata ou executa o conteúdo encontrado.",
@@ -148,7 +198,7 @@ const ptBR = {
     "Esta versão não restaura, abre ou pré-visualiza arquivos recuperados e não lida com volumes bloqueados, remotos ou layouts compostos cuja identidade não possa ser comprovada.",
   "help.interpretation.title": "Pasta e ancestralidade",
   "help.interpretation.body":
-    "A pasta é um filtro aplicado após a leitura RAW. Correspondências têm ancestralidade comprovada; candidatos desconhecidos ficam separados e nunca são apresentados como pertencentes à pasta.",
+    "A pasta é um filtro aplicado após a análise de metadados do volume. Correspondências têm ancestralidade comprovada; candidatos desconhecidos ficam separados e nunca são apresentados como pertencentes à pasta.",
 
   "error.DESKTOP_RUNTIME_UNAVAILABLE":
     "O mecanismo desktop não está disponível neste ambiente.",
@@ -164,6 +214,8 @@ const ptBR = {
     "Esta pasta não pode ser vinculada com segurança ao volume selecionado.",
   "error.FOLDER_SCOPE_MISMATCH":
     "A pasta escolhida não pertence ao volume selecionado.",
+  "error.SCAN_MODE_UNSUPPORTED":
+    "A técnica escolhida não é compatível com este sistema de arquivos ou escopo.",
   "error.UAC_CANCELLED":
     "A autorização do Windows foi cancelada. Nenhuma unidade foi aberta.",
   "error.BROKER_UNAVAILABLE":
@@ -190,7 +242,7 @@ const enUS: Record<MessageKey, string> = {
 
   "analysis.title": "Connected storage",
   "analysis.subtitle":
-    "Choose a real local volume and search its read-only metadata for recoverable files.",
+    "Choose a real local volume to search recoverable metadata and, optionally, JPEGs in free regions, always in read-only mode.",
   "analysis.runtime.title": "Desktop application required",
   "analysis.runtime.body":
     "Drive detection is available only in the installed Tauri application. The browser cannot access disks and never displays substitute inventory.",
@@ -217,9 +269,9 @@ const enUS: Record<MessageKey, string> = {
   "analysis.volume.free": "free",
   "analysis.scope.title": "Scan scope",
   "analysis.scope.wholeVolume":
-    "The entire volume will be read as RAW. Choosing a folder is optional and filters candidates after the scan.",
+    "The scope covers the whole volume in read-only mode. The selected technique determines whether only metadata or also free NTFS regions for JPEG are examined; choosing a folder keeps metadata mode only.",
   "analysis.scope.folderBody":
-    "The entire volume will be read as RAW; results will be filtered by the folder's proven identity.",
+    "The current scan examines the volume's file-system metadata; results are filtered by the folder's proven identity.",
   "analysis.scope.folderLabel": "Selected folder",
   "analysis.scope.chooseFolder": "Choose folder",
   "analysis.scope.changeFolder": "Change folder",
@@ -230,19 +282,50 @@ const enUS: Record<MessageKey, string> = {
     "Folder change was canceled. The previous filter remains selected.",
   "analysis.scope.unsupported":
     "This volume does not expose a safe folder identity; scanning remains available for the whole volume.",
+  "analysis.mode.title": "Scan technique",
+  "analysis.mode.metadata.title": "Metadata (default)",
+  "analysis.mode.metadata.body":
+    "Examines real file-system structures. This is the faster option, but it does not search free-space signatures; a zero result does not prove that nothing is recoverable.",
+  "analysis.mode.deepJpeg.title": "Deep JPEG",
+  "analysis.mode.deepJpeg.body":
+    "In addition to metadata, examines proven-free NTFS regions for structurally valid JPEGs. It can take substantially longer and applies safe bounds; this version supports only a whole NTFS volume and JPEG content.",
+  "analysis.mode.folderBlocked":
+    "Deep JPEG requires the whole volume. Remove the folder filter to enable it.",
+  "analysis.mode.ntfsBlocked":
+    "Deep JPEG is available only for NTFS volumes.",
   "analysis.scan.start": "Scan selected volume",
   "analysis.scan.pendingTitle": "Scan in progress",
   "analysis.scan.pendingBody":
     "The engine is reading the volume and validating real metadata. This version has no cancellation, percentage, or ETA; keep the application open until it completes.",
+  "analysis.scan.pendingDeepBody":
+    "The engine is validating metadata and examining proven-free NTFS regions for JPEG signatures. This scan can take substantially longer; this version has no percentage, ETA, or cancellation.",
   "analysis.scan.errorTitle": "The scan could not be completed",
 
   "analysis.results.readOnly": "Validated source · read-only",
   "analysis.results.newScan": "Back to volumes",
   "analysis.results.scope": "Scope",
   "analysis.results.fileSystem": "File system",
+  "analysis.results.mode": "Technique",
   "analysis.results.total": "Total observed",
-  "analysis.results.matched": "Verified matches",
+  "analysis.results.matched": "Candidates in scope",
   "analysis.results.unknown": "Unknown ancestry",
+  "analysis.results.mftRecordsExamined": "MFT records examined",
+  "analysis.results.jpegBytesExamined": "JPEG bytes examined",
+  "analysis.results.jpegCoverageTitle": "Bounded deep coverage",
+  "analysis.results.jpegCoverageBody":
+    "The deep scan validates contiguous, structurally valid JPEGs only in proven-free NTFS regions and within the reported bounds. It does not cover other formats, arbitrary fragmentation, overwritten or encrypted bytes, or data discarded by TRIM.",
+  "analysis.results.jpegCoverageStatus": "JPEG coverage status",
+  "analysis.results.jpegCoveragePartial": "Partial",
+  "analysis.results.jpegCoverageComplete": "Completed within the reported bound",
+  "analysis.results.jpegRegions": "Regions examined",
+  "analysis.results.jpegSignaturesAttempted": "Validation attempts",
+  "analysis.results.jpegValidationBytes": "Validation bytes read",
+  "analysis.results.jpegSignatureLimit": "Attempt limit",
+  "analysis.results.jpegValidationLimit": "Validation-byte limit",
+  "analysis.results.limitReached": "Reached",
+  "analysis.results.limitNotReached": "Not reached",
+  "analysis.results.jpegRejected": "Rejected signatures",
+  "analysis.results.jpegTruncated": "Truncated signatures",
   "analysis.results.partialTitle": "Partial coverage",
   "analysis.results.partialBody":
     "The scanner reached a safe bound or encountered mutable/corrupt metadata. This result is not presented as exhaustive.",
@@ -256,12 +339,22 @@ const enUS: Record<MessageKey, string> = {
   "analysis.results.loaded": "loaded",
   "analysis.results.path": "Reconstructed path",
   "analysis.results.kind": "Kind",
+  "analysis.results.method": "Method",
   "analysis.results.size": "Size",
   "analysis.results.state": "State",
   "analysis.results.confidence": "Confidence",
   "analysis.results.score": "Score",
-  "analysis.results.noCandidates":
-    "No candidate was returned for this scope.",
+  "analysis.results.evidence": "Content evidence",
+  "analysis.results.validator": "Validator",
+  "analysis.results.noContentEvidence": "No content hash or validator",
+  "analysis.results.noCandidatesPartial":
+    "No metadata candidate was found in the examined coverage. The scan was partial and is not exhaustive; this does not mean that no recoverable bytes exist.",
+  "analysis.results.noCandidatesComplete":
+    "No metadata candidate was found in the completed coverage. This does not prove that no bytes are recoverable through other techniques.",
+  "analysis.results.noCandidatesDeepPartial":
+    "No metadata or structurally valid JPEG candidate was found in the examined coverage. The deep scan was partial and is not exhaustive; other formats, regions, or techniques may still produce results.",
+  "analysis.results.noCandidatesDeepComplete":
+    "No metadata or structurally valid JPEG candidate was found in the reported coverage. This does not prove that no bytes are recoverable through other formats, fragmentation, or techniques.",
   "analysis.results.loadMore": "Load more",
   "analysis.results.loadingMore": "Loading",
   "analysis.results.warnings": "Scanner warnings",
@@ -269,6 +362,8 @@ const enUS: Record<MessageKey, string> = {
 
   "scope.volume": "Whole volume",
   "scope.folder": "Verified folder",
+  "scanMode.metadata": "Metadata",
+  "scanMode.deepJpeg": "Deep JPEG",
   "filesystem.ntfs": "NTFS",
   "filesystem.fat12": "FAT12",
   "filesystem.fat16": "FAT16",
@@ -284,6 +379,12 @@ const enUS: Record<MessageKey, string> = {
 
   "candidate.kind.file": "File",
   "candidate.kind.directory": "Folder",
+  "candidate.method.ntfsMetadata": "NTFS metadata",
+  "candidate.method.fatMetadata": "FAT metadata",
+  "candidate.method.exfatMetadata": "exFAT metadata",
+  "candidate.method.carving": "JPEG signature carving",
+  "candidate.method.recycleBin": "Recycle Bin",
+  "candidate.method.jpegCorroborated": "Corroborated by JPEG validation",
   "candidate.state.exactEvidence": "Exact evidence",
   "candidate.state.likelyComplete": "Likely complete",
   "candidate.state.completeUnvalidated": "Complete, unvalidated",
@@ -320,7 +421,7 @@ const enUS: Record<MessageKey, string> = {
     "How volume scanning works and which boundaries protect your data.",
   "help.available.title": "Available now",
   "help.available.body":
-    "Detects real mounted local volumes without elevation, accepts an optional folder, scans the volume as RAW, and shows real candidates in bounded pages.",
+    "Detects real mounted local volumes without elevation, accepts an optional folder in metadata mode, and offers a deep search for contiguous JPEGs in proven-free NTFS regions. Results and coverage are real and bounded.",
   "help.safety.title": "Always read-only",
   "help.safety.body":
     "The interface queries inventory without elevation. When a scan starts, the UAC broker only revalidates the selected identity and performs bounded reads; it does not write, lock, dismount, format, or execute discovered content.",
@@ -329,7 +430,7 @@ const enUS: Record<MessageKey, string> = {
     "This version does not restore, open, or preview recovered files, and does not handle locked, remote, or composite volumes whose identity cannot be proven.",
   "help.interpretation.title": "Folder scope and ancestry",
   "help.interpretation.body":
-    "A folder is a post-RAW-scan filter. Matches have proven ancestry; unknown candidates stay separate and are never presented as belonging to the folder.",
+    "A folder is a filter applied after the volume metadata scan. Matches have proven ancestry; unknown candidates stay separate and are never presented as belonging to the folder.",
 
   "error.DESKTOP_RUNTIME_UNAVAILABLE":
     "The desktop engine is not available in this environment.",
@@ -345,6 +446,8 @@ const enUS: Record<MessageKey, string> = {
     "This folder cannot be safely bound to the selected volume.",
   "error.FOLDER_SCOPE_MISMATCH":
     "The selected folder does not belong to the selected volume.",
+  "error.SCAN_MODE_UNSUPPORTED":
+    "The selected technique is not compatible with this file system or scope.",
   "error.UAC_CANCELLED":
     "Windows authorization was canceled. No drive was opened.",
   "error.BROKER_UNAVAILABLE":

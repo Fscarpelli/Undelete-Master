@@ -7,9 +7,13 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri_plugin_dialog::DialogExt;
 use um_broker_client::{open_windows_source, BrokerClientError};
-use um_cli::{CliError, VolumeScanDetails, VolumeScanStatus};
+use um_cli::{
+    CarveEvidence, CliError, JpegCarveCoverage, MftScanCoverage, VolumeScanDetails, VolumeScanMode,
+    VolumeScanStatus,
+};
 use um_core::{
-    Candidate, CandidateKind, CandidateState, MetadataConfidence, ReadError, RecoverabilityInputs,
+    Candidate, CandidateKind, CandidateState, DiscoveryMethod, MetadataConfidence, ReadError,
+    RecoverabilityInputs,
 };
 use um_fs_common::ScanError;
 use um_fs_ntfs::{
@@ -21,6 +25,8 @@ use um_io_windows::{
 };
 
 const STORAGE_SCHEMA_VERSION: u32 = 1;
+const SCAN_SUMMARY_SCHEMA_VERSION: u32 = 3;
+const CANDIDATE_PAGE_SCHEMA_VERSION: u32 = 2;
 const PAGE_SIZE: usize = 100;
 const MAX_DISKS: usize = 128;
 const MAX_VOLUMES_PER_DISK: usize = 128;
@@ -71,12 +77,45 @@ pub(crate) struct DesktopScanSummary {
     scan_id: String,
     source_label: String,
     scope: DesktopScanScope,
+    scan_mode: &'static str,
     file_system: String,
     scan_status: String,
     total_candidates: String,
     matched_candidates: String,
     unknown_candidates: String,
+    mft_coverage: Option<DesktopMftCoverage>,
+    jpeg_carve_coverage: Option<DesktopJpegCarveCoverage>,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopMftCoverage {
+    records_declared: String,
+    records_available: String,
+    records_examined: String,
+    bytes_declared: String,
+    bytes_available: String,
+    bytes_examined: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopJpegCarveCoverage {
+    bytes_requested: String,
+    bytes_scanned: String,
+    signatures_attempted: String,
+    validation_bytes_read: String,
+    partial: bool,
+    read_error_count: String,
+    candidate_limit_reached: bool,
+    candidate_byte_limit_hits: String,
+    signature_attempt_limit_reached: bool,
+    validation_byte_limit_reached: bool,
+    rejected_signatures: String,
+    truncated_signatures: String,
+    regions_submitted: String,
+    region_limit_reached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -97,6 +136,9 @@ struct DesktopCandidateRow {
     metadata_confidence: &'static str,
     recoverability_score: Option<u8>,
     path_state: &'static str,
+    method: &'static str,
+    content_sha256: Option<String>,
+    validator: Option<String>,
     warnings: Vec<String>,
 }
 
@@ -136,6 +178,40 @@ impl DesktopStorageError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopScanMode {
+    Metadata,
+    DeepJpeg,
+}
+
+impl DesktopScanMode {
+    fn parse(value: &str) -> Result<Self, DesktopStorageError> {
+        match value {
+            "metadata" => Ok(Self::Metadata),
+            "deepJpeg" => Ok(Self::DeepJpeg),
+            _ => Err(DesktopStorageError::new(
+                "SCAN_MODE_UNSUPPORTED",
+                "The requested scan mode is not supported.",
+            )),
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::DeepJpeg => "deepJpeg",
+        }
+    }
+
+    const fn cli_mode(self) -> VolumeScanMode {
+        match self {
+            Self::Metadata => VolumeScanMode::MetadataOnly,
+            Self::DeepJpeg => VolumeScanMode::DeepJpeg,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum SessionScope<'a> {
     Volume,
     Folder(&'a FolderScope),
@@ -146,6 +222,12 @@ pub(crate) struct ScanSession {
     rows: Vec<DesktopCandidateRow>,
     cursors: BTreeMap<String, usize>,
     cursor_for_offset: BTreeMap<usize, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateContentEvidence {
+    content_sha256: String,
+    validator: String,
 }
 
 #[derive(Default)]
@@ -354,8 +436,10 @@ pub(crate) async fn scan_storage_volume(
     generation: String,
     volume_id: String,
     scope_id: Option<String>,
+    mode: String,
 ) -> Result<DesktopScanSummary, DesktopStorageError> {
     validate_request_id(&request_id)?;
+    let mode = DesktopScanMode::parse(&mode)?;
     if let Some(scope_id) = scope_id.as_deref() {
         validate_opaque_argument(scope_id)?;
     }
@@ -365,9 +449,10 @@ pub(crate) async fn scan_storage_volume(
     if !volume.scan_supported {
         return Err(DesktopStorageError::new(
             "SOURCE_UNSUPPORTED",
-            "This source is not eligible for read-only RAW scanning.",
+            "This source is not eligible for read-only scanning.",
         ));
     }
+    validate_scan_mode(mode, volume, scope_id.is_some())?;
     let source_label = volume_source_label(volume);
     let folder_scope = scope_id
         .as_deref()
@@ -377,7 +462,7 @@ pub(crate) async fn scan_storage_volume(
     let broker_volume_id = volume_id.clone();
     let details = tauri::async_runtime::spawn_blocking(move || {
         let reader = open_windows_source(&broker_volume_id).map_err(map_broker_error)?;
-        um_cli::scan_volume_reader(&reader).map_err(map_cli_scan_error)
+        um_cli::scan_volume_reader_with_mode(&reader, mode.cli_mode()).map_err(map_cli_scan_error)
     })
     .await
     .map_err(|_| {
@@ -391,7 +476,12 @@ pub(crate) async fn scan_storage_volume(
     let scope = folder_scope
         .as_ref()
         .map_or(SessionScope::Volume, SessionScope::Folder);
-    let session = build_scan_session(&scan_id, &source_label, details, scope)?;
+    let session = match mode {
+        DesktopScanMode::Metadata => build_scan_session(&scan_id, &source_label, details, scope)?,
+        DesktopScanMode::DeepJpeg => {
+            build_scan_session_with_mode(&scan_id, &source_label, details, scope, mode)?
+        }
+    };
     state.store_session(session)
 }
 
@@ -420,6 +510,22 @@ fn validate_opaque_argument(value: &str) -> Result<(), DesktopStorageError> {
             "The native request contains an invalid opaque identifier.",
         ))
     }
+}
+
+fn validate_scan_mode(
+    mode: DesktopScanMode,
+    volume: &StorageVolume,
+    has_folder_scope: bool,
+) -> Result<(), DesktopStorageError> {
+    if mode == DesktopScanMode::DeepJpeg
+        && (has_folder_scope || !volume.file_system.eq_ignore_ascii_case("ntfs"))
+    {
+        return Err(DesktopStorageError::new(
+            "SCAN_MODE_UNSUPPORTED",
+            "Deep JPEG scanning requires a whole NTFS volume.",
+        ));
+    }
+    Ok(())
 }
 
 fn find_volume<'a>(
@@ -570,6 +676,11 @@ fn map_cli_scan_error(error: CliError) -> DesktopStorageError {
             "SCAN_CORRUPT",
             "The source contains invalid or unsupported filesystem structures.",
         ),
+        CliError::DeepScan { .. } => DesktopStorageError::new(
+            "SCAN_CORRUPT",
+            "The bounded JPEG scan could not validate the selected source safely.",
+        ),
+        CliError::DeepScanResult { .. } => DesktopStorageError::incompatible(),
         CliError::ForbiddenSourcePath
         | CliError::UnsupportedExtension { .. }
         | CliError::NotRegularFile
@@ -659,6 +770,22 @@ pub(crate) fn build_scan_session(
     details: VolumeScanDetails,
     scope: SessionScope<'_>,
 ) -> Result<ScanSession, DesktopStorageError> {
+    build_scan_session_with_mode(
+        scan_id,
+        source_label,
+        details,
+        scope,
+        DesktopScanMode::Metadata,
+    )
+}
+
+fn build_scan_session_with_mode(
+    scan_id: &str,
+    source_label: &str,
+    details: VolumeScanDetails,
+    scope: SessionScope<'_>,
+    mode: DesktopScanMode,
+) -> Result<ScanSession, DesktopStorageError> {
     if !valid_opaque_id(scan_id)
         || details.report.candidate_count != details.candidates.len()
         || details.report.warnings.len() > MAX_WARNINGS
@@ -676,8 +803,29 @@ pub(crate) fn build_scan_session(
         ("ntfs" | "fat12" | "fat16" | "fat32", VolumeScanStatus::Partial) => "partial",
         _ => return Err(DesktopStorageError::incompatible()),
     };
+    let jpeg_coverage = details.report.jpeg_carve_coverage;
+    let mode_is_coherent = match mode {
+        DesktopScanMode::Metadata => jpeg_coverage.is_none() && details.carve_evidence.is_empty(),
+        DesktopScanMode::DeepJpeg => {
+            file_system == "ntfs"
+                && matches!(scope, SessionScope::Volume)
+                && jpeg_coverage.is_some()
+        }
+    };
+    if !mode_is_coherent
+        || jpeg_coverage.is_some_and(|coverage| {
+            coverage.bytes_scanned > coverage.bytes_requested
+                || (coverage.partial && scan_status != "partial")
+                || (!coverage.partial
+                    && (coverage.signature_attempt_limit_reached
+                        || coverage.validation_byte_limit_reached))
+        })
+    {
+        return Err(DesktopStorageError::incompatible());
+    }
 
     let total_candidates = details.candidates.len();
+    let evidence_by_candidate = index_carve_evidence(&details.candidates, &details.carve_evidence)?;
     let namespace_index = details
         .ntfs_namespace
         .as_ref()
@@ -731,31 +879,141 @@ pub(crate) fn build_scan_session(
 
     let rows = selected
         .into_iter()
-        .map(|candidate| adapt_candidate(scan_id, candidate, namespace_index.as_ref()))
+        .map(|candidate| {
+            adapt_candidate(
+                scan_id,
+                candidate,
+                namespace_index.as_ref(),
+                evidence_by_candidate.get(&candidate.id),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let matched_candidates = rows.len();
     let (cursors, cursor_for_offset) = build_cursors(scan_id, rows.len());
 
     Ok(ScanSession {
         summary: DesktopScanSummary {
-            schema_version: STORAGE_SCHEMA_VERSION,
+            schema_version: SCAN_SUMMARY_SCHEMA_VERSION,
             scan_id: scan_id.to_owned(),
             source_label: sanitize_required(source_label),
             scope: DesktopScanScope {
                 kind: scope_kind,
                 label: scope_label,
             },
+            scan_mode: mode.as_str(),
             file_system,
             scan_status: scan_status.to_owned(),
             total_candidates: total_candidates.to_string(),
             matched_candidates: matched_candidates.to_string(),
             unknown_candidates: unknown_candidates.to_string(),
+            mft_coverage: details.report.mft_coverage.map(adapt_mft_coverage),
+            jpeg_carve_coverage: jpeg_coverage.map(adapt_jpeg_carve_coverage),
             warnings: sanitize_warnings(details.report.warnings),
         },
         rows,
         cursors,
         cursor_for_offset,
     })
+}
+
+fn adapt_mft_coverage(coverage: MftScanCoverage) -> DesktopMftCoverage {
+    DesktopMftCoverage {
+        records_declared: coverage.records_declared.to_string(),
+        records_available: coverage.records_available.to_string(),
+        records_examined: coverage.records_examined.to_string(),
+        bytes_declared: coverage.bytes_declared.to_string(),
+        bytes_available: coverage.bytes_available.to_string(),
+        bytes_examined: coverage.bytes_examined.to_string(),
+    }
+}
+
+fn adapt_jpeg_carve_coverage(coverage: JpegCarveCoverage) -> DesktopJpegCarveCoverage {
+    DesktopJpegCarveCoverage {
+        bytes_requested: coverage.bytes_requested.to_string(),
+        bytes_scanned: coverage.bytes_scanned.to_string(),
+        signatures_attempted: coverage.signatures_attempted.to_string(),
+        validation_bytes_read: coverage.validation_bytes_read.to_string(),
+        partial: coverage.partial,
+        read_error_count: coverage.read_error_count.to_string(),
+        candidate_limit_reached: coverage.candidate_limit_reached,
+        candidate_byte_limit_hits: coverage.candidate_byte_limit_hits.to_string(),
+        signature_attempt_limit_reached: coverage.signature_attempt_limit_reached,
+        validation_byte_limit_reached: coverage.validation_byte_limit_reached,
+        rejected_signatures: coverage.rejected_signatures.to_string(),
+        truncated_signatures: coverage.truncated_signatures.to_string(),
+        regions_submitted: coverage.regions_submitted.to_string(),
+        region_limit_reached: coverage.region_limit_reached,
+    }
+}
+
+fn index_carve_evidence(
+    candidates: &[Candidate],
+    evidence: &[CarveEvidence],
+) -> Result<HashMap<u64, CandidateContentEvidence>, DesktopStorageError> {
+    let mut candidates_by_id = HashMap::new();
+    for candidate in candidates {
+        if candidates_by_id.insert(candidate.id, candidate).is_some() {
+            return Err(DesktopStorageError::incompatible());
+        }
+    }
+
+    let mut indexed = HashMap::new();
+    for item in evidence {
+        let candidate = candidates_by_id
+            .get(&item.candidate_id)
+            .copied()
+            .ok_or_else(DesktopStorageError::incompatible)?;
+        if item.validator != "jpeg-structural-v1"
+            || item.len == 0
+            || candidate_exact_physical_range(candidate) != Some((item.physical_offset, item.len))
+            || indexed
+                .insert(
+                    item.candidate_id,
+                    CandidateContentEvidence {
+                        content_sha256: hex::encode(item.content_sha256),
+                        validator: item.validator.to_owned(),
+                    },
+                )
+                .is_some()
+        {
+            return Err(DesktopStorageError::incompatible());
+        }
+    }
+    if candidates.iter().any(|candidate| {
+        candidate.method == DiscoveryMethod::Carving && !indexed.contains_key(&candidate.id)
+    }) {
+        return Err(DesktopStorageError::incompatible());
+    }
+    Ok(indexed)
+}
+
+fn candidate_exact_physical_range(candidate: &Candidate) -> Option<(u64, u64)> {
+    if candidate.size == 0 || candidate.extents.is_empty() {
+        return None;
+    }
+    let mut logical = 0u64;
+    let mut physical_start = None;
+    let mut next_physical = 0u64;
+    for extent in &candidate.extents {
+        if extent.len == 0 || extent.logical_offset != logical {
+            return None;
+        }
+        let physical = extent.physical_offset?;
+        match physical_start {
+            None => {
+                physical_start = Some(physical);
+                next_physical = physical;
+            }
+            Some(_) if physical != next_physical => return None,
+            Some(_) => {}
+        }
+        logical = logical.checked_add(extent.len)?;
+        next_physical = next_physical.checked_add(extent.len)?;
+        if logical > candidate.size {
+            return None;
+        }
+    }
+    (logical == candidate.size).then_some((physical_start?, candidate.size))
 }
 
 fn folder_file_reference_matches(directory: NtfsNodeRef, folder: &FolderScope) -> bool {
@@ -783,6 +1041,7 @@ fn adapt_candidate(
     scan_id: &str,
     candidate: &Candidate,
     namespace: Option<&NtfsNamespaceIndex<'_>>,
+    content_evidence: Option<&CandidateContentEvidence>,
 ) -> Result<DesktopCandidateRow, DesktopStorageError> {
     if candidate.warnings.len() > MAX_WARNINGS {
         return Err(DesktopStorageError::incompatible());
@@ -809,10 +1068,23 @@ fn adapt_candidate(
         MetadataConfidence::Medium => "medium",
         MetadataConfidence::Low => "low",
     };
+    let method = match candidate.method {
+        DiscoveryMethod::NtfsMetadata => "ntfsMetadata",
+        DiscoveryMethod::FatMetadata => "fatMetadata",
+        DiscoveryMethod::ExfatMetadata => "exfatMetadata",
+        DiscoveryMethod::Carving => "carving",
+        DiscoveryMethod::RecycleBin => "recycleBin",
+    };
+    if candidate.method == DiscoveryMethod::Carving && content_evidence.is_none() {
+        return Err(DesktopStorageError::incompatible());
+    }
     let recoverability_score = (candidate.kind == CandidateKind::File).then(|| {
-        RecoverabilityInputs::from_candidate(candidate)
-            .score()
-            .value
+        let mut inputs = RecoverabilityInputs::from_candidate(candidate);
+        if content_evidence.is_some() {
+            inputs.validated = true;
+            inputs.validator_available = true;
+        }
+        inputs.score().value
     });
     let row_id = derive_opaque_id("cand", &[scan_id, &candidate.id.to_string()]);
     let display_path = sanitize_candidate_path(&candidate.display_path(), &row_id);
@@ -826,6 +1098,9 @@ fn adapt_candidate(
         metadata_confidence,
         recoverability_score,
         path_state: candidate_path_state(candidate, namespace),
+        method,
+        content_sha256: content_evidence.map(|evidence| evidence.content_sha256.clone()),
+        validator: content_evidence.map(|evidence| evidence.validator.clone()),
         warnings: sanitize_warnings(candidate.warnings.clone()),
     })
 }
@@ -912,7 +1187,7 @@ pub(crate) fn page_for_session(
     };
 
     Ok(DesktopCandidatePage {
-        schema_version: STORAGE_SCHEMA_VERSION,
+        schema_version: CANDIDATE_PAGE_SCHEMA_VERSION,
         scan_id: session.summary.scan_id.clone(),
         cursor: cursor.map(str::to_owned),
         next_cursor,
@@ -1034,9 +1309,13 @@ fn is_bidirectional_formatting_control(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use um_cli::{VolumeReport, VolumeScanDetails, VolumeScanStatus};
+    use um_cli::{
+        CarveEvidence, JpegCarveCoverage, MftScanCoverage, VolumeReport, VolumeScanDetails,
+        VolumeScanStatus,
+    };
     use um_core::{
-        Candidate, CandidateKind, CandidateState, DiscoveryMethod, MetadataConfidence, Timestamps,
+        Candidate, CandidateKind, CandidateState, DiscoveryMethod, ExtentAvailability, ExtentRun,
+        MetadataConfidence, Timestamps,
     };
     use um_fs_ntfs::{
         NtfsDirectoryNode, NtfsNamespace, NtfsNamespacePath, NtfsNodeRef, NtfsPathState,
@@ -1079,10 +1358,13 @@ mod tests {
                 file_system: "ntfs".to_owned(),
                 scan_status: VolumeScanStatus::Complete,
                 candidate_count: candidates.len(),
+                mft_coverage: None,
+                jpeg_carve_coverage: None,
                 warnings: Vec::new(),
             },
             candidates,
             ntfs_namespace: Some(namespace),
+            carve_evidence: Vec::new(),
         }
     }
 
@@ -1127,6 +1409,236 @@ mod tests {
         let serialized = json.to_string();
         assert!(!serialized.contains(r"\\.\"));
         assert!(!serialized.contains(r"\\?\"));
+    }
+
+    #[test]
+    fn desktop_mft_coverage_001_preserves_all_u64_counters_as_decimal_strings() {
+        let mut scan_details = details(
+            Vec::new(),
+            NtfsNamespace {
+                paths: Vec::new(),
+                directories: Vec::new(),
+                is_complete: false,
+            },
+        );
+        scan_details.report.scan_status = VolumeScanStatus::Partial;
+        scan_details.report.mft_coverage = Some(MftScanCoverage {
+            records_declared: u64::MAX,
+            records_available: 9_007_199_254_740_993,
+            records_examined: 65_536,
+            bytes_declared: u64::MAX,
+            bytes_available: 9_223_372_036_854_775_808,
+            bytes_examined: 67_108_864,
+        });
+
+        let session = build_scan_session(
+            "scan-coverage",
+            "C: System",
+            scan_details,
+            SessionScope::Volume,
+        )
+        .expect("build coverage session");
+        let json = serde_json::to_value(session.summary).expect("serialize summary");
+
+        assert_eq!(json["schemaVersion"], 3);
+        assert_eq!(json["scanMode"], "metadata");
+        assert!(json["jpegCarveCoverage"].is_null());
+        assert_eq!(json["mftCoverage"]["recordsDeclared"], u64::MAX.to_string());
+        assert_eq!(json["mftCoverage"]["recordsAvailable"], "9007199254740993");
+        assert_eq!(json["mftCoverage"]["recordsExamined"], "65536");
+        assert_eq!(json["mftCoverage"]["bytesDeclared"], u64::MAX.to_string());
+        assert_eq!(json["mftCoverage"]["bytesAvailable"], "9223372036854775808");
+        assert_eq!(json["mftCoverage"]["bytesExamined"], "67108864");
+    }
+
+    #[test]
+    fn desktop_deep_mode_001_rejects_folder_and_non_ntfs_before_broker_use() {
+        let mut volume = StorageVolume {
+            id: "vol-mode".to_owned(),
+            mount_label: "E:".to_owned(),
+            label: "Evidence".to_owned(),
+            file_system: "NTFS".to_owned(),
+            size_bytes: 1_000_000,
+            free_bytes: 500_000,
+            is_system: false,
+            scan_supported: true,
+            folder_scope_supported: true,
+            warnings: Vec::new(),
+        };
+
+        assert!(validate_scan_mode(DesktopScanMode::Metadata, &volume, true).is_ok());
+        assert!(validate_scan_mode(DesktopScanMode::DeepJpeg, &volume, false).is_ok());
+        assert_eq!(
+            validate_scan_mode(DesktopScanMode::DeepJpeg, &volume, true)
+                .expect_err("folder deep scan must fail")
+                .code,
+            "SCAN_MODE_UNSUPPORTED"
+        );
+        volume.file_system = "FAT32".to_owned();
+        assert_eq!(
+            validate_scan_mode(DesktopScanMode::DeepJpeg, &volume, false)
+                .expect_err("non-NTFS deep scan must fail")
+                .code,
+            "SCAN_MODE_UNSUPPORTED"
+        );
+        assert_eq!(
+            DesktopScanMode::parse("unknown")
+                .expect_err("unknown mode must fail closed")
+                .code,
+            "SCAN_MODE_UNSUPPORTED"
+        );
+    }
+
+    #[test]
+    fn desktop_deep_evidence_001_serializes_coverage_and_scores_validated_free_content() {
+        let mut corroborated = candidate(77, 77, Some(1), "recovered.jpg", CandidateKind::File);
+        corroborated.size = 64;
+        corroborated.extents = vec![ExtentRun {
+            logical_offset: 0,
+            physical_offset: Some(8_192),
+            len: 64,
+            availability: ExtentAvailability::FreeInSnapshot,
+        }];
+        let mut scan_details = details(
+            vec![corroborated],
+            NtfsNamespace {
+                paths: Vec::new(),
+                directories: Vec::new(),
+                is_complete: true,
+            },
+        );
+        scan_details.report.jpeg_carve_coverage = Some(JpegCarveCoverage {
+            bytes_requested: 1_048_576,
+            bytes_scanned: 524_288,
+            signatures_attempted: 10_000_000,
+            validation_bytes_read: 262_144,
+            partial: true,
+            read_error_count: 1,
+            candidate_limit_reached: false,
+            candidate_byte_limit_hits: 2,
+            signature_attempt_limit_reached: true,
+            validation_byte_limit_reached: false,
+            rejected_signatures: 7,
+            truncated_signatures: 1,
+            regions_submitted: 4,
+            region_limit_reached: false,
+        });
+        scan_details.report.scan_status = VolumeScanStatus::Partial;
+        scan_details.carve_evidence = vec![CarveEvidence {
+            candidate_id: 77,
+            physical_offset: 8_192,
+            len: 64,
+            content_sha256: [0xAB; 32],
+            validator: "jpeg-structural-v1",
+        }];
+
+        let session = build_scan_session_with_mode(
+            "scan-deep",
+            "E: Evidence",
+            scan_details,
+            SessionScope::Volume,
+            DesktopScanMode::DeepJpeg,
+        )
+        .expect("build deep session");
+        let summary = serde_json::to_value(&session.summary).expect("serialize summary");
+        let first_page = page_for_session(&session, None, 100).expect("deep first page");
+        let page = serde_json::to_value(first_page).expect("serialize page");
+
+        assert_eq!(summary["schemaVersion"], 3);
+        assert_eq!(summary["scanMode"], "deepJpeg");
+        assert_eq!(summary["jpegCarveCoverage"]["bytesRequested"], "1048576");
+        assert_eq!(summary["jpegCarveCoverage"]["bytesScanned"], "524288");
+        assert_eq!(
+            summary["jpegCarveCoverage"]["signaturesAttempted"],
+            "10000000"
+        );
+        assert_eq!(
+            summary["jpegCarveCoverage"]["validationBytesRead"],
+            "262144"
+        );
+        assert_eq!(
+            summary["jpegCarveCoverage"]["signatureAttemptLimitReached"],
+            true
+        );
+        assert_eq!(page["schemaVersion"], 2);
+        assert_eq!(page["candidates"][0]["method"], "ntfsMetadata");
+        assert_eq!(
+            page["candidates"][0]["contentSha256"],
+            "abababababababababababababababababababababababababababababababab"
+        );
+        assert_eq!(page["candidates"][0]["validator"], "jpeg-structural-v1");
+        assert!(
+            page["candidates"][0]["recoverabilityScore"]
+                .as_u64()
+                .is_some_and(|score| score >= 85),
+            "validated, fully free content must receive the validation floor"
+        );
+    }
+
+    #[test]
+    fn desktop_deep_evidence_002_requires_evidence_for_carving_and_preserves_metadata_cap() {
+        let mut unvalidated = candidate(78, 78, Some(1), "unvalidated.jpg", CandidateKind::File);
+        unvalidated.size = 64;
+        unvalidated.extents = vec![ExtentRun {
+            logical_offset: 0,
+            physical_offset: Some(16_384),
+            len: 64,
+            availability: ExtentAvailability::FreeInSnapshot,
+        }];
+        let metadata_session = build_scan_session(
+            "scan-metadata-cap",
+            "E: Evidence",
+            details(
+                vec![unvalidated.clone()],
+                NtfsNamespace {
+                    paths: Vec::new(),
+                    directories: Vec::new(),
+                    is_complete: true,
+                },
+            ),
+            SessionScope::Volume,
+        )
+        .expect("metadata session");
+        assert!(
+            metadata_session.rows[0]
+                .recoverability_score
+                .is_some_and(|score| score <= 84),
+            "metadata without content evidence retains the unvalidated cap"
+        );
+
+        unvalidated.method = DiscoveryMethod::Carving;
+        let mut missing_evidence = details(
+            vec![unvalidated],
+            NtfsNamespace {
+                paths: Vec::new(),
+                directories: Vec::new(),
+                is_complete: true,
+            },
+        );
+        missing_evidence.report.jpeg_carve_coverage = Some(JpegCarveCoverage {
+            bytes_requested: 64,
+            bytes_scanned: 64,
+            signatures_attempted: 1,
+            validation_bytes_read: 64,
+            partial: false,
+            read_error_count: 0,
+            candidate_limit_reached: false,
+            candidate_byte_limit_hits: 0,
+            signature_attempt_limit_reached: false,
+            validation_byte_limit_reached: false,
+            rejected_signatures: 0,
+            truncated_signatures: 0,
+            regions_submitted: 1,
+            region_limit_reached: false,
+        });
+        let result = build_scan_session_with_mode(
+            "scan-missing-evidence",
+            "E: Evidence",
+            missing_evidence,
+            SessionScope::Volume,
+            DesktopScanMode::DeepJpeg,
+        );
+        assert!(result.is_err(), "carving without evidence must fail closed");
     }
 
     #[test]

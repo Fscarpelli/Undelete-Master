@@ -68,21 +68,94 @@ describe("real storage contracts", () => {
 
   it("parses a truthful folder-scoped summary with unknown ancestry separate", () => {
     const parsed = parseScanSummary({
-      schemaVersion: 1,
+      schemaVersion: 3,
       scanId: "scan-1",
       sourceLabel: "OS (C:)",
       scope: { kind: "folder", label: "Documents" },
+      scanMode: "metadata",
       fileSystem: "ntfs",
       scanStatus: "partial",
       totalCandidates: "12",
       matchedCandidates: "7",
       unknownCandidates: "2",
+      mftCoverage: {
+        recordsDeclared: "18446744073709551615",
+        recordsAvailable: "9007199254740993",
+        recordsExamined: "65536",
+        bytesDeclared: "18446744073709551615",
+        bytesAvailable: "9223372036854775808",
+        bytesExamined: "67108864",
+      },
+      jpegCarveCoverage: null,
       warnings: ["The active volume changed while it was being read."],
     });
 
     expect(parsed.scope.kind).toBe("folder");
     expect(parsed.matchedCandidates).toBe("7");
     expect(parsed.unknownCandidates).toBe("2");
+    expect(parsed.mftCoverage?.recordsExamined).toBe("65536");
+    expect(parsed.mftCoverage?.bytesAvailable).toBe("9223372036854775808");
+  });
+
+  it("parses bounded JPEG coverage only for a deep whole-volume NTFS scan", () => {
+    const deepSummary = {
+      schemaVersion: 3,
+      scanId: "scan-deep-1",
+      sourceLabel: "OS (C:)",
+      scope: { kind: "volume", label: "OS (C:)" },
+      scanMode: "deepJpeg",
+      fileSystem: "ntfs",
+      scanStatus: "partial",
+      totalCandidates: "3",
+      matchedCandidates: "3",
+      unknownCandidates: "0",
+      mftCoverage: null,
+      jpegCarveCoverage: {
+        bytesRequested: "9223372036854775808",
+        bytesScanned: "67108864",
+        signaturesAttempted: "10000000",
+        validationBytesRead: "8388608",
+        partial: true,
+        readErrorCount: "1",
+        candidateLimitReached: false,
+        candidateByteLimitHits: "2",
+        signatureAttemptLimitReached: true,
+        validationByteLimitReached: false,
+        rejectedSignatures: "7",
+        truncatedSignatures: "1",
+        regionsSubmitted: "4",
+        regionLimitReached: false,
+      },
+      warnings: ["The deep JPEG scan reached a safe bound."],
+    };
+
+    const parsed = parseScanSummary(deepSummary);
+
+    expect(parsed.scanMode).toBe("deepJpeg");
+    expect(parsed.jpegCarveCoverage?.bytesScanned).toBe("67108864");
+    expect(parsed.jpegCarveCoverage?.signaturesAttempted).toBe("10000000");
+    expect(parsed.jpegCarveCoverage?.validationBytesRead).toBe("8388608");
+    expect(parsed.jpegCarveCoverage?.signatureAttemptLimitReached).toBe(true);
+    expect(parsed.jpegCarveCoverage?.partial).toBe(true);
+
+    expect(() =>
+      parseScanSummary({
+        ...deepSummary,
+        scope: { kind: "folder", label: "Documents" },
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseScanSummary({
+        ...deepSummary,
+        scanMode: "metadata",
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseScanSummary({
+        ...deepSummary,
+        scanStatus: "complete",
+      }),
+    ).toThrow(StorageContractError);
   });
 
   it("parses an opaque native folder selection without exposing its path", () => {
@@ -104,7 +177,7 @@ describe("real storage contracts", () => {
 
   it("parses real paginated candidates and rejects a leaked native path", () => {
     const page = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       scanId: "scan-1",
       cursor: null,
       nextCursor: "cursor-2",
@@ -118,6 +191,9 @@ describe("real storage contracts", () => {
           metadataConfidence: "high",
           recoverabilityScore: 88,
           pathState: "exact",
+          method: "ntfsMetadata",
+          contentSha256: null,
+          validator: null,
           warnings: [],
         },
       ],
@@ -146,6 +222,94 @@ describe("real storage contracts", () => {
           {
             ...page.candidates[0]!,
             sourcePath: "C:\\Documents\\deleted.txt",
+          },
+        ],
+      }),
+    ).toThrow(StorageContractError);
+  });
+
+  it("parses JPEG carving provenance and rejects malformed content hashes", () => {
+    const carved = {
+      schemaVersion: 2,
+      scanId: "scan-deep-1",
+      cursor: null,
+      nextCursor: null,
+      candidates: [
+        {
+          id: "candidate-carved-1",
+          displayPath: "carved-0000000000100000.jpg",
+          kind: "file",
+          state: "structurallyValid",
+          sizeBytes: "4096",
+          metadataConfidence: "low",
+          recoverabilityScore: 72,
+          pathState: "incomplete",
+          method: "carving",
+          contentSha256:
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          validator: "jpeg-structural-v1",
+          warnings: [],
+        },
+      ],
+    };
+
+    const parsed = parseCandidatePage(carved).candidates[0]!;
+    expect(parsed.method).toBe("carving");
+    expect(parsed.validator).toBe("jpeg-structural-v1");
+
+    expect(() =>
+      parseCandidatePage({
+        ...carved,
+        candidates: [
+          {
+            ...carved.candidates[0]!,
+            contentSha256: "not-a-sha256",
+          },
+        ],
+      }),
+    ).toThrow(StorageContractError);
+    const corroboratedMetadata = parseCandidatePage({
+      ...carved,
+      candidates: [
+        {
+          ...carved.candidates[0]!,
+          method: "ntfsMetadata",
+        },
+      ],
+    }).candidates[0]!;
+    expect(corroboratedMetadata.method).toBe("ntfsMetadata");
+    expect(corroboratedMetadata.contentSha256).not.toBeNull();
+    expect(() =>
+      parseCandidatePage({
+        ...carved,
+        candidates: [
+          {
+            ...carved.candidates[0]!,
+            contentSha256: null,
+            validator: null,
+          },
+        ],
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseCandidatePage({
+        ...carved,
+        candidates: [
+          {
+            ...carved.candidates[0]!,
+            validator: "jpeg-structural-v2",
+          },
+        ],
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseCandidatePage({
+        ...carved,
+        candidates: [
+          {
+            ...carved.candidates[0]!,
+            method: "ntfsMetadata",
+            validator: null,
           },
         ],
       }),

@@ -51,8 +51,9 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-001-002-UNVERSIONED-UI
 
 - **Requirements:** FR-001, FR-002.
-- **Formal rationale:** the versioned tree has no product UI in which to enforce
-  consent and preservation warnings.
+- **Formal rationale:** the versioned desktop UI now exposes real mounted-volume
+  selection and scanning, but it does not yet enforce explicit consent or show
+  the required preservation warning before a scan starts.
 - **Exit criterion:** add versioned UI tests that prove scanning cannot start
   without consent and that the preservation warning is displayed.
 
@@ -98,8 +99,9 @@ replaced by linked executable evidence before the requirement can become
   candidate attributes, conservative partial state for unresolved
   `$ATTRIBUTE_LIST` records, bounded NTFS enumeration, all declared FAT-copy
   checks, pre-allocation FAT-table rejection, and selected FAT directory
-  failure/depth/chain bounds. The complete quick-scan product flow, external
-  corpus, and final acceptance artifact still do not exist.
+  failure/depth/chain bounds. The real mounted-volume metadata path reaches the
+  desktop, but broader filesystem compatibility, external-corpus evidence, and
+  the final acceptance artifact still do not exist.
 - **Exit criterion:** retain a final-revision quick-scan report with fixture
   SHA-256 assertions, complete/partial/error truth across both filesystems, and
   product-level error handling.
@@ -107,10 +109,14 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-031-032-DEEP-IMAGE
 
 - **Requirements:** FR-031, FR-032.
-- **Formal rationale:** deep carving and image creation are excluded from this
-  increment.
-- **Exit criterion:** deliver bounded carving and resumable image-creation
-  acceptance scenarios on disposable governed media.
+- **Formal rationale:** a bounded allocation-gated whole-NTFS contiguous-JPEG
+  slice now reaches the desktop with real coverage/provenance. Progress and
+  cooperative cancellation, slack/fragment analysis, broader formats, image
+  creation, long-running performance and external-corpus acceptance remain
+  absent.
+- **Exit criterion:** add real progress/cancellation plus slack/fragment and
+  resumable image-creation acceptance scenarios on deterministic images or
+  disposable governed media.
 
 ## JUST-FR-034-REGION-SELECTION
 
@@ -122,8 +128,10 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-040-043-SCAN-PIPELINE
 
 - **Requirements:** FR-040, FR-041, FR-042, FR-043.
-- **Formal rationale:** the persistent scan pipeline, checkpoints, resource
-  profiles, and versioned live UI are absent.
+- **Formal rationale:** the versioned live UI invokes real metadata/deep scan
+  commands and pages real results, but a persistent scan pipeline,
+  checkpoints, real progress, pause/resume/cancel, and selectable resource
+  profiles are absent.
 - **Exit criterion:** pass progress, pause/resume/cancel, partial-query, and
   resource-profile end-to-end tests.
 
@@ -141,10 +149,13 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-051-053-055-CARVING-SELECTION
 
 - **Requirements:** FR-051, FR-053, FR-055.
-- **Formal rationale:** carving, descendant-selection semantics, and evidence
-  merging are not implemented.
-- **Exit criterion:** pass plugin, selection, overlap, provenance, and false
-  merge tests.
+- **Formal rationale:** the first JPEG slice has allocation/scope admission,
+  incremental-budget, provenance, product-DTO, exact-range corroboration, and
+  ambiguous-owner regressions. Descendant-selection semantics, generalized
+  metadata/content merge, broader formats, false-positive corpora and final
+  product acceptance remain incomplete.
+- **Exit criterion:** pass generalized selection/overlap/content-agreement,
+  false-merge, multi-format and external-corpus product tests.
 
 ## JUST-FR-060-067-RESULTS
 

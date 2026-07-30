@@ -19,6 +19,7 @@ um-partition = { workspace = true }
 um-fs-common = { workspace = true }
 um-fs-ntfs = { workspace = true }
 um-fs-fat = { workspace = true }
+um-carving = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -26,3 +27,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 um-fixture-builder = { workspace = true }
 tempfile = { workspace = true }
+sha2 = { workspace = true }
