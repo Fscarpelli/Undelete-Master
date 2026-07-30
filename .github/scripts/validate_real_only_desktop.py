@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 import tomllib
@@ -88,6 +89,10 @@ SKIPPED_RUST_DIRECTORIES = {
     "target",
     "venv",
     ".venv",
+}
+SKIPPED_CARGO_CONFIG_DIRECTORIES = SKIPPED_RUST_DIRECTORIES | {
+    "build",
+    "vendor",
 }
 IO_WINDOWS_SOURCE = Path("crates/io-windows/src/windows.rs")
 IO_WINDOWS_CRATE_ROOT = Path("crates/io-windows/src/lib.rs")
@@ -437,18 +442,123 @@ def first_party_manifests(root: Path) -> list[Path]:
     )
 
 
+def workspace_member_roots(
+    root: Path,
+    workspace: Any,
+    errors: list[str],
+) -> list[Path]:
+    """Expand bounded workspace member paths for config-surface traversal."""
+
+    def reject_member() -> None:
+        errors.append(
+            "Cargo.toml: unreviewed dependency or macro expansion surface; "
+            "workspace member path must remain within the repository"
+        )
+
+    members = workspace.get("members", []) if isinstance(workspace, dict) else []
+    if not isinstance(members, list):
+        return []
+    resolved_root = root.resolve()
+    roots: set[Path] = set()
+    for member in members:
+        if not isinstance(member, str):
+            continue
+        member_path = Path(member)
+        if member_path.is_absolute():
+            reject_member()
+            continue
+        normalized_pattern = Path(
+            os.path.normpath(str(resolved_root / member_path))
+        )
+        try:
+            relative_pattern = normalized_pattern.relative_to(resolved_root)
+        except ValueError:
+            reject_member()
+            continue
+        candidates = (
+            sorted(
+                resolved_root.glob(relative_pattern.as_posix()),
+                key=lambda path: path.as_posix().casefold(),
+            )
+            if any(character in member for character in "*?[")
+            else (normalized_pattern,)
+        )
+        for candidate in candidates:
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                reject_member()
+                continue
+            try:
+                resolved_candidate = candidate.resolve(strict=True)
+                resolved_candidate.relative_to(resolved_root)
+            except (OSError, RuntimeError, ValueError):
+                reject_member()
+                continue
+            if resolved_candidate.is_dir():
+                roots.add(resolved_candidate)
+            else:
+                reject_member()
+    return sorted(
+        roots,
+        key=lambda path: path.relative_to(resolved_root).as_posix().casefold(),
+    )
+
+
+def first_party_cargo_config_surfaces(
+    root: Path,
+    member_roots: list[Path],
+) -> list[Path]:
+    """Find nested Cargo configs without traversing generated/vendor trees."""
+
+    skipped = {
+        directory.casefold()
+        for directory in SKIPPED_CARGO_CONFIG_DIRECTORIES
+    }
+    surfaces: set[Path] = set()
+    search_roots = [root, *member_roots]
+    for search_root in search_roots:
+        for current_text, directory_names, file_names in os.walk(
+            search_root,
+            topdown=True,
+            followlinks=False,
+        ):
+            current = Path(current_text)
+            retained_directories: list[str] = []
+            for directory_name in sorted(directory_names, key=str.casefold):
+                directory = current / directory_name
+                folded_name = directory_name.casefold()
+                if folded_name in skipped:
+                    continue
+                is_directory_link = directory.is_symlink() or (
+                    hasattr(directory, "is_junction")
+                    and directory.is_junction()
+                )
+                if is_directory_link:
+                    if folded_name == ".cargo":
+                        surfaces.add(directory)
+                    continue
+                retained_directories.append(directory_name)
+            directory_names[:] = retained_directories
+
+            if current.name.casefold() != ".cargo":
+                continue
+            for file_name in sorted(file_names, key=str.casefold):
+                if file_name.casefold() in {"config", "config.toml"}:
+                    surfaces.add(current / file_name)
+
+    return sorted(
+        surfaces,
+        key=lambda path: path.relative_to(root).as_posix().casefold(),
+    )
+
+
 def validate_first_party_dependency_inventory(
     root: Path, errors: list[str]
 ) -> None:
     """Keep macro-capable dependency expansion outside the audited boundary."""
-
-    for cargo_config in (root / ".cargo" / "config", root / ".cargo" / "config.toml"):
-        if cargo_config.exists():
-            errors.append(
-                f"{relative(root, cargo_config)}: unreviewed dependency or "
-                "macro expansion surface; repository Cargo source "
-                "configuration is forbidden"
-            )
 
     root_manifest = root / "Cargo.toml"
     root_payload = load_toml(root, root_manifest, errors)
@@ -457,6 +567,17 @@ def validate_first_party_dependency_inventory(
         if isinstance(root_payload, dict)
         else None
     )
+    member_roots = workspace_member_roots(root, workspace, errors)
+    for cargo_config in first_party_cargo_config_surfaces(
+        root,
+        member_roots,
+    ):
+        errors.append(
+            f"{relative(root, cargo_config)}: unreviewed dependency or "
+            "macro expansion surface; repository Cargo source "
+            "configuration is forbidden"
+        )
+
     workspace_dependencies = (
         workspace.get("dependencies") if isinstance(workspace, dict) else None
     )

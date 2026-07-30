@@ -110,11 +110,20 @@ dependency inventories are exact. The root workspace dependency inventory is
 also exact, and every dependency in every other first-party manifest must be
 either a `workspace = true` entry from that inventory or one of the
 path-specific pinned Windows/Tauri entries; first-party proc-macro crate forms
-are rejected. Cargo patch/replace tables and repository Cargo source
-configuration are forbidden, so the pinned package sources cannot be locally
-substituted. Within all `io-windows` sources, only the reviewed compiler/std
-macro names may be invoked, qualified or nested unreviewed macros are
-rejected, and approved names cannot be rebound through macro definitions,
+are rejected. Cargo patch/replace tables are forbidden. Deterministic
+repository traversal rejects both `.cargo/config` and `.cargo/config.toml` at
+every first-party depth, including workspace members; generated build/output
+and vendored dependency trees are pruned, and a symlinked `.cargo` directory
+also fails closed. Every explicit workspace member root is traversed
+separately, even when it resides below an otherwise pruned directory name.
+Member spellings are normalized and resolved first: an in-repository `..`
+spelling is traversed, while an absolute, lexical, or symlink-resolved
+repository escape fails closed. An existing member that cannot be strictly
+resolved, including a symlink loop, also fails closed. Thus a member-local
+Cargo invocation cannot locally substitute the pinned package sources. Within
+all `io-windows` sources, only the reviewed compiler/std macro names may be
+invoked, qualified or nested unreviewed macros
+are rejected, and approved names cannot be rebound through macro definitions,
 attributes, imports, or external globs. This closes both direct and transitive
 proc-macro token-synthesis routes. First-party Cargo manifests are
 additionally checked by resolved package identity, including `package =`

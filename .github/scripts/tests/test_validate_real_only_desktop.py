@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -1659,6 +1660,240 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_063_rejects_nested_member_cargo_source_config(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        cargo_config = (
+            root
+            / "apps"
+            / "desktop"
+            / "src-tauri"
+            / ".cargo"
+            / "config.toml"
+        )
+        cargo_config.parent.mkdir()
+        cargo_config.write_text(
+            "[source.crates-io]\n"
+            'replace-with = "vendored"\n'
+            "\n"
+            "[source.vendored]\n"
+            'directory = "vendor"\n',
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_064_rejects_nested_legacy_cargo_source_config(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        cargo_config = root / "crates" / "core" / ".cargo" / "config"
+        cargo_config.parent.mkdir(parents=True)
+        cargo_config.write_text(
+            "[source.crates-io]\n"
+            'replace-with = "vendored"\n'
+            "\n"
+            "[source.vendored]\n"
+            'directory = "vendor"\n',
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_065_orders_nested_cargo_configs_deterministically(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        relative_configs = [
+            Path("crates/zeta/.cargo/config.toml"),
+            Path("apps/desktop/src-tauri/.cargo/config"),
+        ]
+        for relative_config in relative_configs:
+            cargo_config = root / relative_config
+            cargo_config.parent.mkdir(parents=True, exist_ok=True)
+            cargo_config.write_text("[net]\noffline = true\n", encoding="utf-8")
+
+        errors = self.validate(root)
+        config_errors = [
+            error
+            for error in errors
+            if "repository Cargo source configuration is forbidden" in error
+        ]
+
+        self.assertEqual(
+            config_errors,
+            [
+                "apps/desktop/src-tauri/.cargo/config: unreviewed dependency "
+                "or macro expansion surface; repository Cargo source "
+                "configuration is forbidden",
+                "crates/zeta/.cargo/config.toml: unreviewed dependency or "
+                "macro expansion surface; repository Cargo source "
+                "configuration is forbidden",
+            ],
+        )
+
+    def test_desktop_real_only_066_prunes_generated_and_vendor_cargo_configs(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        for relative_config in (
+            Path("build/generated/.cargo/config"),
+            Path("target/debug/.cargo/config.toml"),
+            Path("vendor/dependency/.cargo/config.toml"),
+        ):
+            cargo_config = root / relative_config
+            cargo_config.parent.mkdir(parents=True)
+            cargo_config.write_text("[net]\noffline = true\n", encoding="utf-8")
+
+        errors = self.validate(root)
+
+        self.assertEqual(errors, [])
+
+    def test_desktop_real_only_067_scans_explicit_member_inside_pruned_tree(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'resolver = "2"\n',
+                'resolver = "2"\n'
+                'members = ["vendor/first-party-member"]\n',
+            ),
+            encoding="utf-8",
+        )
+        cargo_config = (
+            root
+            / "vendor"
+            / "first-party-member"
+            / ".cargo"
+            / "config.toml"
+        )
+        cargo_config.parent.mkdir(parents=True)
+        cargo_config.write_text("[net]\noffline = true\n", encoding="utf-8")
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                error.startswith(
+                    "vendor/first-party-member/.cargo/config.toml:"
+                )
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_068_normalizes_in_repo_workspace_member(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'resolver = "2"\n',
+                'resolver = "2"\n'
+                'members = ["crates/../vendor/first-party-member"]\n',
+            ),
+            encoding="utf-8",
+        )
+        member = root / "vendor" / "first-party-member"
+        member.mkdir(parents=True)
+        (member / "Cargo.toml").write_text(
+            "[package]\n"
+            'name = "first-party-member"\n'
+            'version = "0.1.0"\n'
+            'edition = "2021"\n',
+            encoding="utf-8",
+        )
+        cargo_config = member / ".cargo" / "config.toml"
+        cargo_config.parent.mkdir()
+        cargo_config.write_text("[net]\noffline = true\n", encoding="utf-8")
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                error.startswith(
+                    "vendor/first-party-member/.cargo/config.toml:"
+                )
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_069_rejects_workspace_member_escape(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'resolver = "2"\n',
+                'resolver = "2"\n'
+                'members = ["../outside-member"]\n',
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "workspace member path must remain within the repository"
+                in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_070_rejects_workspace_member_symlink_loop(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'resolver = "2"\n',
+                'resolver = "2"\n'
+                'members = ["vendor/loop-member"]\n',
+            ),
+            encoding="utf-8",
+        )
+        loop = root / "vendor" / "loop-member"
+        loop.parent.mkdir()
+        os.symlink(loop, loop, target_is_directory=True)
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "workspace member path must remain within the repository"
+                in error
                 for error in errors
             )
         )
