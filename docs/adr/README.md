@@ -39,6 +39,7 @@ subject to independent review.
 | [0023](0023-windows-read-only-broker-and-folder-scope.md) | Mounted local volumes grouped under display-only disks, fixed read-only broker v2, and identity-bound NTFS folder scope; no `PhysicalDriveN` scan | Accepted |
 | [0024](0024-streaming-mft-and-bounded-content-carving.md) | Batched/retention-bounded MFT enumeration plus explicit allocation-gated whole-NTFS JPEG deep mode | Accepted |
 | [0025](0025-native-result-query-and-selection-authority.md) | Backend-owned candidate query, cursor binding, and durable native selection | Accepted |
+| [0026](0026-bounded-content-plan-and-partial-recovery.md) | Bounded logical content planning, explicit partial policy, and streaming extraction | Accepted |
 
 A new ADR supersedes an accepted decision; accepted history is never silently
 rewritten. Proposed records must be reviewed and moved to Accepted before their

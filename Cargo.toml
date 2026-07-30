@@ -8,6 +8,7 @@ members = [
     "crates/fs-ntfs",
     "crates/fs-fat",
     "crates/carving",
+    "crates/restore",
     "crates/fixture-builder",
     "crates/cli",
     "crates/io-windows",
