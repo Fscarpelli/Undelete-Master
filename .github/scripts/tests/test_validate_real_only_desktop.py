@@ -34,6 +34,38 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
         (io_windows / "src").mkdir(parents=True)
         (broker / "src").mkdir(parents=True)
 
+        (root / "Cargo.toml").write_text(
+            "[workspace]\n"
+            'resolver = "2"\n'
+            "\n"
+            "[workspace.dependencies]\n"
+            'um-core = { path = "crates/core" }\n'
+            'um-io-common = { path = "crates/io-common" }\n'
+            'um-partition = { path = "crates/partition" }\n'
+            'um-fs-common = { path = "crates/fs-common" }\n'
+            'um-fs-ntfs = { path = "crates/fs-ntfs" }\n'
+            'um-fs-fat = { path = "crates/fs-fat" }\n'
+            'um-fs-exfat = { path = "crates/fs-exfat" }\n'
+            'um-carving = { path = "crates/carving" }\n'
+            'um-restore = { path = "crates/restore" }\n'
+            'um-fixture-builder = { path = "crates/fixture-builder" }\n'
+            'um-cli = { path = "crates/cli" }\n'
+            'um-io-windows = { path = "crates/io-windows" }\n'
+            'um-broker-protocol = { path = "crates/broker-protocol" }\n'
+            'um-broker-client = { path = "crates/broker-client" }\n'
+            'thiserror = "2"\n'
+            'serde = { version = "1", features = ["derive"] }\n'
+            'serde_json = "1"\n'
+            'sha2 = "0.10"\n'
+            'crc32fast = "1"\n'
+            'hex = "0.4"\n'
+            'proptest = "1"\n'
+            'tempfile = "3"\n'
+            'libc = "0.2"\n'
+            'getrandom = "0.3.4"\n'
+            'subtle = "2.6"\n',
+            encoding="utf-8",
+        )
         (source / "api" / "storageDesktop.ts").write_text(
             'import { invoke } from "@tauri-apps/api/core";\n'
             'export const list = (requestId: string) => '
@@ -78,9 +110,28 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             encoding="utf-8",
         )
         (tauri / "Cargo.toml").write_text(
+            "[build-dependencies]\n"
+            'tauri-build = { version = "=2.6.3", features = [] }\n'
+            "\n"
             "[dependencies]\n"
-            'tauri = "2.11.5"\n'
-            'tauri-plugin-dialog = "2.7.2"\n',
+            "serde = { workspace = true }\n"
+            "serde_json = { workspace = true }\n"
+            "sha2 = { workspace = true }\n"
+            "hex = { workspace = true }\n"
+            "getrandom = { workspace = true }\n"
+            'tauri = { version = "=2.11.5", features = [] }\n'
+            'tauri-plugin-dialog = { version = "=2.7.2" }\n'
+            "um-broker-client = { workspace = true }\n"
+            "um-cli = { workspace = true }\n"
+            "um-core = { workspace = true }\n"
+            "um-fs-common = { workspace = true }\n"
+            "um-fs-ntfs = { workspace = true }\n"
+            "um-io-windows = { workspace = true }\n"
+            "\n"
+            "[dev-dependencies]\n"
+            "crc32fast = { workspace = true }\n"
+            "tempfile = { workspace = true }\n"
+            "um-fixture-builder = { workspace = true }\n",
             encoding="utf-8",
         )
         (tauri / "capabilities" / "main.json").write_text(
@@ -136,6 +187,11 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             f"{read_access}, {pipe_write_access}"
             "};\n"
             "use windows_sys::Win32::Storage::FileSystem::CreateFileW;\n"
+            '#[link(name = "shell32")]\n'
+            "// SAFETY: declaration-only exact ShellExecuteExW ABI.\n"
+            'unsafe extern "system" {\n'
+            "  fn ShellExecuteExW(execution: *mut ShellExecuteInfoW) -> i32;\n"
+            "}\n"
             "fn open_volume_for_read(wide: &[u16]) {\n"
             "  // SAFETY: fixed read-only selector and arguments.\n"
             "  unsafe { CreateFileW(\n"
@@ -288,7 +344,11 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             'edition = "2021"\n'
             "\n"
             "[dependencies]\n"
-            'thiserror = "2"\n'
+            "hex = { workspace = true }\n"
+            "serde = { workspace = true }\n"
+            "sha2 = { workspace = true }\n"
+            "thiserror = { workspace = true }\n"
+            "um-core = { workspace = true }\n"
             "\n"
             "[target.'cfg(windows)'.dependencies]\n"
             'windows-sys = { version = "=0.61.2", features = [\n'
@@ -1093,6 +1153,514 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
 
         self.assertTrue(
             any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_043_rejects_qualified_raw_create_file_calls(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary_text = boundary.read_text(encoding="utf-8")
+        boundary.write_text(
+            "use windows_sys::Win32::Storage::FileSystem as file_system;\n"
+            + boundary_text.replace(
+                "CreateFileW(",
+                "file_system::r#CreateFileW(",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_044_rejects_bare_raw_create_file_calls(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "CreateFileW(",
+                "r#CreateFileW(",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_045_rejects_a_raw_alias_target(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "use windows_sys::Win32::Storage::FileSystem::CreateFileW;",
+                "use crate::alternate::Open as r#CreateFileW;",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_046_rejects_comment_spaced_raw_qualification(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary_text = boundary.read_text(encoding="utf-8")
+        boundary.write_text(
+            "use windows_sys::Win32::Storage::FileSystem as file_system;\n"
+            + boundary_text.replace(
+                "CreateFileW(",
+                "file_system /* qualifier */ :: /* raw target */ "
+                "r#CreateFileW(",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_047_rejects_comment_spaced_raw_field_calls(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "CreateFileW(",
+                "holder /* field */ . /* raw target */ r#CreateFileW(",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_048_rejects_a_raw_canonical_import(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "use windows_sys::Win32::Storage::FileSystem::CreateFileW;",
+                "use windows_sys::Win32::Storage::FileSystem::r#CreateFileW;",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_049_rejects_link_name_create_file_rebinding(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + '#[link(name = "kernel32")]\n'
+            + "// SAFETY: regression-only alternate FFI declaration.\n"
+            + 'unsafe extern "system" {\n'
+            + '  #[link_name = "CreateFileW"]\n'
+            + "  fn alternate_open(\n"
+            + "    name: *const u16, access: u32, share: u32,\n"
+            + "    security: *const c_void, disposition: u32, flags: u32,\n"
+            + "    template: HANDLE,\n"
+            + "  ) -> HANDLE;\n"
+            + "}\n"
+            + "fn rebound_open(caller_path: &[u16]) {\n"
+            + "  // SAFETY: regression-only rebound call.\n"
+            + "  unsafe { alternate_open(\n"
+            + "    caller_path.as_ptr(), FILE_READ_ATTRIBUTES, 0, null(),\n"
+            + "    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut(),\n"
+            + "  ); }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("extern and link-name inventory must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_050_rejects_dynamic_symbol_resolution(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn retain_dynamic_resolver() {\n"
+            + "  let _resolver = GetProcAddress;\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("dynamic symbol resolution is forbidden" in error for error in errors)
+        )
+
+    def test_desktop_real_only_051_rejects_a_macro_wrapped_import(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "use windows_sys::Win32::Storage::FileSystem::CreateFileW;",
+                "macro_rules! import_symbol {\n"
+                "  ($item:item) => { $item };\n"
+                "}\n"
+                "import_symbol! {\n"
+                "  use windows_sys::Win32::Storage::FileSystem::CreateFileW;\n"
+                "}",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("canonical unaliased" in error for error in errors)
+        )
+
+    def test_desktop_real_only_052_rejects_a_public_create_file_import(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "use windows_sys::Win32::Storage::FileSystem::CreateFileW;",
+                "pub use windows_sys::Win32::Storage::FileSystem::CreateFileW;",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("canonical unaliased" in error for error in errors)
+        )
+
+    def test_desktop_real_only_053_rejects_macro_wrapped_direct_calls(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary_text = boundary.read_text(encoding="utf-8")
+        wrapped_calls = boundary_text.replace(
+            "unsafe { CreateFileW(",
+            "unsafe { passthrough!(CreateFileW(",
+        ).replace(
+            "  ); }\n",
+            "  )); }\n",
+            5,
+        )
+        boundary.write_text(
+            "macro_rules! passthrough { ($value:expr) => { $value }; }\n"
+            + wrapped_calls,
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_054_rejects_an_aliased_dynamic_loader_dependency(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "crates" / "io-windows" / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "thiserror = { workspace = true }\n",
+                "thiserror = { workspace = true }\n"
+                'resolver = { package = "libloading", version = "0.8" }\n',
+            ),
+            encoding="utf-8",
+        )
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn resolve_hidden_symbol() {\n"
+            + "  // SAFETY: regression-only dynamic loader alias.\n"
+            + "  let _symbol = unsafe {\n"
+            + '    let library = resolver::Library::new("kernel32.dll");\n'
+            + '    library.get::<*const ()>(b"CreateFileW")\n'
+            + "  };\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("general dependencies must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_055_rejects_proc_macro_symbol_synthesis(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "crates" / "io-windows" / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "thiserror = { workspace = true }\n",
+                "thiserror = { workspace = true }\n"
+                'paste = "1"\n',
+            ),
+            encoding="utf-8",
+        )
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn synthesized_open(wide: &[u16]) {\n"
+            + "  // SAFETY: regression-only synthesized API and access names.\n"
+            + "  unsafe { paste::paste! {\n"
+            + "    let _ = [<Create File W>](\n"
+            + "      wide.as_ptr(), [<GENERIC_ WRITE>], FILE_SHARE_READ,\n"
+            + "      null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut(),\n"
+            + "    );\n"
+            + "  } }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("general dependencies must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_056_rejects_tauri_dynamic_loader_dependency(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "apps" / "desktop" / "src-tauri" / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'tauri-plugin-dialog = { version = "=2.7.2" }\n',
+                'tauri-plugin-dialog = { version = "=2.7.2" }\n'
+                'dlopen2 = "=0.8.2"\n',
+            ),
+            encoding="utf-8",
+        )
+        tauri_lib = root / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs"
+        tauri_lib.write_text(
+            tauri_lib.read_text(encoding="utf-8")
+            + "fn load_runtime() {\n"
+            + '  let _ = dlopen2::raw::Library::open("kernel32.dll");\n'
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("dependency inventory must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_057_rejects_transitive_proc_macro_reexport(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        core = root / "crates" / "core"
+        (core / "src").mkdir(parents=True)
+        (core / "Cargo.toml").write_text(
+            "[package]\n"
+            'name = "um-core"\n'
+            'version = "0.1.0"\n'
+            'edition = "2021"\n'
+            "\n"
+            "[dependencies]\n"
+            'paste = "1"\n',
+            encoding="utf-8",
+        )
+        (core / "src" / "lib.rs").write_text(
+            "#![forbid(unsafe_code)]\n"
+            "pub use paste::paste as join_tokens;\n",
+            encoding="utf-8",
+        )
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn transitive_synthesized_open(wide: &[u16]) {\n"
+            + "  // SAFETY: regression-only transitive synthesized open.\n"
+            + "  unsafe { um_core::join_tokens! {\n"
+            + "    let _ = [<Create File W>](\n"
+            + "      wide.as_ptr(), [<GENERIC_ WRITE>], FILE_SHARE_READ,\n"
+            + "      null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut(),\n"
+            + "    );\n"
+            + "  } }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_058_rejects_unreviewed_boundary_macros(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn invoke_transitive_macro() {\n"
+            + "  um_core::join_tokens! { let _ = 0; }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_059_rejects_reviewed_macro_name_rebinding(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            "use um_core::join_tokens as matches;\n"
+            + boundary.read_text(encoding="utf-8")
+            + "fn invoke_rebound_macro() { matches!(true); }\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_060_rejects_workspace_dependency_expansion(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + 'paste = "1"\n',
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_061_rejects_cargo_patch_substitution(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + "\n"
+            + "[patch.crates-io]\n"
+            + 'serde = { path = "crates/core" }\n',
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_062_rejects_repository_cargo_source_config(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        cargo_config = root / ".cargo" / "config.toml"
+        cargo_config.parent.mkdir()
+        cargo_config.write_text(
+            "[source.crates-io]\n"
+            'replace-with = "vendored-sources"\n'
+            "\n"
+            "[source.vendored-sources]\n"
+            'directory = "vendor"\n',
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "unreviewed dependency or macro expansion surface" in error
+                for error in errors
+            )
         )
 
 

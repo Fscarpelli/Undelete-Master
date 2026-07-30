@@ -94,10 +94,32 @@ dismount, mount or arbitrary `DeviceIoControl` capability is allowed. Every
 `CreateFileW` call is restricted to exactly one of the five audited functions
 above, with all seven arguments fixed by that function's policy. Static
 validation permits exactly one canonical, unaliased
-`windows_sys::Win32::Storage::FileSystem::CreateFileW` import and five bare,
-unqualified direct call references; address-taking, function-pointer binding,
-imported or module aliases, qualified calls, macro references and every other
-symbol use fail closed.
+private top-level `windows_sys::Win32::Storage::FileSystem::CreateFileW`
+import and five bare, unqualified direct call references outside macro token
+trees. The inventory uses comment/string-aware Rust significant tokens,
+rejects every raw-identifier spelling such as `r#CreateFileW`, and cannot be
+bypassed with comments or whitespace around `::` or `.`. Address-taking,
+function-pointer binding, public/imported/module aliases, qualified calls,
+macro-wrapped imports or calls, macro references and every other symbol use
+fail closed. Foreign linkage is separately pinned before ABI/link literals are
+masked: the sole allowed declaration is the exact `shell32`
+`ShellExecuteExW` block. `link_name`, any other `extern` declaration, and
+dynamic symbol resolution APIs are forbidden. The `io-windows` general and
+Windows-target dependency inventories and the desktop Tauri build/runtime/test
+dependency inventories are exact. The root workspace dependency inventory is
+also exact, and every dependency in every other first-party manifest must be
+either a `workspace = true` entry from that inventory or one of the
+path-specific pinned Windows/Tauri entries; first-party proc-macro crate forms
+are rejected. Cargo patch/replace tables and repository Cargo source
+configuration are forbidden, so the pinned package sources cannot be locally
+substituted. Within all `io-windows` sources, only the reviewed compiler/std
+macro names may be invoked, qualified or nested unreviewed macros are
+rejected, and approved names cannot be rebound through macro definitions,
+attributes, imports, or external globs. This closes both direct and transitive
+proc-macro token-synthesis routes. First-party Cargo manifests are
+additionally checked by resolved package identity, including `package =`
+aliases, for dynamic-loader families, so a renamed safe-loader dependency
+cannot bypass literal-source checks.
 
 ## Regular image CLI
 

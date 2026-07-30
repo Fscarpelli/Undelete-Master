@@ -54,7 +54,7 @@ that a real source scan succeeded.
 | Scanner | deterministic NTFS/FAT/partition candidates, partial truth and namespace ancestry | Focused tests present; external corpora pending |
 | Desktop DTO/state | six commands, inventory/folder schema 1, summary schema 3, candidate-page schema 2, query-page schema 1, decimal strings, 100-row pages, scan-bound cursors, 32 scopes/4 sessions | Focused Rust/frontend gates passed; native acceptance remains pending |
 | Frontend | fail closed, real inventory flow, folder cancel, metadata/deep scan and paging, privacy, provenance, stale/duplicate control, a11y | Same-revision lint/typecheck/build and 41-test suite passed; native visual acceptance remains pending |
-| Static safety | no source mutation; physical-disk identity only through fixed query-only extent/property calls; exactly five audited `CreateFileW` shapes, six Tauri commands, closed protocol/opcode surface, and no real-device CI | Focused Task 3 validator regressions pass; packaged binary/import evidence remains pending |
+| Static safety | no source mutation; physical-disk identity only through fixed query-only extent/property calls; one private top-level canonical import and exactly five bare non-macro audited `CreateFileW` shapes; raw/qualified/rebound/link-name/dynamic resolution denied; one exact `ShellExecuteExW` extern; exact root/io-windows/Tauri dependency inventories, workspace-only first-party child dependencies, no first-party proc-macro crates or Cargo patch/source substitution, closed io-windows macro invocation/rebinding surface, and resolved-package loader deny; six Tauri commands; closed protocol/opcode surface; no real-device CI | Focused Task 3 validator regressions pass; packaged binary/import evidence remains pending |
 | Native package | both binaries, hashes, fixed sibling layout, extracted `asInvoker`/`requireAdministrator` manifests | Pending |
 | Native UX | actual Tauri window, inventory only, required sizes, focus/zoom/forced colors | Pending |
 | Remote | pushed revision and successful GitHub Actions conclusions | Pending |
@@ -76,7 +76,7 @@ that a real source scan succeeded.
   `DESKTOP-DISK-POLICY-*`;
 - `WINDOWS-DESTINATION-BINDING-*`, `WINDOWS-PHYSICAL-BACKING-*`,
   `WINDOWS-RAW-IDENTITY-*`, `DESKTOP-REAL-ONLY-023` through
-  `DESKTOP-REAL-ONLY-042`;
+  `DESKTOP-REAL-ONLY-062`;
 - `WIN-REAL-INVENTORY-*`, `WIN-FOLDER-CANCEL-*`,
   `WIN-REAL-SCAN-*`, `WIN-CANDIDATE-PAGINATION-*`,
   `WIN-DUPLICATE-SCAN-*`, `WIN-ERROR-PRIVACY-*`,

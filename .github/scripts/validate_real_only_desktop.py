@@ -39,6 +39,29 @@ FORBIDDEN_TAURI_DEPENDENCIES = {
     "tauri-plugin-shell",
     "tauri-plugin-updater",
 }
+ALLOWED_TAURI_BUILD_DEPENDENCIES = {
+    "tauri-build": {"version": "=2.6.3", "features": []},
+}
+ALLOWED_TAURI_DEPENDENCIES = {
+    "serde": {"workspace": True},
+    "serde_json": {"workspace": True},
+    "sha2": {"workspace": True},
+    "hex": {"workspace": True},
+    "getrandom": {"workspace": True},
+    "tauri": {"version": "=2.11.5", "features": []},
+    "tauri-plugin-dialog": {"version": "=2.7.2"},
+    "um-broker-client": {"workspace": True},
+    "um-cli": {"workspace": True},
+    "um-core": {"workspace": True},
+    "um-fs-common": {"workspace": True},
+    "um-fs-ntfs": {"workspace": True},
+    "um-io-windows": {"workspace": True},
+}
+ALLOWED_TAURI_DEV_DEPENDENCIES = {
+    "crc32fast": {"workspace": True},
+    "tempfile": {"workspace": True},
+    "um-fixture-builder": {"workspace": True},
+}
 PRODUCTION_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 TEST_FILE = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$", re.IGNORECASE)
 SIMULATION_PATTERNS = (
@@ -82,6 +105,65 @@ ALLOWED_WINDOWS_SYS_FEATURES = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ]
+ALLOWED_IO_WINDOWS_GENERAL_DEPENDENCIES = {
+    "hex": {"workspace": True},
+    "serde": {"workspace": True},
+    "sha2": {"workspace": True},
+    "thiserror": {"workspace": True},
+    "um-core": {"workspace": True},
+}
+ALLOWED_WORKSPACE_DEPENDENCIES = {
+    "um-core": {"path": "crates/core"},
+    "um-io-common": {"path": "crates/io-common"},
+    "um-partition": {"path": "crates/partition"},
+    "um-fs-common": {"path": "crates/fs-common"},
+    "um-fs-ntfs": {"path": "crates/fs-ntfs"},
+    "um-fs-fat": {"path": "crates/fs-fat"},
+    "um-fs-exfat": {"path": "crates/fs-exfat"},
+    "um-carving": {"path": "crates/carving"},
+    "um-restore": {"path": "crates/restore"},
+    "um-fixture-builder": {"path": "crates/fixture-builder"},
+    "um-cli": {"path": "crates/cli"},
+    "um-io-windows": {"path": "crates/io-windows"},
+    "um-broker-protocol": {"path": "crates/broker-protocol"},
+    "um-broker-client": {"path": "crates/broker-client"},
+    "thiserror": "2",
+    "serde": {"version": "1", "features": ["derive"]},
+    "serde_json": "1",
+    "sha2": "0.10",
+    "crc32fast": "1",
+    "hex": "0.4",
+    "proptest": "1",
+    "tempfile": "3",
+    "libc": "0.2",
+    "getrandom": "0.3.4",
+    "subtle": "2.6",
+}
+ALLOWED_IO_WINDOWS_MACROS = {
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "format",
+    "include_str",
+    "matches",
+    "offset_of",
+    "vec",
+}
+ALLOWED_PINNED_CHILD_DEPENDENCIES = {
+    IO_WINDOWS_MANIFEST.as_posix(): {
+        "windows-sys": {
+            "version": ALLOWED_WINDOWS_SYS_VERSION,
+            "features": ALLOWED_WINDOWS_SYS_FEATURES,
+        },
+    },
+    "apps/desktop/src-tauri/Cargo.toml": {
+        **ALLOWED_TAURI_BUILD_DEPENDENCIES,
+        "tauri": ALLOWED_TAURI_DEPENDENCIES["tauri"],
+        "tauri-plugin-dialog": ALLOWED_TAURI_DEPENDENCIES[
+            "tauri-plugin-dialog"
+        ],
+    },
+}
 AUDITED_STORAGE_BUS_QUERY_SHA256 = (
     "25140ff7fb94fd32ea481716b5abbcfea659b6675202e4b9531eb8d7b507f136"
 )
@@ -96,6 +178,25 @@ def joined(*parts: str) -> str:
 UNSAFE_TOKEN = re.compile(r"\bunsafe\b")
 CREATE_FILE_TOKEN = re.compile(r"\bCreateFile(?:A|W|2)\b")
 DEVICE_CONTROL_TOKEN = re.compile(r"\bDeviceIoControl\b")
+RUST_SIGNIFICANT_TOKEN = re.compile(
+    r"r#[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*|::|[^\s]"
+)
+DYNAMIC_SYMBOL_RESOLUTION_TOKEN = re.compile(
+    r"\b(?:"
+    r"GetProcAddress(?:ForCaller)?|"
+    r"LoadLibrary(?:Ex)?[AW]?|LoadPackagedLibrary|"
+    r"GetModuleHandle(?:Ex)?[AW]?|"
+    r"LdrGetProcedureAddress|LdrLoadDll|"
+    r"dlopen[0-9]*|dlsym|libloading"
+    r")\b"
+)
+DYNAMIC_LOADER_PACKAGE = re.compile(
+    r"(?:^|[-_])(?:"
+    r"libloading|dlopen[0-9]*|dynamic[-_]?(?:reload|loader)|"
+    r"shared[-_]?library"
+    r")(?:$|[-_])",
+    re.IGNORECASE,
+)
 GENERIC_WRITE_TOKEN = re.compile(
     rf"\b{re.escape(joined('GENERIC_', 'WRITE'))}\b"
 )
@@ -167,8 +268,8 @@ def load_toml(root: Path, path: Path, errors: list[str]) -> Any | None:
         return None
 
 
-def mask_rust_comments_and_literals(text: str) -> str:
-    """Preserve Rust code shape while masking comments and literal contents."""
+def mask_rust_syntax(text: str, *, mask_literals: bool) -> str:
+    """Preserve Rust source positions while masking selected lexical trivia."""
 
     masked = list(text)
 
@@ -224,26 +325,41 @@ def mask_rust_comments_and_literals(text: str) -> str:
             content_start = index + raw.end()
             end = text.find(terminator, content_start)
             end = len(text) if end < 0 else end + len(terminator)
-            blank(index, end)
+            if mask_literals:
+                blank(index, end)
             index = end
             continue
 
         if text[index] == '"':
             end = quoted_end(index, '"')
-            blank(index, end)
+            if mask_literals:
+                blank(index, end)
             index = end
             continue
 
         char_literal = re.match(r"'(?:\\.|[^\\'\r\n])'", text[index:])
         if char_literal is not None:
             end = index + char_literal.end()
-            blank(index, end)
+            if mask_literals:
+                blank(index, end)
             index = end
             continue
 
         index += 1
 
     return "".join(masked)
+
+
+def mask_rust_comments_and_literals(text: str) -> str:
+    """Mask comments and literals while preserving Rust source positions."""
+
+    return mask_rust_syntax(text, mask_literals=True)
+
+
+def mask_rust_comments(text: str) -> str:
+    """Mask comments but retain literals for foreign-symbol inventory checks."""
+
+    return mask_rust_syntax(text, mask_literals=False)
 
 
 def first_party_rust_sources(root: Path) -> list[Path]:
@@ -285,6 +401,143 @@ def mapping_key_paths(
     return paths
 
 
+def manifest_dependency_tables(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect direct Cargo dependency tables, including workspace and targets."""
+
+    tables: list[dict[str, Any]] = []
+
+    def collect(container: Any) -> None:
+        if not isinstance(container, dict):
+            return
+        for key in ("dependencies", "dev-dependencies", "build-dependencies"):
+            table = container.get(key)
+            if isinstance(table, dict):
+                tables.append(table)
+
+    collect(payload)
+    collect(payload.get("workspace"))
+    targets = payload.get("target")
+    if isinstance(targets, dict):
+        for target in targets.values():
+            collect(target)
+    return tables
+
+
+def first_party_manifests(root: Path) -> list[Path]:
+    """Return Cargo manifests controlled by this repository."""
+
+    return sorted(
+        path
+        for path in root.rglob("Cargo.toml")
+        if path.is_file()
+        and not any(
+            part in SKIPPED_RUST_DIRECTORIES
+            for part in path.relative_to(root).parts
+        )
+    )
+
+
+def validate_first_party_dependency_inventory(
+    root: Path, errors: list[str]
+) -> None:
+    """Keep macro-capable dependency expansion outside the audited boundary."""
+
+    for cargo_config in (root / ".cargo" / "config", root / ".cargo" / "config.toml"):
+        if cargo_config.exists():
+            errors.append(
+                f"{relative(root, cargo_config)}: unreviewed dependency or "
+                "macro expansion surface; repository Cargo source "
+                "configuration is forbidden"
+            )
+
+    root_manifest = root / "Cargo.toml"
+    root_payload = load_toml(root, root_manifest, errors)
+    workspace = (
+        root_payload.get("workspace")
+        if isinstance(root_payload, dict)
+        else None
+    )
+    workspace_dependencies = (
+        workspace.get("dependencies") if isinstance(workspace, dict) else None
+    )
+    if workspace_dependencies != ALLOWED_WORKSPACE_DEPENDENCIES:
+        errors.append(
+            "Cargo.toml: unreviewed dependency or macro expansion surface; "
+            "workspace dependencies must match the audited inventory"
+        )
+
+    workspace_only = {"workspace": True}
+    for path in first_party_manifests(root):
+        payload = load_toml(root, path, errors)
+        if not isinstance(payload, dict):
+            continue
+        name = relative(root, path)
+        if "patch" in payload or "replace" in payload:
+            errors.append(
+                f"{name}: unreviewed dependency or macro expansion surface; "
+                "Cargo patch/replace tables are forbidden"
+            )
+        library = payload.get("lib")
+        crate_types = (
+            library.get("crate-type", [])
+            if isinstance(library, dict)
+            else []
+        )
+        if isinstance(library, dict) and (
+            library.get("proc-macro") is True
+            or (
+                isinstance(crate_types, list)
+                and "proc-macro" in crate_types
+            )
+        ):
+            errors.append(
+                f"{name}: unreviewed dependency or macro expansion surface; "
+                "first-party proc-macro crates are forbidden"
+            )
+
+        if path == root_manifest:
+            continue
+        pinned = ALLOWED_PINNED_CHILD_DEPENDENCIES.get(name, {})
+        for table in manifest_dependency_tables(payload):
+            for dependency_alias, specification in table.items():
+                if (
+                    dependency_alias in ALLOWED_WORKSPACE_DEPENDENCIES
+                    and specification == workspace_only
+                ):
+                    continue
+                if pinned.get(dependency_alias) == specification:
+                    continue
+                errors.append(
+                    f"{name}: unreviewed dependency or macro expansion "
+                    f"surface for {dependency_alias!r}"
+                )
+
+
+def validate_dynamic_loader_manifests(root: Path, errors: list[str]) -> None:
+    """Reject known dynamic-loader packages even when dependency keys are aliases."""
+
+    for path in first_party_manifests(root):
+        payload = load_toml(root, path, errors)
+        if not isinstance(payload, dict):
+            continue
+        for table in manifest_dependency_tables(payload):
+            for dependency_alias, specification in table.items():
+                if not isinstance(dependency_alias, str):
+                    continue
+                package = (
+                    specification.get("package", dependency_alias)
+                    if isinstance(specification, dict)
+                    else dependency_alias
+                )
+                if isinstance(package, str) and DYNAMIC_LOADER_PACKAGE.search(
+                    package
+                ):
+                    errors.append(
+                        f"{relative(root, path)}: dynamic-loader dependency "
+                        f"{package!r} is forbidden"
+                    )
+
+
 def validate_io_windows_manifest(root: Path, errors: list[str]) -> int:
     path = root / IO_WINDOWS_MANIFEST
     if not path.is_file():
@@ -295,7 +548,19 @@ def validate_io_windows_manifest(root: Path, errors: list[str]) -> int:
     if not isinstance(payload, dict):
         return 1
 
+    general_dependencies = payload.get("dependencies")
+    if general_dependencies != ALLOWED_IO_WINDOWS_GENERAL_DEPENDENCIES:
+        errors.append(
+            f"{relative(root, path)}: general dependencies must match the "
+            "audited non-loader inventory"
+        )
+
     target = payload.get("target")
+    if not isinstance(target, dict) or set(target) != {"cfg(windows)"}:
+        errors.append(
+            f"{relative(root, path)}: target dependencies must contain only "
+            "the audited cfg(windows) table"
+        )
     windows_target = (
         target.get("cfg(windows)") if isinstance(target, dict) else None
     )
@@ -358,10 +623,163 @@ def rust_item_span(code: str, function_name: str) -> tuple[int, int] | None:
     return None
 
 
+def rust_significant_tokens(code: str) -> list[tuple[str, int, int]]:
+    """Tokenize masked Rust without letting trivia split raw identifiers."""
+
+    return [
+        (match.group(0), match.start(), match.end())
+        for match in RUST_SIGNIFICANT_TOKEN.finditer(code)
+    ]
+
+
+def rust_token_contexts(
+    tokens: list[tuple[str, int, int]],
+) -> list[tuple[int, bool]]:
+    """Return delimiter depth and macro-token-tree membership for each token."""
+
+    closing_for = {"(": ")", "[": "]", "{": "}"}
+    stack: list[tuple[str, bool]] = []
+    contexts: list[tuple[int, bool]] = []
+    for token_index, (token, _, _) in enumerate(tokens):
+        inherited_macro = stack[-1][1] if stack else False
+        contexts.append((len(stack), inherited_macro))
+        if token in closing_for:
+            follows_bang = (
+                token_index > 0 and tokens[token_index - 1][0] == "!"
+            )
+            opens_macro_rules = (
+                token == "{"
+                and token_index >= 3
+                and tokens[token_index - 3][0] == "macro_rules"
+                and tokens[token_index - 2][0] == "!"
+            )
+            stack.append(
+                (
+                    closing_for[token],
+                    inherited_macro or follows_bang or opens_macro_rules,
+                )
+            )
+        elif stack and token == stack[-1][0]:
+            stack.pop()
+    return contexts
+
+
+def validate_io_windows_macro_surface(
+    name: str,
+    code: str,
+    errors: list[str],
+) -> None:
+    """Allow only fixed compiler/std macro calls without rebinding routes."""
+
+    tokens = rust_significant_tokens(code)
+    contexts = rust_token_contexts(tokens)
+    logical_tokens = [
+        token[2:] if token.startswith("r#") else token
+        for token, _, _ in tokens
+    ]
+    rejected = False
+
+    for token_index, (token, _, _) in enumerate(tokens):
+        logical_name = logical_tokens[token_index]
+        if (
+            re.fullmatch(r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*", token)
+            is None
+            or token_index + 2 >= len(tokens)
+            or tokens[token_index + 1][0] != "!"
+            or tokens[token_index + 2][0] not in {"(", "[", "{"}
+        ):
+            continue
+        preceding = tokens[token_index - 1][0] if token_index > 0 else None
+        if (
+            token.startswith("r#")
+            or logical_name not in ALLOWED_IO_WINDOWS_MACROS
+            or preceding in {"::", ".", "$", "#", ">"}
+        ):
+            rejected = True
+
+    forbidden_definition_tokens = {"macro_rules", "macro_use", "macro_export"}
+    if forbidden_definition_tokens.intersection(logical_tokens):
+        rejected = True
+    for left, right in zip(logical_tokens, logical_tokens[1:]):
+        if (left, right) in {("extern", "crate"), ("pub", "macro")}:
+            rejected = True
+
+    approved_offset_import = [
+        "use",
+        "std",
+        "::",
+        "mem",
+        "::",
+        "{",
+        "offset_of",
+        ",",
+        "size_of",
+        "}",
+        ";",
+    ]
+    for use_index, logical_name in enumerate(logical_tokens):
+        if logical_name != "use":
+            continue
+        use_depth = contexts[use_index][0]
+        statement: list[str] = []
+        for token_index in range(use_index, len(tokens)):
+            token_depth = contexts[token_index][0]
+            statement.append(logical_tokens[token_index])
+            if logical_tokens[token_index] == ";" and token_depth == use_depth:
+                break
+        if statement == approved_offset_import:
+            continue
+        if (
+            ALLOWED_IO_WINDOWS_MACROS.intersection(statement)
+            or (
+                "*" in statement
+                and statement != ["use", "super", "::", "*", ";"]
+            )
+        ):
+            rejected = True
+
+    if rejected:
+        errors.append(
+            f"{name}: unreviewed dependency or macro expansion surface"
+        )
+
+
+def is_bare_top_level_use_for_symbol(
+    tokens: list[tuple[str, int, int]],
+    contexts: list[tuple[int, bool]],
+    symbol_index: int,
+) -> bool:
+    """Require a literal top-level `use`, not visibility or macro wrapping."""
+
+    if contexts[symbol_index][1]:
+        return False
+    use_index: int | None = None
+    for token_index in range(symbol_index - 1, -1, -1):
+        token = tokens[token_index][0]
+        if token == ";":
+            break
+        if token == "use":
+            use_index = token_index
+            break
+    if use_index is None:
+        return False
+    depth, inside_macro = contexts[use_index]
+    if depth != 0 or inside_macro:
+        return False
+    return use_index == 0 or tokens[use_index - 1][0] in {";", "}"}
+
+
 def rust_call_arguments(code: str, call_name: str) -> list[tuple[int, int, list[str]]]:
     calls: list[tuple[int, int, list[str]]] = []
-    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", code):
-        opening = code.find("(", match.start(), match.end())
+    tokens = rust_significant_tokens(code)
+    for token_index, (token, token_start, _) in enumerate(tokens):
+        if (
+            token != call_name
+            or token_index + 1 >= len(tokens)
+            or tokens[token_index + 1][0] != "("
+        ):
+            continue
+        opening = tokens[token_index + 1][1]
         depth = 1
         argument_start = opening + 1
         arguments: list[str] = []
@@ -376,7 +794,7 @@ def rust_call_arguments(code: str, call_name: str) -> list[tuple[int, int, list[
                     trailing = code[argument_start:index]
                     if trailing.strip():
                         arguments.append(trailing)
-                    calls.append((match.start(), index + 1, arguments))
+                    calls.append((token_start, index + 1, arguments))
                     break
             elif character == "," and depth == 1:
                 arguments.append(code[argument_start:index])
@@ -403,6 +821,48 @@ def within(position: int, span: tuple[int, int] | None) -> bool:
     return span is not None and span[0] <= position < span[1]
 
 
+def validate_windows_extern_inventory(
+    name: str,
+    text: str,
+    code: str,
+    errors: list[str],
+) -> None:
+    """Pin the sole foreign declaration before its ABI/link literals are masked."""
+
+    comments_masked = mask_rust_comments(text)
+    approved_declaration = re.compile(
+        r"#\s*\[\s*link\s*\(\s*name\s*=\s*\"shell32\"\s*\)\s*\]\s*"
+        r"unsafe\s+extern\s+\"system\"\s*\{\s*"
+        r"fn\s+ShellExecuteExW\s*\(\s*"
+        r"execution\s*:\s*\*\s*mut\s*ShellExecuteInfoW\s*"
+        r"\)\s*->\s*i32\s*;\s*\}"
+    )
+    approved_matches = list(approved_declaration.finditer(comments_masked))
+    significant_tokens = rust_significant_tokens(code)
+    extern_positions = [
+        token_start
+        for token, token_start, _ in significant_tokens
+        if token == "extern"
+    ]
+    link_name_references = [
+        token
+        for token, _, _ in significant_tokens
+        if (token[2:] if token.startswith("r#") else token) == "link_name"
+    ]
+    approved_contains_extern = (
+        len(approved_matches) == 1
+        and len(extern_positions) == 1
+        and approved_matches[0].start()
+        <= extern_positions[0]
+        < approved_matches[0].end()
+    )
+    if not approved_contains_extern or link_name_references:
+        errors.append(
+            f"{name}: extern and link-name inventory must match the sole "
+            "reviewed ShellExecuteExW declaration"
+        )
+
+
 def validate_windows_ffi_boundary(
     root: Path,
     path: Path,
@@ -419,6 +879,8 @@ def validate_windows_ffi_boundary(
         errors.append(
             f"{name}: every unsafe operation requires one local SAFETY justification"
         )
+
+    validate_windows_extern_inventory(name, text, code, errors)
 
     if MUTATING_WINDOWS_API.search(code):
         errors.append(f"{name}: mutating Windows API is forbidden")
@@ -498,6 +960,12 @@ def validate_windows_ffi_boundary(
     ]
     create_calls = rust_call_arguments(code, "CreateFileW")
     direct_create_positions = {call[0] for call in create_calls}
+    significant_tokens = rust_significant_tokens(code)
+    token_contexts = rust_token_contexts(significant_tokens)
+    token_index_by_start = {
+        token_start: token_index
+        for token_index, (_, token_start, _) in enumerate(significant_tokens)
+    }
     canonical_create_file_module = (
         r"\buse\s+windows_sys\s*::\s*Win32\s*::\s*Storage\s*::\s*"
         r"FileSystem"
@@ -524,17 +992,36 @@ def validate_windows_ffi_boundary(
             approved_import_positions.add(
                 body_start + imported_item.start("symbol")
             )
+    approved_import_positions = {
+        position
+        for position in approved_import_positions
+        if position in token_index_by_start
+        and is_bare_top_level_use_for_symbol(
+            significant_tokens,
+            token_contexts,
+            token_index_by_start[position],
+        )
+    }
 
-    for reference in CREATE_FILE_TOKEN.finditer(code):
+    create_file_names = {"CreateFileA", "CreateFileW", "CreateFile2"}
+    disallowed_bare_prefixes = {"::", ".", "#", "$", "'"}
+    for token_index, (token, token_start, _) in enumerate(significant_tokens):
+        logical_name = token[2:] if token.startswith("r#") else token
+        if logical_name not in create_file_names:
+            continue
+        preceding_token = (
+            significant_tokens[token_index - 1][0] if token_index > 0 else None
+        )
         if (
-            reference.group(0) == "CreateFileW"
-            and reference.start() in direct_create_positions
-            and re.search(r"(?:::|\.)\s*$", code[: reference.start()]) is None
+            token == "CreateFileW"
+            and token_start in direct_create_positions
+            and not token_contexts[token_index][1]
+            and preceding_token not in disallowed_bare_prefixes
         ):
             continue
         if (
-            reference.group(0) == "CreateFileW"
-            and reference.start() in approved_import_positions
+            token == "CreateFileW"
+            and token_start in approved_import_positions
         ):
             continue
         errors.append(
@@ -771,6 +1258,7 @@ def validate_windows_ffi_boundary(
 def validate_rust_safety_boundary(root: Path, errors: list[str]) -> int:
     source_paths = first_party_rust_sources(root)
     allowed_path = root / IO_WINDOWS_SOURCE
+    io_windows_source_root = root / "crates" / "io-windows" / "src"
     if not allowed_path.is_file():
         errors.append(f"{IO_WINDOWS_SOURCE.as_posix()}: missing audited boundary")
 
@@ -781,6 +1269,16 @@ def validate_rust_safety_boundary(root: Path, errors: list[str]) -> int:
         if text is None:
             continue
         code = mask_rust_comments_and_literals(text)
+        if DYNAMIC_SYMBOL_RESOLUTION_TOKEN.search(code):
+            errors.append(
+                f"{relative(root, path)}: dynamic symbol resolution is forbidden"
+            )
+        if io_windows_source_root in path.parents:
+            validate_io_windows_macro_surface(
+                relative(root, path),
+                code,
+                errors,
+            )
         if path == allowed_path:
             validate_windows_ffi_boundary(root, path, text, code, errors)
             continue
@@ -984,6 +1482,25 @@ def validate_tauri_sources(root: Path, tauri: Path, errors: list[str]) -> int:
         errors.append("apps/desktop/src-tauri/Cargo.toml: missing manifest")
     else:
         inspected += 1
+        try:
+            cargo_payload = tomllib.loads(cargo)
+        except tomllib.TOMLDecodeError as error:
+            errors.append(
+                f"{relative(root, cargo_path)}: invalid TOML: {error}"
+            )
+            cargo_payload = None
+        if isinstance(cargo_payload, dict) and (
+            cargo_payload.get("build-dependencies")
+            != ALLOWED_TAURI_BUILD_DEPENDENCIES
+            or cargo_payload.get("dependencies") != ALLOWED_TAURI_DEPENDENCIES
+            or cargo_payload.get("dev-dependencies")
+            != ALLOWED_TAURI_DEV_DEPENDENCIES
+            or "target" in cargo_payload
+        ):
+            errors.append(
+                f"{relative(root, cargo_path)}: dependency inventory must "
+                "match the audited desktop build/runtime/test set"
+            )
         for dependency in sorted(FORBIDDEN_TAURI_DEPENDENCIES):
             if re.search(rf"(?m)^\s*{re.escape(dependency)}\s*=", cargo):
                 errors.append(
@@ -1207,6 +1724,8 @@ def validate_repository(root: Path) -> tuple[list[str], int]:
     inspected += validate_capabilities(root, tauri, errors)
     inspected += validate_tauri_config(root, tauri, errors)
     inspected += validate_tauri_sources(root, tauri, errors)
+    validate_first_party_dependency_inventory(root, errors)
+    validate_dynamic_loader_manifests(root, errors)
     inspected += validate_io_windows_manifest(root, errors)
     inspected += validate_rust_safety_boundary(root, errors)
     inspected += validate_broker_boundary(root, errors)
