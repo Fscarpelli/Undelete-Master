@@ -1,11 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
   StorageContractError,
+  parseCandidateQueryPage,
   parseCandidatePage,
   parseFolderSelection,
   parseScanSummary,
   parseStorageInventory,
 } from "./storage";
+
+const queryPage = {
+  schemaVersion: 1,
+  scanId: "scan-1",
+  queryId: "query-1",
+  queryRevision: "7",
+  cursor: null,
+  nextCursor: "cursor-2",
+  filteredTotal: "1",
+  extensionFacets: [{ extension: "txt", count: "1" }],
+  selection: {
+    selectionRevision: "3",
+    selectedCandidates: "1",
+    selectedFiles: "1",
+    selectedDirectories: "0",
+    selectedLogicalBytes: "42",
+    bestEffortCandidates: "0",
+    conflictedCandidates: "0",
+    ineligibleCandidates: "0",
+    matchingSelectedCandidates: "1",
+  },
+  candidates: [
+    {
+      id: "42",
+      displayPath: "Documents/deleted.txt",
+      extension: "txt",
+      kind: "file",
+      state: "likelyComplete",
+      sizeBytes: "42",
+      metadataConfidence: "high",
+      recoverabilityScore: 88,
+      pathState: "exact",
+      method: "ntfsMetadata",
+      eligibility: "complete",
+      selected: true,
+      warnings: [],
+    },
+  ],
+};
 
 const inventory = {
   schemaVersion: 1,
@@ -35,6 +75,66 @@ const inventory = {
 };
 
 describe("real storage contracts", () => {
+  it("parses one exact schema-v1 actionable query page", () => {
+    expect(parseCandidateQueryPage(queryPage)).toEqual(queryPage);
+  });
+
+  it("rejects unbounded, duplicate, inconsistent, or authority-leaking query pages", () => {
+    expect(() =>
+      parseCandidateQueryPage({
+        ...queryPage,
+        candidates: Array.from({ length: 101 }, (_, index) => ({
+          ...queryPage.candidates[0],
+          id: String(index + 1),
+        })),
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseCandidateQueryPage({
+        ...queryPage,
+        candidates: [queryPage.candidates[0], queryPage.candidates[0]],
+      }),
+    ).toThrow(StorageContractError);
+    for (const badDecimal of [
+      "-1",
+      "01",
+      "18446744073709551616",
+      "9007199254740993.0",
+    ]) {
+      expect(() =>
+        parseCandidateQueryPage({
+          ...queryPage,
+          filteredTotal: badDecimal,
+        }),
+      ).toThrow(StorageContractError);
+    }
+    expect(() =>
+      parseCandidateQueryPage({
+        ...queryPage,
+        filteredTotal: "0",
+      }),
+    ).toThrow(StorageContractError);
+
+    for (const [field, value] of [
+      ["sourcePath", "C:\\private"],
+      ["destinationPath", "D:\\restore"],
+      ["extents", [{ offset: "0", length: "42" }]],
+      ["offset", "0"],
+      ["handle", "123"],
+      ["recoveredBytes", "42"],
+    ] as const) {
+      expect(() =>
+        parseCandidateQueryPage({
+          ...queryPage,
+          candidates: [{ ...queryPage.candidates[0], [field]: value }],
+        }),
+      ).toThrow(StorageContractError);
+    }
+    expect(() =>
+      parseCandidateQueryPage({ ...queryPage, unknown: true }),
+    ).toThrow(StorageContractError);
+  });
+
   it("parses a bounded connected-disk inventory without native paths", () => {
     const parsed = parseStorageInventory(inventory);
 

@@ -1,6 +1,7 @@
 export const STORAGE_CONTRACT_SCHEMA_VERSION = 1;
 export const SCAN_SUMMARY_SCHEMA_VERSION = 3;
 export const CANDIDATE_PAGE_SCHEMA_VERSION = 2;
+export const CANDIDATE_QUERY_SCHEMA_VERSION = 1;
 
 const UNSIGNED_DECIMAL = /^(0|[1-9][0-9]*)$/;
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -10,6 +11,8 @@ const MAX_U64 = 18_446_744_073_709_551_615n;
 const MAX_DISKS = 128;
 const MAX_VOLUMES_PER_DISK = 128;
 const MAX_CANDIDATES_PER_PAGE = 200;
+const MAX_ACTIONABLE_CANDIDATES_PER_PAGE = 100;
+const MAX_EXTENSION_FACETS = 128;
 const MAX_WARNINGS = 128;
 const MAX_TEXT_CODE_POINTS = 512;
 
@@ -55,6 +58,99 @@ export type PathState =
   | "incomplete"
   | "orphaned"
   | "ambiguous";
+export type RecoveryEligibility = "complete" | "bestEffort" | "ineligible";
+export type CandidateSortField =
+  | "path"
+  | "extension"
+  | "size"
+  | "state"
+  | "confidence"
+  | "recoverabilityScore"
+  | "method";
+export type CandidateSortDirection = "ascending" | "descending";
+
+export interface CandidateQuery {
+  revision: string;
+  search: string;
+  extensions: readonly string[];
+  kinds: readonly CandidateKind[];
+  metadataConfidences: readonly MetadataConfidence[];
+  methods: readonly DiscoveryMethod[];
+  states: readonly CandidateState[];
+  minRecoverabilityScore: number | null;
+  maxRecoverabilityScore: number | null;
+  eligibilities: readonly RecoveryEligibility[];
+  selectedOnly: boolean;
+}
+
+export interface CandidateSort {
+  field: CandidateSortField;
+  direction: CandidateSortDirection;
+}
+
+export interface ActionableCandidateRow {
+  id: string;
+  displayPath: string;
+  extension: string;
+  kind: CandidateKind;
+  state: CandidateState;
+  sizeBytes: string;
+  metadataConfidence: MetadataConfidence;
+  recoverabilityScore: number | null;
+  pathState: PathState;
+  method: DiscoveryMethod;
+  eligibility: RecoveryEligibility;
+  selected: boolean;
+  warnings: string[];
+}
+
+export interface CandidateSelectionSummary {
+  selectionRevision: string;
+  selectedCandidates: string;
+  selectedFiles: string;
+  selectedDirectories: string;
+  selectedLogicalBytes: string;
+  bestEffortCandidates: string;
+  conflictedCandidates: string;
+  ineligibleCandidates: string;
+  matchingSelectedCandidates: string;
+}
+
+export interface CandidateExtensionFacet {
+  extension: string;
+  count: string;
+}
+
+export interface CandidateQueryPage {
+  schemaVersion: 1;
+  scanId: string;
+  queryId: string;
+  queryRevision: string;
+  cursor: string | null;
+  nextCursor: string | null;
+  filteredTotal: string;
+  extensionFacets: CandidateExtensionFacet[];
+  selection: CandidateSelectionSummary;
+  candidates: ActionableCandidateRow[];
+}
+
+export type CandidateSelectionOperation =
+  | {
+      type: "setIds";
+      candidateIds: readonly string[];
+      selected: boolean;
+    }
+  | { type: "selectAllMatching" }
+  | { type: "clearMatching" }
+  | { type: "clearAll" };
+
+export interface CandidateSelectionUpdate {
+  schemaVersion: 1;
+  scanId: string;
+  queryId: string;
+  selectionRevision: string;
+  selection: CandidateSelectionSummary;
+}
 
 export interface StorageVolume {
   id: string;
@@ -626,5 +722,232 @@ export function parseCandidatePage(value: unknown): CandidatePage {
     cursor: nullableOpaqueId(item.cursor),
     nextCursor: nullableOpaqueId(item.nextCursor),
     candidates,
+  };
+}
+
+function score(value: unknown, kind: CandidateKind): number | null {
+  const validFileScore =
+    kind === "file" &&
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 100;
+  const validDirectoryScore = kind === "directory" && value === null;
+  if (!validFileScore && !validDirectoryScore) {
+    throw new StorageContractError();
+  }
+  return value as number | null;
+}
+
+function normalizedExtension(value: unknown): string {
+  const extension = text(value, true);
+  if (
+    [...extension].length > 255 ||
+    extension !== extension.toLowerCase() ||
+    extension.includes(".") ||
+    extension.includes("/") ||
+    extension.includes("\\") ||
+    extension.trim() !== extension
+  ) {
+    throw new StorageContractError();
+  }
+  return extension;
+}
+
+function actionableCandidate(value: unknown): ActionableCandidateRow {
+  const item = record(value);
+  exactKeys(item, [
+    "id",
+    "displayPath",
+    "extension",
+    "kind",
+    "state",
+    "sizeBytes",
+    "metadataConfidence",
+    "recoverabilityScore",
+    "pathState",
+    "method",
+    "eligibility",
+    "selected",
+    "warnings",
+  ]);
+  const kind = oneOf(item.kind, ["file", "directory"]);
+  return {
+    id: decimal(item.id),
+    displayPath: text(item.displayPath),
+    extension: normalizedExtension(item.extension),
+    kind,
+    state: oneOf(item.state, [
+      "exactEvidence",
+      "likelyComplete",
+      "completeUnvalidated",
+      "structurallyValid",
+      "partial",
+      "conflicted",
+      "readError",
+      "zeroedOrTrimmed",
+      "overwritten",
+      "metadataOnly",
+      "unknown",
+    ]),
+    sizeBytes: decimal(item.sizeBytes),
+    metadataConfidence: oneOf(item.metadataConfidence, [
+      "high",
+      "medium",
+      "low",
+    ]),
+    recoverabilityScore: score(item.recoverabilityScore, kind),
+    pathState: oneOf(item.pathState, [
+      "exact",
+      "reconstructed",
+      "incomplete",
+      "orphaned",
+      "ambiguous",
+    ]),
+    method: oneOf(item.method, [
+      "ntfsMetadata",
+      "fatMetadata",
+      "exfatMetadata",
+      "carving",
+      "recycleBin",
+    ]),
+    eligibility: oneOf(item.eligibility, [
+      "complete",
+      "bestEffort",
+      "ineligible",
+    ]),
+    selected: boolean(item.selected),
+    warnings: warningList(item.warnings),
+  };
+}
+
+function extensionFacet(value: unknown): CandidateExtensionFacet {
+  const item = record(value);
+  exactKeys(item, ["extension", "count"]);
+  return {
+    extension: normalizedExtension(item.extension),
+    count: decimal(item.count),
+  };
+}
+
+function selectionSummary(value: unknown): CandidateSelectionSummary {
+  const item = record(value);
+  exactKeys(item, [
+    "selectionRevision",
+    "selectedCandidates",
+    "selectedFiles",
+    "selectedDirectories",
+    "selectedLogicalBytes",
+    "bestEffortCandidates",
+    "conflictedCandidates",
+    "ineligibleCandidates",
+    "matchingSelectedCandidates",
+  ]);
+  const parsed = {
+    selectionRevision: decimal(item.selectionRevision),
+    selectedCandidates: decimal(item.selectedCandidates),
+    selectedFiles: decimal(item.selectedFiles),
+    selectedDirectories: decimal(item.selectedDirectories),
+    selectedLogicalBytes: decimal(item.selectedLogicalBytes),
+    bestEffortCandidates: decimal(item.bestEffortCandidates),
+    conflictedCandidates: decimal(item.conflictedCandidates),
+    ineligibleCandidates: decimal(item.ineligibleCandidates),
+    matchingSelectedCandidates: decimal(item.matchingSelectedCandidates),
+  };
+  const selected = BigInt(parsed.selectedCandidates);
+  if (
+    BigInt(parsed.selectedFiles) + BigInt(parsed.selectedDirectories) !==
+      selected ||
+    BigInt(parsed.bestEffortCandidates) > selected ||
+    BigInt(parsed.conflictedCandidates) > selected ||
+    BigInt(parsed.ineligibleCandidates) > selected ||
+    BigInt(parsed.matchingSelectedCandidates) > selected
+  ) {
+    throw new StorageContractError();
+  }
+  return parsed;
+}
+
+export function parseCandidateQueryPage(value: unknown): CandidateQueryPage {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "scanId",
+    "queryId",
+    "queryRevision",
+    "cursor",
+    "nextCursor",
+    "filteredTotal",
+    "extensionFacets",
+    "selection",
+    "candidates",
+  ]);
+  if (
+    item.schemaVersion !== CANDIDATE_QUERY_SCHEMA_VERSION ||
+    !Array.isArray(item.extensionFacets) ||
+    item.extensionFacets.length > MAX_EXTENSION_FACETS ||
+    !Array.isArray(item.candidates) ||
+    item.candidates.length > MAX_ACTIONABLE_CANDIDATES_PER_PAGE
+  ) {
+    throw new StorageContractError();
+  }
+  const extensionFacets = item.extensionFacets.map(extensionFacet);
+  if (
+    new Set(extensionFacets.map((facet) => facet.extension)).size !==
+    extensionFacets.length
+  ) {
+    throw new StorageContractError();
+  }
+  const candidates = item.candidates.map(actionableCandidate);
+  if (new Set(candidates.map((entry) => entry.id)).size !== candidates.length) {
+    throw new StorageContractError();
+  }
+  const filteredTotal = decimal(item.filteredTotal);
+  const selection = selectionSummary(item.selection);
+  if (
+    BigInt(filteredTotal) < BigInt(candidates.length) ||
+    BigInt(selection.matchingSelectedCandidates) > BigInt(filteredTotal)
+  ) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    scanId: opaqueId(item.scanId),
+    queryId: opaqueId(item.queryId),
+    queryRevision: decimal(item.queryRevision),
+    cursor: nullableOpaqueId(item.cursor),
+    nextCursor: nullableOpaqueId(item.nextCursor),
+    filteredTotal,
+    extensionFacets,
+    selection,
+    candidates,
+  };
+}
+
+export function parseCandidateSelectionUpdate(
+  value: unknown,
+): CandidateSelectionUpdate {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "scanId",
+    "queryId",
+    "selectionRevision",
+    "selection",
+  ]);
+  if (item.schemaVersion !== CANDIDATE_QUERY_SCHEMA_VERSION) {
+    throw new StorageContractError();
+  }
+  const selectionRevision = decimal(item.selectionRevision);
+  const selection = selectionSummary(item.selection);
+  if (selection.selectionRevision !== selectionRevision) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    scanId: opaqueId(item.scanId),
+    queryId: opaqueId(item.queryId),
+    selectionRevision,
+    selection,
   };
 }

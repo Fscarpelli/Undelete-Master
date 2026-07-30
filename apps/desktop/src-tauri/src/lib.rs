@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod results;
 mod storage;
 
 /// Starts the single-window desktop application.
@@ -13,7 +14,9 @@ pub fn run() {
             storage::list_storage_sources,
             storage::select_scan_folder,
             storage::scan_storage_volume,
-            storage::get_candidate_page
+            storage::get_candidate_page,
+            storage::query_candidate_page,
+            storage::update_candidate_selection
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Undelete Master desktop");
@@ -29,6 +32,8 @@ mod tests {
             "storage::select_scan_folder",
             "storage::scan_storage_volume",
             "storage::get_candidate_page",
+            "storage::query_candidate_page",
+            "storage::update_candidate_selection",
         ] {
             assert!(source.contains(command), "missing {command}");
         }

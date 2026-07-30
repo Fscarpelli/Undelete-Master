@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getCandidatePage,
   listStorageSources,
+  queryCandidatePage,
   scanStorageVolume,
   selectScanFolder,
+  updateCandidateSelection,
 } from "./storageDesktop";
 
 const tauri = vi.hoisted(() => ({
@@ -125,4 +127,91 @@ describe("native connected-storage commands", () => {
       limit: 100,
     });
   });
+
+  it("sends only the closed query and selection command arguments", async () => {
+    tauri.invoke
+      .mockResolvedValueOnce(queryPageResponse())
+      .mockResolvedValueOnce({
+        schemaVersion: 1,
+        scanId: "scan-1",
+        queryId: "query-1",
+        selectionRevision: "1",
+        selection: {
+          selectionRevision: "1",
+          selectedCandidates: "0",
+          selectedFiles: "0",
+          selectedDirectories: "0",
+          selectedLogicalBytes: "0",
+          bestEffortCandidates: "0",
+          conflictedCandidates: "0",
+          ineligibleCandidates: "0",
+          matchingSelectedCandidates: "0",
+        },
+      });
+    const query = {
+      revision: "7",
+      search: "",
+      extensions: [],
+      kinds: [],
+      metadataConfidences: [],
+      methods: [],
+      states: [],
+      minRecoverabilityScore: null,
+      maxRecoverabilityScore: null,
+      eligibilities: [],
+      selectedOnly: false,
+    } as const;
+    const sort = { field: "path", direction: "ascending" } as const;
+
+    await queryCandidatePage("request-6", "scan-1", query, sort, null);
+    await updateCandidateSelection(
+      "request-7",
+      "scan-1",
+      "query-1",
+      { type: "clearAll" },
+      "0",
+    );
+
+    expect(tauri.invoke.mock.calls).toEqual([
+      [
+        "query_candidate_page",
+        { requestId: "request-6", scanId: "scan-1", query, sort, cursor: null },
+      ],
+      [
+        "update_candidate_selection",
+        {
+          requestId: "request-7",
+          scanId: "scan-1",
+          queryId: "query-1",
+          operation: { type: "clearAll" },
+          selectionRevision: "0",
+        },
+      ],
+    ]);
+  });
 });
+
+function queryPageResponse() {
+  return {
+    schemaVersion: 1,
+    scanId: "scan-1",
+    queryId: "query-1",
+    queryRevision: "7",
+    cursor: null,
+    nextCursor: null,
+    filteredTotal: "0",
+    extensionFacets: [],
+    selection: {
+      selectionRevision: "0",
+      selectedCandidates: "0",
+      selectedFiles: "0",
+      selectedDirectories: "0",
+      selectedLogicalBytes: "0",
+      bestEffortCandidates: "0",
+      conflictedCandidates: "0",
+      ineligibleCandidates: "0",
+      matchingSelectedCandidates: "0",
+    },
+    candidates: [],
+  };
+}

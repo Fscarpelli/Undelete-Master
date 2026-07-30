@@ -24,6 +24,12 @@ use um_io_windows::{
     BusType, FolderScope, FolderScopeError, StorageError, StorageInventory, StorageVolume,
 };
 
+use crate::results::{
+    self, BoundCandidateQuery, CandidateQuery, CandidateQueryContext, CandidateQueryPageDto,
+    CandidateRowDto, CandidateSelectionUpdateDto, CandidateSort, ResultAuthorityError,
+    ScanSourceBinding, SelectionOperationDto, StoredCandidate,
+};
+
 const STORAGE_SCHEMA_VERSION: u32 = 1;
 const SCAN_SUMMARY_SCHEMA_VERSION: u32 = 3;
 const CANDIDATE_PAGE_SCHEMA_VERSION: u32 = 2;
@@ -127,29 +133,12 @@ struct DesktopScanScope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DesktopCandidateRow {
-    id: String,
-    display_path: String,
-    kind: &'static str,
-    state: &'static str,
-    size_bytes: String,
-    metadata_confidence: &'static str,
-    recoverability_score: Option<u8>,
-    path_state: &'static str,
-    method: &'static str,
-    content_sha256: Option<String>,
-    validator: Option<String>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct DesktopCandidatePage {
     schema_version: u32,
     scan_id: String,
     cursor: Option<String>,
     next_cursor: Option<String>,
-    candidates: Vec<DesktopCandidateRow>,
+    candidates: Vec<CandidateRowDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -219,13 +208,19 @@ pub(crate) enum SessionScope<'a> {
 
 pub(crate) struct ScanSession {
     pub(crate) summary: DesktopScanSummary,
-    rows: Vec<DesktopCandidateRow>,
+    source: ScanSourceBinding,
+    candidates: Vec<StoredCandidate>,
+    candidate_index: HashMap<um_core::CandidateId, usize>,
+    selected: HashSet<um_core::CandidateId>,
+    selection_revision: u64,
+    active_query: Option<BoundCandidateQuery>,
     cursors: BTreeMap<String, usize>,
     cursor_for_offset: BTreeMap<usize, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CandidateContentEvidence {
+    expected_sha256: [u8; 32],
     content_sha256: String,
     validator: String,
 }
@@ -350,6 +345,64 @@ impl DesktopStorageState {
             .get(scan_id)
             .ok_or_else(DesktopStorageError::incompatible)?;
         page_for_session(session, cursor, limit)
+    }
+
+    pub(crate) fn query_candidate_page(
+        &self,
+        scan_id: &str,
+        query: CandidateQuery,
+        sort: CandidateSort,
+        cursor: Option<&str>,
+    ) -> Result<CandidateQueryPageDto, DesktopStorageError> {
+        let mut state = self.inner.lock().map_err(|_| {
+            DesktopStorageError::new("SCAN_INTERNAL", "The scanner state is unavailable.")
+        })?;
+        let session = state
+            .scans
+            .get_mut(scan_id)
+            .ok_or_else(DesktopStorageError::incompatible)?;
+        results::query_candidate_page(
+            CandidateQueryContext {
+                scan_id,
+                source: &session.source,
+                candidates: &session.candidates,
+                selected: &session.selected,
+                selection_revision: session.selection_revision,
+                active_query: &mut session.active_query,
+            },
+            query,
+            sort,
+            cursor,
+        )
+        .map_err(map_result_error)
+    }
+
+    pub(crate) fn update_candidate_selection(
+        &self,
+        scan_id: &str,
+        query_id: &str,
+        operation: SelectionOperationDto,
+        selection_revision: u64,
+    ) -> Result<CandidateSelectionUpdateDto, DesktopStorageError> {
+        let mut state = self.inner.lock().map_err(|_| {
+            DesktopStorageError::new("SCAN_INTERNAL", "The scanner state is unavailable.")
+        })?;
+        let session = state
+            .scans
+            .get_mut(scan_id)
+            .ok_or_else(DesktopStorageError::incompatible)?;
+        results::update_candidate_selection(
+            scan_id,
+            &session.candidates,
+            &session.candidate_index,
+            &mut session.selected,
+            &mut session.selection_revision,
+            session.active_query.as_ref(),
+            query_id,
+            operation,
+            selection_revision,
+        )
+        .map_err(map_result_error)
     }
 }
 
@@ -476,12 +529,14 @@ pub(crate) async fn scan_storage_volume(
     let scope = folder_scope
         .as_ref()
         .map_or(SessionScope::Volume, SessionScope::Folder);
-    let session = match mode {
-        DesktopScanMode::Metadata => build_scan_session(&scan_id, &source_label, details, scope)?,
-        DesktopScanMode::DeepJpeg => {
-            build_scan_session_with_mode(&scan_id, &source_label, details, scope, mode)?
-        }
+    let source = ScanSourceBinding {
+        inventory_generation: generation,
+        volume_id,
+        source_len: details.report.length_bytes,
+        file_system: details.report.file_system.clone(),
     };
+    let session =
+        build_scan_session_with_mode(&scan_id, &source_label, details, scope, mode, source)?;
     state.store_session(session)
 }
 
@@ -499,6 +554,76 @@ pub(crate) fn get_candidate_page(
         validate_opaque_argument(cursor)?;
     }
     state.candidate_page(&scan_id, cursor.as_deref(), limit)
+}
+
+#[tauri::command]
+pub(crate) fn query_candidate_page(
+    state: tauri::State<'_, DesktopStorageState>,
+    request_id: String,
+    scan_id: String,
+    query: CandidateQuery,
+    sort: CandidateSort,
+    cursor: Option<String>,
+) -> Result<CandidateQueryPageDto, DesktopStorageError> {
+    validate_request_id(&request_id)?;
+    validate_opaque_argument(&scan_id)?;
+    if let Some(cursor) = cursor.as_deref() {
+        validate_opaque_argument(cursor)?;
+    }
+    state.query_candidate_page(&scan_id, query, sort, cursor.as_deref())
+}
+
+#[tauri::command]
+pub(crate) fn update_candidate_selection(
+    state: tauri::State<'_, DesktopStorageState>,
+    request_id: String,
+    scan_id: String,
+    query_id: String,
+    operation: SelectionOperationDto,
+    selection_revision: String,
+) -> Result<CandidateSelectionUpdateDto, DesktopStorageError> {
+    validate_request_id(&request_id)?;
+    validate_opaque_argument(&scan_id)?;
+    validate_opaque_argument(&query_id)?;
+    let selection_revision = parse_decimal_argument(&selection_revision)?;
+    state.update_candidate_selection(&scan_id, &query_id, operation, selection_revision)
+}
+
+fn parse_decimal_argument(value: &str) -> Result<u64, DesktopStorageError> {
+    if value.is_empty()
+        || value.len() > 20
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return Err(DesktopStorageError::new(
+            "RESULT_QUERY_INVALID",
+            "The result request is invalid.",
+        ));
+    }
+    value.parse().map_err(|_| {
+        DesktopStorageError::new("RESULT_QUERY_INVALID", "The result request is invalid.")
+    })
+}
+
+fn map_result_error(error: ResultAuthorityError) -> DesktopStorageError {
+    match error {
+        ResultAuthorityError::InvalidQuery => {
+            DesktopStorageError::new("RESULT_QUERY_INVALID", "The result request is invalid.")
+        }
+        ResultAuthorityError::StaleCursor => DesktopStorageError::new(
+            "RESULT_CURSOR_STALE",
+            "The result cursor no longer matches this query.",
+        ),
+        ResultAuthorityError::StaleSelection => DesktopStorageError::new(
+            "RESULT_SELECTION_STALE",
+            "The selection changed before this update.",
+        ),
+        ResultAuthorityError::UnknownCandidate => DesktopStorageError::new(
+            "RESULT_SELECTION_INVALID",
+            "The selection request contains an unknown candidate.",
+        ),
+        ResultAuthorityError::Overflow => DesktopStorageError::incompatible(),
+    }
 }
 
 fn validate_opaque_argument(value: &str) -> Result<(), DesktopStorageError> {
@@ -764,18 +889,26 @@ fn adapt_volume(volume: StorageVolume) -> Result<DesktopStorageVolume, DesktopSt
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_scan_session(
     scan_id: &str,
     source_label: &str,
     details: VolumeScanDetails,
     scope: SessionScope<'_>,
 ) -> Result<ScanSession, DesktopStorageError> {
+    let source = ScanSourceBinding {
+        inventory_generation: format!("test-generation-{scan_id}"),
+        volume_id: format!("test-volume-{scan_id}"),
+        source_len: details.report.length_bytes,
+        file_system: details.report.file_system.clone(),
+    };
     build_scan_session_with_mode(
         scan_id,
         source_label,
         details,
         scope,
         DesktopScanMode::Metadata,
+        source,
     )
 }
 
@@ -785,6 +918,7 @@ fn build_scan_session_with_mode(
     details: VolumeScanDetails,
     scope: SessionScope<'_>,
     mode: DesktopScanMode,
+    source: ScanSourceBinding,
 ) -> Result<ScanSession, DesktopStorageError> {
     if !valid_opaque_id(scan_id)
         || details.report.candidate_count != details.candidates.len()
@@ -877,19 +1011,36 @@ fn build_scan_session_with_mode(
         }
     };
 
-    let rows = selected
+    if source.inventory_generation.is_empty()
+        || source.volume_id.is_empty()
+        || source.source_len != details.report.length_bytes
+        || source.file_system != file_system
+    {
+        return Err(DesktopStorageError::incompatible());
+    }
+    let candidates = selected
         .into_iter()
         .map(|candidate| {
-            adapt_candidate(
-                scan_id,
-                candidate,
-                namespace_index.as_ref(),
-                evidence_by_candidate.get(&candidate.id),
-            )
+            let evidence = evidence_by_candidate.get(&candidate.id);
+            let row = adapt_candidate(scan_id, candidate, namespace_index.as_ref(), evidence)?;
+            Ok(StoredCandidate {
+                candidate: candidate.clone(),
+                row,
+                expected_sha256: evidence.map(|evidence| evidence.expected_sha256),
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let matched_candidates = rows.len();
-    let (cursors, cursor_for_offset) = build_cursors(scan_id, rows.len());
+    let mut candidate_index = HashMap::with_capacity(candidates.len());
+    for (index, candidate) in candidates.iter().enumerate() {
+        if candidate_index
+            .insert(candidate.candidate.id, index)
+            .is_some()
+        {
+            return Err(DesktopStorageError::incompatible());
+        }
+    }
+    let matched_candidates = candidates.len();
+    let (cursors, cursor_for_offset) = build_cursors(scan_id, candidates.len());
 
     Ok(ScanSession {
         summary: DesktopScanSummary {
@@ -910,7 +1061,12 @@ fn build_scan_session_with_mode(
             jpeg_carve_coverage: jpeg_coverage.map(adapt_jpeg_carve_coverage),
             warnings: sanitize_warnings(details.report.warnings),
         },
-        rows,
+        source,
+        candidates,
+        candidate_index,
+        selected: HashSet::new(),
+        selection_revision: 0,
+        active_query: None,
         cursors,
         cursor_for_offset,
     })
@@ -970,6 +1126,7 @@ fn index_carve_evidence(
                 .insert(
                     item.candidate_id,
                     CandidateContentEvidence {
+                        expected_sha256: item.content_sha256,
                         content_sha256: hex::encode(item.content_sha256),
                         validator: item.validator.to_owned(),
                     },
@@ -1042,7 +1199,7 @@ fn adapt_candidate(
     candidate: &Candidate,
     namespace: Option<&NtfsNamespaceIndex<'_>>,
     content_evidence: Option<&CandidateContentEvidence>,
-) -> Result<DesktopCandidateRow, DesktopStorageError> {
+) -> Result<CandidateRowDto, DesktopStorageError> {
     if candidate.warnings.len() > MAX_WARNINGS {
         return Err(DesktopStorageError::incompatible());
     }
@@ -1089,7 +1246,7 @@ fn adapt_candidate(
     let row_id = derive_opaque_id("cand", &[scan_id, &candidate.id.to_string()]);
     let display_path = sanitize_candidate_path(&candidate.display_path(), &row_id);
 
-    Ok(DesktopCandidateRow {
+    Ok(CandidateRowDto {
         id: row_id,
         display_path,
         kind,
@@ -1167,14 +1324,16 @@ pub(crate) fn page_for_session(
     };
     let end = offset
         .checked_add(PAGE_SIZE)
-        .map(|value| value.min(session.rows.len()))
+        .map(|value| value.min(session.candidates.len()))
         .ok_or_else(DesktopStorageError::incompatible)?;
     let candidates = session
-        .rows
+        .candidates
         .get(offset..end)
         .ok_or_else(DesktopStorageError::incompatible)?
-        .to_vec();
-    let next_cursor = if end < session.rows.len() {
+        .iter()
+        .map(|candidate| candidate.row.clone())
+        .collect();
+    let next_cursor = if end < session.candidates.len() {
         Some(
             session
                 .cursor_for_offset
@@ -1368,6 +1527,15 @@ mod tests {
         }
     }
 
+    fn source(scan_id: &str, details: &VolumeScanDetails) -> ScanSourceBinding {
+        ScanSourceBinding {
+            inventory_generation: format!("generation-{scan_id}"),
+            volume_id: format!("volume-{scan_id}"),
+            source_len: details.report.length_bytes,
+            file_system: details.report.file_system.clone(),
+        }
+    }
+
     #[test]
     fn desktop_inventory_001_serializes_u64_as_decimal_strings_and_no_native_paths() {
         let inventory = StorageInventory {
@@ -1532,12 +1700,14 @@ mod tests {
             validator: "jpeg-structural-v1",
         }];
 
+        let scan_source = source("scan-deep", &scan_details);
         let session = build_scan_session_with_mode(
             "scan-deep",
             "E: Evidence",
             scan_details,
             SessionScope::Volume,
             DesktopScanMode::DeepJpeg,
+            scan_source,
         )
         .expect("build deep session");
         let summary = serde_json::to_value(&session.summary).expect("serialize summary");
@@ -1600,7 +1770,8 @@ mod tests {
         )
         .expect("metadata session");
         assert!(
-            metadata_session.rows[0]
+            metadata_session.candidates[0]
+                .row
                 .recoverability_score
                 .is_some_and(|score| score <= 84),
             "metadata without content evidence retains the unvalidated cap"
@@ -1631,12 +1802,14 @@ mod tests {
             regions_submitted: 1,
             region_limit_reached: false,
         });
+        let scan_source = source("scan-missing-evidence", &missing_evidence);
         let result = build_scan_session_with_mode(
             "scan-missing-evidence",
             "E: Evidence",
             missing_evidence,
             SessionScope::Volume,
             DesktopScanMode::DeepJpeg,
+            scan_source,
         );
         assert!(result.is_err(), "carving without evidence must fail closed");
     }
@@ -1789,8 +1962,11 @@ mod tests {
         assert_eq!(session.summary.total_candidates, "3");
         assert_eq!(session.summary.matched_candidates, "1");
         assert_eq!(session.summary.unknown_candidates, "1");
-        assert_eq!(session.rows.len(), 1);
-        assert!(session.rows[0].display_path.ends_with("inside.txt"));
+        assert_eq!(session.candidates.len(), 1);
+        assert!(session.candidates[0]
+            .row
+            .display_path
+            .ends_with("inside.txt"));
     }
 
     #[test]
@@ -1900,8 +2076,8 @@ mod tests {
         let session = build_scan_session("scan-sanitize", "E:", details, SessionScope::Volume)
             .expect("build session");
 
-        assert_eq!(session.rows[0].recoverability_score, None);
-        let serialized = serde_json::to_string(&session.rows[0]).expect("serialize row");
+        assert_eq!(session.candidates[0].row.recoverability_score, None);
+        let serialized = serde_json::to_string(&session.candidates[0].row).expect("serialize row");
         assert!(!serialized.contains('\u{202E}'));
         assert!(!serialized.contains('\u{2066}'));
         assert!(!serialized.contains("\\n"));
@@ -1931,8 +2107,11 @@ mod tests {
         )
         .expect("build long-path session");
 
-        assert_ne!(session.rows[0].display_path, session.rows[1].display_path);
-        for row in &session.rows {
+        assert_ne!(
+            session.candidates[0].row.display_path,
+            session.candidates[1].row.display_path
+        );
+        for row in session.candidates.iter().map(|candidate| &candidate.row) {
             assert!(row.display_path.chars().count() <= MAX_TEXT_SCALARS);
             assert!(row.display_path.contains("… [ref "));
         }

@@ -1,11 +1,18 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   parseCandidatePage,
+  parseCandidateQueryPage,
+  parseCandidateSelectionUpdate,
   parseFolderSelection,
   parseScanSummary,
   parseStorageInventory,
   StorageContractError,
   type CandidatePage,
+  type CandidateQuery,
+  type CandidateQueryPage,
+  type CandidateSelectionOperation,
+  type CandidateSelectionUpdate,
+  type CandidateSort,
   type FolderSelection,
   type ScanMode,
   type ScanSummary,
@@ -149,4 +156,40 @@ export async function getCandidatePage(
     throw new StorageCommandError("REPORT_INCOMPATIBLE");
   }
   return page;
+}
+
+export async function queryCandidatePage(
+  requestId: string,
+  scanId: string,
+  query: CandidateQuery,
+  sort: CandidateSort,
+  cursor: string | null,
+): Promise<CandidateQueryPage> {
+  requireDesktop();
+  const response = await invoke<unknown>("query_candidate_page", {
+    requestId,
+    scanId,
+    query,
+    sort,
+    cursor,
+  });
+  return parseResponse(parseCandidateQueryPage, response);
+}
+
+export async function updateCandidateSelection(
+  requestId: string,
+  scanId: string,
+  queryId: string,
+  operation: CandidateSelectionOperation,
+  selectionRevision: string,
+): Promise<CandidateSelectionUpdate> {
+  requireDesktop();
+  const response = await invoke<unknown>("update_candidate_selection", {
+    requestId,
+    scanId,
+    queryId,
+    operation,
+    selectionRevision,
+  });
+  return parseResponse(parseCandidateSelectionUpdate, response);
 }

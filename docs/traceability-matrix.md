@@ -95,6 +95,26 @@ formats, fragmented recovery, real-time progress, and cancellation do not.
 | SDD-REC-009 | [SDD-019 §9](specs/019-ntfs-coverage-and-jpeg-deep-scan.md) | `apps/desktop/src/views/AnalysisView.tsx` | — | — | Integrated deep UI is indeterminate and explicitly non-cancellable; real progress/cancellation absent | [Known limitations](specs/015-known-limitations.md) | Not started |
 | SDD-REC-010 | [SDD-019 §6](specs/019-ntfs-coverage-and-jpeg-deep-scan.md) | `crates/fixture-builder/src/ntfs.rs`<br>`crates/fixture-builder/src/carving.rs` | `NTFS-MFT-COVERAGE-001`, `CARVE-REGION-BOUNDS-001` | `CARVE-PROVENANCE-SHA256-001` | Same-revision deterministic gate passed; external corpus and real-media acceptance intentionally separate | [2026-07-30 recovery evidence](evidence/recovery-hardening-2026-07-30.md) | Implemented-unverified |
 
+## Actionable results and transactional restore increment
+
+These rows map the implemented Task 1 query/selection authority from
+[SDD-020](specs/020-actionable-results-and-transactional-restore.md) and
+[ADR-0025](adr/0025-native-result-query-and-selection-authority.md). Focused
+native and TypeScript tests pass. The bounded React consumer, restore engine,
+destination authority, transactional publication, end-to-end recovery,
+packaged acceptance, and final same-revision workspace evidence remain later
+tasks, so these rows are not yet `Verified`.
+
+| Requirement | Design section | Code module | Unit tests | Integration tests | E2E scenario | Evidence artifact | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| RESULT-QUERY-FILTER-001 | [SDD-020 §5.1](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src/api/storage.ts` | `RESULT-QUERY-FILTER-001`, `RESULT-QUERY-FILTER-002` | TypeScript exact schema-v1 query-page parser tests | Results workspace pending Task 6 | Focused Task 1 Rust and TypeScript gates passed | Implemented-unverified |
+| RESULT-QUERY-SORT-002 | [SDD-020 §5.2](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs` | `RESULT-QUERY-SORT-002` | TypeScript closed sort contract | Results workspace pending Task 6 | Focused Task 1 Rust gate passed | Implemented-unverified |
+| RESULT-CURSOR-BINDING-003 | [SDD-020 §5.2-5.3](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `RESULT-CURSOR-BINDING-003` | Exact Tauri wrapper-argument test | Results workspace pending Task 6 | Focused Task 1 Rust and TypeScript gates passed | Implemented-unverified |
+| RESULT-SELECTION-PERSIST-004 | [SDD-020 §5.4](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `RESULT-SELECTION-PERSIST-004` | Selection-summary parser and wrapper tests | Results workspace pending Task 6 | Focused Task 1 Rust and TypeScript gates passed | Implemented-unverified |
+| RESULT-SELECT-ALL-005 | [SDD-020 §5.4](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs` | `RESULT-SELECT-ALL-005` | Tagged operation wrapper test | Results workspace pending Task 6 | Focused Task 1 Rust and TypeScript gates passed | Implemented-unverified |
+| RESULT-SELECTION-STALE-006 | [SDD-020 §5.4](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `RESULT-SELECTION-STALE-006` | Decimal revision and exact response parser tests | Results workspace pending Task 6 | Focused Task 1 Rust and TypeScript gates passed | Implemented-unverified |
+| RESULT-PAGE-BOUND-007 | [SDD-020 §5.3](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0025](adr/0025-native-result-query-and-selection-authority.md) | `apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src/api/storage.ts` | `RESULT-PAGE-BOUND-007` | Schema-v1 parser rejects 101 rows and duplicate IDs | Results workspace pending Task 6 | Focused Task 1 Rust and TypeScript gates passed | Implemented-unverified |
+
 ## Non-functional requirements
 
 | Requirement | Design section | Code module | Unit tests | Integration tests | E2E scenario | Evidence artifact | Status |
