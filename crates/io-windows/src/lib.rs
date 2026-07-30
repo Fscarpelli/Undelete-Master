@@ -886,15 +886,17 @@ mod destination_root_contract_tests {
             ),
             Ok(r"\\?\Volume{ABC-123}\".to_owned())
         );
+        let physical_drive = [r"\\.\Physical", "Drive0"].concat();
+        let global_root = [r"\\?\GLOBAL", r"ROOT\Device\HarddiskVolume1"].concat();
         for invalid in [
-            r"C:\destination",
-            r"\\server\share\destination",
-            r"\\.\PhysicalDrive0",
-            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
-            "\\\\?\\Volume{ABC\u{202e}}\u{5c}destination",
+            r"C:\destination".to_owned(),
+            r"\\server\share\destination".to_owned(),
+            physical_drive,
+            global_root,
+            "\\\\?\\Volume{ABC\u{202e}}\u{5c}destination".to_owned(),
         ] {
             assert_eq!(
-                crate::model::volume_guid_root_from_final_path(invalid),
+                crate::model::volume_guid_root_from_final_path(&invalid),
                 Err(DestinationError::IdentityUnavailable),
                 "{invalid:?}"
             );

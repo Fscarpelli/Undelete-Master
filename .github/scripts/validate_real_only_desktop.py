@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -17,6 +18,8 @@ ALLOWED_COMMANDS = {
     "select_scan_folder",
     "scan_storage_volume",
     "get_candidate_page",
+    "query_candidate_page",
+    "update_candidate_selection",
 }
 ALLOWED_CAPABILITIES = {"core:default", "dialog:allow-open"}
 FORBIDDEN_PRODUCTION_FILES = {
@@ -79,6 +82,9 @@ ALLOWED_WINDOWS_SYS_FEATURES = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ]
+AUDITED_STORAGE_BUS_QUERY_SHA256 = (
+    "25140ff7fb94fd32ea481716b5abbcfea659b6675202e4b9531eb8d7b507f136"
+)
 
 
 def joined(*parts: str) -> str:
@@ -383,6 +389,16 @@ def compact(value: str) -> str:
     return re.sub(r"\s+", "", value)
 
 
+def contains_in_order(value: str, tokens: tuple[str, ...]) -> bool:
+    cursor = 0
+    for token in tokens:
+        position = value.find(token, cursor)
+        if position < 0:
+            return False
+        cursor = position + len(token)
+    return True
+
+
 def within(position: int, span: tuple[int, int] | None) -> bool:
     return span is not None and span[0] <= position < span[1]
 
@@ -416,6 +432,7 @@ def validate_windows_ffi_boundary(
     destination_volume_span = rust_item_span(
         code, "open_destination_volume_for_query"
     )
+    folder_attributes_span = rust_item_span(code, "open_folder_attributes")
     storage_bus_span = rust_item_span(code, "query_storage_bus_type")
     pipe_span = rust_item_span(code, "connect_broker_pipe")
     if raw_span is None:
@@ -424,34 +441,58 @@ def validate_windows_ffi_boundary(
         errors.append(f"{name}: missing audited destination-root query boundary")
     if destination_volume_span is None:
         errors.append(f"{name}: missing audited destination-volume query boundary")
+    if folder_attributes_span is None:
+        errors.append(f"{name}: missing audited folder-attribute query boundary")
     if storage_bus_span is None:
         errors.append(f"{name}: missing audited storage-bus query boundary")
     else:
         storage_bus_code = compact(code[storage_bus_span[0] : storage_bus_span[1]])
-        if not all(
-            token in storage_bus_code
-            for token in (
-                "PropertyId:StorageDeviceProperty",
-                "QueryType:PropertyStandardQuery",
-                "AdditionalParameters:[0]",
-                "IOCTL_STORAGE_QUERY_PROPERTY",
+        fixed_storage_query = (
+            "letquery=STORAGE_PROPERTY_QUERY{"
+            "PropertyId:StorageDeviceProperty,"
+            "QueryType:PropertyStandardQuery,"
+            "AdditionalParameters:[0],"
+            "};"
+        )
+        storage_signature = re.search(
+            r"\bfn\s+query_storage_bus_type\s*"
+            r"\(\s*handle\s*:\s*&\s*OwnedHandle\s*\)\s*"
+            r"->\s*Result\s*<\s*i32\s*,\s*StorageError\s*>\s*\{",
+            code[storage_bus_span[0] : storage_bus_span[1]],
+        )
+        if storage_signature is None:
+            errors.append(
+                f"{name}: storage bus query must retain its exact audited signature"
             )
+        if (
+            storage_bus_code.count(fixed_storage_query) != 1
+            or storage_bus_code.count("letquery=") != 1
+            or storage_bus_code.count("query=") != 1
+            or any(
+                f"query.{field}=" in storage_bus_code
+                for field in ("PropertyId", "QueryType", "AdditionalParameters")
+            )
+            or "IOCTL_STORAGE_QUERY_PROPERTY" not in storage_bus_code
         ):
             errors.append(
                 f"{name}: storage bus query must use the fixed device property"
+            )
+        # The granular checks above provide useful diagnostics. This digest
+        # additionally binds every executable token in the reviewed function,
+        # so a decoy assignment or alternate return cannot preserve approval.
+        # Comments, string literal contents, and formatting are masked first.
+        storage_bus_digest = hashlib.sha256(
+            storage_bus_code.encode("utf-8")
+        ).hexdigest()
+        if storage_bus_digest != AUDITED_STORAGE_BUS_QUERY_SHA256:
+            errors.append(
+                f"{name}: storage bus query implementation must match "
+                "the reviewed normalized body"
             )
     if pipe_span is None:
         errors.append(f"{name}: missing audited connect_broker_pipe boundary")
 
     create_calls = rust_call_arguments(code, "CreateFileW")
-    raw_calls = [call for call in create_calls if within(call[0], raw_span)]
-    destination_root_calls = [
-        call for call in create_calls if within(call[0], destination_root_span)
-    ]
-    destination_volume_calls = [
-        call for call in create_calls if within(call[0], destination_volume_span)
-    ]
-    pipe_calls = [call for call in create_calls if within(call[0], pipe_span)]
     expected_raw_access = joined("GENERIC_", "READ")
     expected_pipe_access = joined("GENERIC_", "READ|GENERIC_", "WRITE")
     expected_destination_access = "FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY"
@@ -473,52 +514,95 @@ def validate_windows_ffi_boundary(
         if disposition != "OPEN_EXISTING":
             errors.append(f"{name}: every CreateFileW call must use OPEN_EXISTING")
 
-    if (
-        len(raw_calls) != 1
-        or len(raw_calls[0][2]) != 7
-        or compact(raw_calls[0][2][1]) != expected_raw_access
-        or compact(raw_calls[0][2][4]) != "OPEN_EXISTING"
-    ):
-        errors.append(
-            f"{name}: raw volume open must use exactly GENERIC_READ and OPEN_EXISTING"
+    audited_opens = (
+        (
+            raw_span,
+            (
+                "wide.as_ptr()",
+                expected_raw_access,
+                "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+                "null()",
+                "OPEN_EXISTING",
+                "FILE_ATTRIBUTE_NORMAL",
+                "null_mut()",
+            ),
+            "raw volume open must use exactly GENERIC_READ and OPEN_EXISTING",
+        ),
+        (
+            destination_root_span,
+            (
+                "wide.as_ptr()",
+                expected_destination_access,
+                "FILE_SHARE_READ|FILE_SHARE_WRITE",
+                "null()",
+                "OPEN_EXISTING",
+                "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT",
+                "null_mut()",
+            ),
+            "destination root open must use exact query-only authority",
+        ),
+        (
+            destination_volume_span,
+            (
+                "wide.as_ptr()",
+                "0",
+                "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+                "null()",
+                "OPEN_EXISTING",
+                "FILE_ATTRIBUTE_NORMAL",
+                "null_mut()",
+            ),
+            (
+                "destination volume query must use desired access zero "
+                "and fixed query sharing"
+            ),
+        ),
+        (
+            folder_attributes_span,
+            (
+                "wide.as_ptr()",
+                "FILE_READ_ATTRIBUTES",
+                "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+                "null()",
+                "OPEN_EXISTING",
+                "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT",
+                "null_mut()",
+            ),
+            "folder attribute open must match its exact query-only shape",
+        ),
+        (
+            pipe_span,
+            (
+                "wide_name.as_ptr()",
+                expected_pipe_access,
+                "0",
+                "null()",
+                "OPEN_EXISTING",
+                "0",
+                "null_mut()",
+            ),
+            (
+                f"{joined('GENERIC_', 'WRITE')} is allowed only for "
+                "the fixed named-pipe transport"
+            ),
+        ),
+    )
+    for call in create_calls:
+        memberships = sum(within(call[0], span) for span, _, _ in audited_opens)
+        if memberships != 1:
+            errors.append(
+                f"{name}: CreateFileW call is outside an approved audited "
+                "function or overlaps audited spans"
+            )
+    for span, expected_arguments, error_message in audited_opens:
+        calls = [call for call in create_calls if within(call[0], span)]
+        observed_arguments = (
+            tuple(compact(argument) for argument in calls[0][2])
+            if len(calls) == 1
+            else ()
         )
-    if (
-        len(destination_root_calls) != 1
-        or len(destination_root_calls[0][2]) != 7
-        or compact(destination_root_calls[0][2][1])
-        != expected_destination_access
-        or compact(destination_root_calls[0][2][2])
-        != "FILE_SHARE_READ|FILE_SHARE_WRITE"
-        or compact(destination_root_calls[0][2][4]) != "OPEN_EXISTING"
-        or compact(destination_root_calls[0][2][5])
-        != "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT"
-    ):
-        errors.append(
-            f"{name}: destination root open must use exact query-only authority"
-        )
-    if (
-        len(destination_volume_calls) != 1
-        or len(destination_volume_calls[0][2]) != 7
-        or compact(destination_volume_calls[0][2][1]) != "0"
-        or compact(destination_volume_calls[0][2][2])
-        != "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE"
-        or compact(destination_volume_calls[0][2][4]) != "OPEN_EXISTING"
-        or compact(destination_volume_calls[0][2][5]) != "FILE_ATTRIBUTE_NORMAL"
-    ):
-        errors.append(
-            f"{name}: destination volume query must use desired access zero "
-            "and fixed query sharing"
-        )
-    if (
-        len(pipe_calls) != 1
-        or len(pipe_calls[0][2]) != 7
-        or compact(pipe_calls[0][2][1]) != expected_pipe_access
-        or compact(pipe_calls[0][2][4]) != "OPEN_EXISTING"
-    ):
-        errors.append(
-            f"{name}: {joined('GENERIC_', 'WRITE')} is allowed only for "
-            "the fixed named-pipe transport"
-        )
+        if len(calls) != 1 or observed_arguments != expected_arguments:
+            errors.append(f"{name}: {error_message}")
 
     use_spans = [
         (match.start(), match.end())
@@ -539,7 +623,8 @@ def validate_windows_ffi_boundary(
         errors.append(
             f"{name}: unapproved device-control code {control_code!r}"
         )
-    for _, _, arguments in rust_call_arguments(code, "DeviceIoControl"):
+    device_control_calls = rust_call_arguments(code, "DeviceIoControl")
+    for _, _, arguments in device_control_calls:
         if len(arguments) != 8:
             errors.append(f"{name}: DeviceIoControl call must have eight fixed arguments")
             continue
@@ -548,6 +633,88 @@ def validate_windows_ffi_boundary(
             errors.append(
                 f"{name}: unapproved device-control code {control_code!r}"
             )
+
+    if storage_bus_span is not None:
+        storage_bus_calls = [
+            call for call in device_control_calls if within(call[0], storage_bus_span)
+        ]
+        expected_storage_bus_calls = (
+            (
+                "handle.as_raw_handle()",
+                "IOCTL_STORAGE_QUERY_PROPERTY",
+                "(&queryas*constSTORAGE_PROPERTY_QUERY).cast()",
+                "size_of::<STORAGE_PROPERTY_QUERY>()asu32",
+                "(&mutheaderas*mutSTORAGE_DESCRIPTOR_HEADER).cast()",
+                "size_of::<STORAGE_DESCRIPTOR_HEADER>()asu32",
+                "&mutbytes_returned",
+                "null_mut()",
+            ),
+            (
+                "handle.as_raw_handle()",
+                "IOCTL_STORAGE_QUERY_PROPERTY",
+                "(&queryas*constSTORAGE_PROPERTY_QUERY).cast()",
+                "size_of::<STORAGE_PROPERTY_QUERY>()asu32",
+                "descriptor.as_mut_ptr().cast()",
+                "descriptor.len()asu32",
+                "&mutbytes_returned",
+                "null_mut()",
+            ),
+        )
+        observed_storage_bus_calls = tuple(
+            tuple(compact(argument) for argument in call[2])
+            for call in storage_bus_calls
+        )
+        if observed_storage_bus_calls != expected_storage_bus_calls:
+            errors.append(f"{name}: storage bus query call shape must be fixed")
+        elif len(storage_bus_calls) == 2:
+            before_header_call = compact(
+                code[storage_bus_span[0] : storage_bus_calls[0][0]]
+            )
+            between_calls = compact(
+                code[storage_bus_calls[0][1] : storage_bus_calls[1][0]]
+            )
+            after_descriptor_call = compact(
+                code[storage_bus_calls[1][1] : storage_bus_span[1]]
+            )
+            if (
+                not contains_in_order(
+                    before_header_call,
+                    (
+                        "letmutheader=STORAGE_DESCRIPTOR_HEADER::default();",
+                        "letmutbytes_returned=0u32;",
+                        "letheader_ok=unsafe{",
+                    ),
+                )
+                or not contains_in_order(
+                    between_calls,
+                    (
+                        "ifheader_ok==0",
+                        "letbus_end=offset_of!(STORAGE_DEVICE_DESCRIPTOR,BusType)",
+                        ".checked_add(size_of::<i32>())",
+                        "usize::try_from(header.Size)",
+                        "ifbytes_returned<size_of::<STORAGE_DESCRIPTOR_HEADER>()asu32",
+                        "descriptor_bytes<bus_end",
+                        "descriptor_bytes>MAX_STORAGE_DEVICE_DESCRIPTOR_BYTES",
+                        "letmutdescriptor=vec![0u8;descriptor_bytes];",
+                        "bytes_returned=0;",
+                        "letdescriptor_ok=unsafe{",
+                    ),
+                )
+                or not contains_in_order(
+                    after_descriptor_call,
+                    (
+                        "ifdescriptor_ok==0",
+                        "parse_storage_bus_type(&descriptor,bytes_returnedasusize)",
+                    ),
+                )
+                or before_header_call.count("bytes_returned=") != 1
+                or between_calls.count("bytes_returned=") != 1
+                or "bytes_returned=" in after_descriptor_call
+            ):
+                errors.append(
+                    f"{name}: storage bus query returned-byte flow must remain "
+                    "bounded and fixed"
+                )
 
 
 def validate_rust_safety_boundary(root: Path, errors: list[str]) -> int:

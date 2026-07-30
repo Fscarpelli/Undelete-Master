@@ -47,13 +47,14 @@ that a real source scan succeeded.
 | --- | --- | --- |
 | Windows inventory | local/mapped/composite policy, opaque IDs, display grouping, decimal strings, no native paths | Same-revision synthetic/full gate passed; native observation remains pending |
 | Folder authority | NTFS-only, remote/reparse/cross-volume refusal, volume serial and record/sequence binding | Focused tests present; native acceptance pending |
+| Destination authority | retained query-only root handle, handle-derived volume, serial agreement, NTFS/single-disk/direct-bus admission, no WebView path/disk/handle | Focused Task 3 tests and static regressions present; native acceptance and coordinator retention remain pending |
 | Protocol v3 | exact ten-message schema, authoritative `Opened` disk field, explicit v2 rejection, one-megabyte cap, malformed frames, sequence replay/gap, nonce mismatch | Focused v3 Rust gate passed; same-revision full and packaged binary evidence remain pending |
 | Broker lifecycle | fixed sibling, manifests, current-user pipe, peer PID/liveness, timeout, close/shutdown | Focused tests present; packaged evidence pending |
 | Read path | exact geometry, checked ranges, one-megabyte chunking, source change, 256-and-one-second cadence | Synthetic tests present; no real scan claim |
 | Scanner | deterministic NTFS/FAT/partition candidates, partial truth and namespace ancestry | Focused tests present; external corpora pending |
-| Desktop DTO/state | four commands, inventory/folder schema 1, summary schema 3, candidate-page schema 2, decimal strings, 100-row pages, scan-bound cursors, 32 scopes/4 sessions | Same-revision Rust/frontend gates passed; native acceptance remains pending |
+| Desktop DTO/state | six commands, inventory/folder schema 1, summary schema 3, candidate-page schema 2, query-page schema 1, decimal strings, 100-row pages, scan-bound cursors, 32 scopes/4 sessions | Focused Rust/frontend gates passed; native acceptance remains pending |
 | Frontend | fail closed, real inventory flow, folder cancel, metadata/deep scan and paging, privacy, provenance, stale/duplicate control, a11y | Same-revision lint/typecheck/build and 41-test suite passed; native visual acceptance remains pending |
-| Static safety | no source mutation, no physical-disk production authority, exact API/opcode/command allowlists, no real-device CI | Same-revision validators passed: CI safety inspected 1 workflow/98 surfaces; real-only desktop inspected 94 files; 71 validator regressions passed |
+| Static safety | no source mutation; physical-disk identity only through fixed query-only extent/property calls; exactly five audited `CreateFileW` shapes, six Tauri commands, closed protocol/opcode surface, and no real-device CI | Focused Task 3 validator regressions pass; packaged binary/import evidence remains pending |
 | Native package | both binaries, hashes, fixed sibling layout, extracted `asInvoker`/`requireAdministrator` manifests | Pending |
 | Native UX | actual Tauri window, inventory only, required sizes, focus/zoom/forced colors | Pending |
 | Remote | pushed revision and successful GitHub Actions conclusions | Pending |
@@ -71,7 +72,11 @@ that a real source scan succeeded.
   `ELEVATED-BROKER-ARGS-*`, `ELEVATED-BROKER-REVALIDATION-*`;
 - `DESKTOP-INVENTORY-*`, `DESKTOP-FOLDER-SCOPE-*`,
   `DESKTOP-PAGINATION-*`, `DESKTOP-CANDIDATE-*`,
-  `DESKTOP-STATE-*`, `DESKTOP-REQUEST-ID-*`;
+  `DESKTOP-STATE-*`, `DESKTOP-REQUEST-ID-*`,
+  `DESKTOP-DISK-POLICY-*`;
+- `WINDOWS-DESTINATION-BINDING-*`, `WINDOWS-PHYSICAL-BACKING-*`,
+  `WINDOWS-RAW-IDENTITY-*`, `DESKTOP-REAL-ONLY-023` through
+  `DESKTOP-REAL-ONLY-036`;
 - `WIN-REAL-INVENTORY-*`, `WIN-FOLDER-CANCEL-*`,
   `WIN-REAL-SCAN-*`, `WIN-CANDIDATE-PAGINATION-*`,
   `WIN-DUPLICATE-SCAN-*`, `WIN-ERROR-PRIVACY-*`,

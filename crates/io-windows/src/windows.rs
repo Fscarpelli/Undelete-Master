@@ -80,6 +80,9 @@ const MAX_STORAGE_DEVICE_DESCRIPTOR_BYTES: usize = 64 * 1024;
 const INITIAL_EXTENT_BUFFER_BYTES: usize = 1024;
 const MAX_EXTENT_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_PROCESS_IMAGE_UNITS: usize = 32_768;
+// Extended-length Windows paths are bounded to 32,767 UTF-16 code units.
+// Reserve one additional unit only within this reviewed allocation ceiling.
+const MAX_FINAL_GUID_PATH_UTF16_UNITS: usize = 32_768;
 
 pub(super) fn classify_path(path: &Path) -> Result<StorageLocation, LocationError> {
     let drive_letter = drive_letter(path).map_err(|_| LocationError::UnsupportedRoot)?;
@@ -1641,6 +1644,21 @@ fn query_file_information(
     Ok(information)
 }
 
+fn checked_final_guid_path_capacity(required: u32) -> Result<(usize, u32), StorageError> {
+    let required = usize::try_from(required).map_err(|_| StorageError::InvalidGeometry)?;
+    if required == 0 {
+        return Err(StorageError::InvalidGeometry);
+    }
+    let capacity = required
+        .checked_add(1)
+        .ok_or(StorageError::InvalidGeometry)?;
+    if capacity > MAX_FINAL_GUID_PATH_UTF16_UNITS {
+        return Err(StorageError::InvalidGeometry);
+    }
+    let api_capacity = u32::try_from(capacity).map_err(|_| StorageError::InvalidGeometry)?;
+    Ok((capacity, api_capacity))
+}
+
 fn query_final_guid_path(handle: &OwnedHandle) -> Result<String, StorageError> {
     // SAFETY: a null buffer with zero capacity is the documented sizing query;
     // `handle` remains live and VOLUME_NAME_GUID requests a read-only name.
@@ -1655,25 +1673,26 @@ fn query_final_guid_path(handle: &OwnedHandle) -> Result<String, StorageError> {
     if required == 0 {
         return Err(last_windows_error("GetFinalPathNameByHandleW(size)"));
     }
-    let mut buffer = vec![0u16; required as usize + 1];
+    let (buffer_units, api_capacity) = checked_final_guid_path_capacity(required)?;
+    let mut buffer = vec![0u16; buffer_units];
     // SAFETY: `buffer` is writable for its declared capacity; `handle` remains
     // live; the same query-only flags are used.
     let written = unsafe {
         GetFinalPathNameByHandleW(
             handle.as_raw_handle(),
             buffer.as_mut_ptr(),
-            buffer.len() as u32,
+            api_capacity,
             FILE_NAME_NORMALIZED | VOLUME_NAME_GUID,
         )
     };
-    if written == 0 || written as usize >= buffer.len() {
-        return Err(if written == 0 {
-            last_windows_error("GetFinalPathNameByHandleW")
-        } else {
-            StorageError::InvalidGeometry
-        });
+    if written == 0 {
+        return Err(last_windows_error("GetFinalPathNameByHandleW"));
     }
-    Ok(String::from_utf16_lossy(&buffer[..written as usize]))
+    let written = usize::try_from(written).map_err(|_| StorageError::InvalidGeometry)?;
+    if written >= buffer.len() {
+        return Err(StorageError::InvalidGeometry);
+    }
+    Ok(String::from_utf16_lossy(&buffer[..written]))
 }
 
 fn reject_reparse_ancestry(path: &Path) -> Result<(), StorageError> {
@@ -2020,6 +2039,32 @@ mod tests {
             Path::new(r"C:\Program Files\Undelete Master\undelete-master-desktop.exe"),
             Path::new(r"C:\Program Files\Undelete Master\malware.exe"),
         ));
+    }
+
+    #[test]
+    fn windows_final_guid_path_001_bounds_and_checks_the_api_capacity() {
+        assert_eq!(checked_final_guid_path_capacity(1).unwrap(), (2usize, 2u32));
+        assert_eq!(
+            checked_final_guid_path_capacity(
+                u32::try_from(MAX_FINAL_GUID_PATH_UTF16_UNITS - 1).unwrap()
+            )
+            .unwrap(),
+            (
+                MAX_FINAL_GUID_PATH_UTF16_UNITS,
+                u32::try_from(MAX_FINAL_GUID_PATH_UTF16_UNITS).unwrap()
+            )
+        );
+
+        for invalid in [
+            0,
+            u32::try_from(MAX_FINAL_GUID_PATH_UTF16_UNITS).unwrap(),
+            u32::MAX,
+        ] {
+            assert!(matches!(
+                checked_final_guid_path_capacity(invalid),
+                Err(StorageError::InvalidGeometry)
+            ));
+        }
     }
 
     fn write_extent_bytes(

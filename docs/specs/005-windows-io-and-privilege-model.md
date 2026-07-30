@@ -21,6 +21,32 @@ rejects non-local, reparse and cross-volume selections and retains volume
 serial plus the NTFS file reference (MFT record and sequence). Only an opaque
 scope ID and sanitized label cross IPC. FAT has no folder scope.
 
+## Query-only destination authority
+
+The SDD-020 Task 3 native API admits a Rust-owned destination selection without
+creating or modifying an entry. It opens the exact selected directory with
+`FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY`, read/write sharing without
+delete sharing, `OPEN_EXISTING`, and
+`FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`. The directory
+must be non-reparse and its volume serial must agree with the volume reached
+through `GetFinalPathNameByHandleW` on that same retained handle.
+
+Only the volume GUID derived from that handle may then be opened, with desired
+access `0`, read/write/delete sharing, `OPEN_EXISTING`, and
+`FILE_ATTRIBUTE_NORMAL`. The query requires NTFS, one distinct physical disk
+(which may have multiple extents), and a reviewed direct ATA, SATA, USB, or
+NVMe bus value. Missing, composite, virtual, file-backed, Storage Spaces,
+array/network, unknown, and future values fail closed. The retained directory
+handle and physical-disk number remain native; this capability is not a Tauri
+command and no destination path or disk number crosses the WebView boundary.
+
+The restore-admission policy requires the source disk captured with the scan,
+the freshly reopened source disk, and the destination disk all to be known
+single-disk identities. The two source values must agree and the destination
+must differ. Disk number `0` is valid. This is a fail-closed OS identity check,
+not hardware attestation: a hypervisor or malicious storage stack can emulate
+a reviewed direct bus.
+
 ## Elevated read-only broker
 
 The main manifest is `asInvoker`; the fixed sibling broker manifest is
@@ -36,7 +62,9 @@ length, sector geometry, disk extents, and the fixed storage-device bus
 property. Missing, multi-disk, virtual/file-backed, Storage Spaces,
 array/network, unknown, and future mappings fail closed. Only then does it open
 the internal mounted-volume selector with exactly `GENERIC_READ`, compatible
-sharing and `OPEN_EXISTING`.
+sharing and `OPEN_EXISTING`. Production derives the authoritative single
+physical-disk number from the mounted-volume handle; it does not open
+`PhysicalDriveN`.
 
 Every valid read is range-checked and reaches `ReadFile` unless identity
 revalidation first fails. Expensive identity enumeration occurs only after
@@ -50,14 +78,21 @@ no snapshot, lock or dismount occurs.
 - mounted-volume discovery, identity, length and sector geometry;
 - the query-only IOCTLs for volume extents, disk length, storage alignment, and
   the fixed `StorageDeviceProperty` classification;
-- read-only NTFS directory identity;
-- local named-pipe creation/connect and peer PID/liveness;
+- read-only NTFS directory identity, including the exact
+  `FILE_READ_ATTRIBUTES` folder open;
+- query-only destination admission, including the retained destination-root
+  open with exact query/list access and no delete sharing, and the fixed
+  desired-access-zero open of only its handle-derived volume GUID;
+- local named-pipe creation/connect and peer PID/liveness, including the sole
+  duplex `CreateFileW` call;
 - fixed sibling elevation;
-- read-only mounted-volume open, seek and read.
+- read-only mounted-volume `CreateFileW` open, seek and read.
 
 `GENERIC_WRITE` is permitted only on the duplex named-pipe transport. It is
 forbidden for a scan source. No write, trim, format, delete, repair, lock,
-dismount, mount or arbitrary `DeviceIoControl` capability is allowed.
+dismount, mount or arbitrary `DeviceIoControl` capability is allowed. Every
+`CreateFileW` call is restricted to exactly one of the five audited functions
+above, with all seven arguments fixed by that function's policy.
 
 ## Regular image CLI
 

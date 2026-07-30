@@ -43,7 +43,11 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             'export const scan = (requestId: string, volumeId: string) => '
             'invoke("scan_storage_volume", { requestId, volumeId });\n'
             'export const page = (requestId: string, sessionId: string) => '
-            'invoke("get_candidate_page", { requestId, sessionId });\n',
+            'invoke("get_candidate_page", { requestId, sessionId });\n'
+            'export const query = (requestId: string, sessionId: string) => '
+            'invoke("query_candidate_page", { requestId, sessionId });\n'
+            'export const select = (requestId: string, sessionId: string) => '
+            'invoke("update_candidate_selection", { requestId, sessionId });\n',
             encoding="utf-8",
         )
         (source / "App.tsx").write_text(
@@ -67,6 +71,8 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "      storage::select_scan_folder,\n"
             "      storage::scan_storage_volume,\n"
             "      storage::get_candidate_page,\n"
+            "      storage::query_candidate_page,\n"
+            "      storage::update_candidate_selection,\n"
             "    ]);\n"
             "}\n",
             encoding="utf-8",
@@ -155,6 +161,16 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "    null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut(),\n"
             "  ); }\n"
             "}\n"
+            "fn open_folder_attributes(wide: &[u16]) {\n"
+            "  // SAFETY: fixed query-only folder attribute arguments.\n"
+            "  unsafe { CreateFileW(\n"
+            "    wide.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+            "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,\n"
+            "    null(), OPEN_EXISTING,\n"
+            "    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,\n"
+            "    null_mut(),\n"
+            "  ); }\n"
+            "}\n"
             "fn connect_broker_pipe(pipe_suffix: &str, wide_name: &[u16]) {\n"
             "  let _pipe_name = build_pipe_name(pipe_suffix);\n"
             "  // SAFETY: fixed local named-pipe selector and duplex transport.\n"
@@ -179,15 +195,63 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "  unsafe { DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, "
             "null(), 0, null_mut(), 0, null_mut(), null_mut()); }\n"
             "}\n"
-            "fn query_storage_bus_type(handle: HANDLE) {\n"
+            "fn query_storage_bus_type(handle: &OwnedHandle) -> Result<i32, StorageError> {\n"
             "  let query = STORAGE_PROPERTY_QUERY {\n"
             "    PropertyId: StorageDeviceProperty,\n"
             "    QueryType: PropertyStandardQuery,\n"
             "    AdditionalParameters: [0],\n"
             "  };\n"
-            "  // SAFETY: fixed read-only device-property query.\n"
-            "  unsafe { DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, "
-            "&query, 0, null_mut(), 0, null_mut(), null_mut()); }\n"
+            "  let mut header = STORAGE_DESCRIPTOR_HEADER::default();\n"
+            "  let mut bytes_returned = 0u32;\n"
+            "  // SAFETY: fixed read-only device-property header query.\n"
+            "  let header_ok = unsafe {\n"
+            "    DeviceIoControl(\n"
+            "      handle.as_raw_handle(),\n"
+            "      IOCTL_STORAGE_QUERY_PROPERTY,\n"
+            "      (&query as *const STORAGE_PROPERTY_QUERY).cast(),\n"
+            "      size_of::<STORAGE_PROPERTY_QUERY>() as u32,\n"
+            "      (&mut header as *mut STORAGE_DESCRIPTOR_HEADER).cast(),\n"
+            "      size_of::<STORAGE_DESCRIPTOR_HEADER>() as u32,\n"
+            "      &mut bytes_returned,\n"
+            "      null_mut(),\n"
+            "    )\n"
+            "  };\n"
+            "  if header_ok == 0 {\n"
+            "    return Err(last_windows_error(\n"
+            '      "device-header",\n'
+            "    ));\n"
+            "  }\n"
+            "  let bus_end = offset_of!(STORAGE_DEVICE_DESCRIPTOR, BusType)\n"
+            "    .checked_add(size_of::<i32>())\n"
+            "    .ok_or(StorageError::InvalidGeometry)?;\n"
+            "  let descriptor_bytes =\n"
+            "    usize::try_from(header.Size).map_err(|_| StorageError::InvalidGeometry)?;\n"
+            "  if bytes_returned < size_of::<STORAGE_DESCRIPTOR_HEADER>() as u32\n"
+            "    || descriptor_bytes < bus_end\n"
+            "    || descriptor_bytes > MAX_STORAGE_DEVICE_DESCRIPTOR_BYTES\n"
+            "  {\n"
+            "    return Err(StorageError::InvalidGeometry);\n"
+            "  }\n"
+            "\n"
+            "  let mut descriptor = vec![0u8; descriptor_bytes];\n"
+            "  bytes_returned = 0;\n"
+            "  // SAFETY: fixed bounded device-property descriptor query.\n"
+            "  let descriptor_ok = unsafe {\n"
+            "    DeviceIoControl(\n"
+            "      handle.as_raw_handle(),\n"
+            "      IOCTL_STORAGE_QUERY_PROPERTY,\n"
+            "      (&query as *const STORAGE_PROPERTY_QUERY).cast(),\n"
+            "      size_of::<STORAGE_PROPERTY_QUERY>() as u32,\n"
+            "      descriptor.as_mut_ptr().cast(),\n"
+            "      descriptor.len() as u32,\n"
+            "      &mut bytes_returned,\n"
+            "      null_mut(),\n"
+            "    )\n"
+            "  };\n"
+            "  if descriptor_ok == 0 {\n"
+            '    return Err(last_windows_error("device"));\n'
+            "  }\n"
+            "  parse_storage_bus_type(&descriptor, bytes_returned as usize)\n"
             "}\n"
             "fn launch_elevated_broker() {\n"
             "  let current = std::env::current_exe().unwrap();\n"
@@ -418,7 +482,7 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
 
         self.assertTrue(any("windows-sys must be pinned" in error for error in errors))
 
-    def test_desktop_real_only_012_requires_all_four_frontend_commands(self) -> None:
+    def test_desktop_real_only_012_requires_all_six_frontend_commands(self) -> None:
         temporary, root = self.make_repo()
         self.addCleanup(temporary.cleanup)
         api = root / "apps" / "desktop" / "src" / "api" / "storageDesktop.ts"
@@ -666,6 +730,247 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
 
         self.assertTrue(
             any("storage bus query must use the fixed device property" in error for error in errors)
+        )
+
+    def test_desktop_real_only_026_allows_exactly_six_production_commands(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+
+        errors = self.validate(root)
+
+        expected = {
+            "list_storage_sources",
+            "select_scan_folder",
+            "scan_storage_volume",
+            "get_candidate_page",
+            "query_candidate_page",
+            "update_candidate_selection",
+        }
+        self.assertEqual(validator.ALLOWED_COMMANDS, expected)
+        self.assertFalse(any("Tauri command" in error for error in errors))
+        self.assertFalse(any("backend command registration" in error for error in errors))
+
+    def test_desktop_real_only_027_rejects_create_file_outside_an_audited_span(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn extra_open(wide: &[u16]) {\n"
+            + "  // SAFETY: regression-only extra open.\n"
+            + "  unsafe { CreateFileW(wide.as_ptr(), FILE_READ_ATTRIBUTES, "
+            + "FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, null(), "
+            + "OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | "
+            + "FILE_FLAG_OPEN_REPARSE_POINT, null_mut()); }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("outside an approved audited function" in error for error in errors)
+        )
+
+    def test_desktop_real_only_028_rejects_caller_controlled_create_file_path(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "wide.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+                "caller_path.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(any("folder attribute open must match" in error for error in errors))
+
+    def test_desktop_real_only_029_rejects_create_file_share_injection(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "wide.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+                "wide.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(any("folder attribute open must match" in error for error in errors))
+
+    def test_desktop_real_only_030_rejects_create_file_flag_injection(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "wide.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,\n"
+                "    null(), OPEN_EXISTING,\n"
+                "    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,",
+                "wide.as_ptr(), FILE_READ_ATTRIBUTES,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,\n"
+                "    null(), OPEN_EXISTING,\n"
+                "    FILE_FLAG_BACKUP_SEMANTICS,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(any("folder attribute open must match" in error for error in errors))
+
+    def test_desktop_real_only_031_rejects_decoy_fixed_storage_query_input(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "(&query as *const STORAGE_PROPERTY_QUERY).cast(),",
+                "caller_query.cast(),",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("storage bus query call shape must be fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_032_rejects_mutation_after_a_decoy_fixed_query(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  };\n"
+                "  let mut header = STORAGE_DESCRIPTOR_HEADER::default();",
+                "  };\n"
+                "  query.PropertyId = caller_chosen_property;\n"
+                "  let mut header = STORAGE_DESCRIPTOR_HEADER::default();",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("storage bus query must use the fixed device property" in error for error in errors)
+        )
+
+    def test_desktop_real_only_033_rejects_a_second_call_in_an_audited_span(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  ); }\n"
+                "}\n"
+                "fn open_destination_root_handle",
+                "  ); }\n"
+                "  // SAFETY: regression-only duplicate raw open.\n"
+                "  unsafe { CreateFileW(wide.as_ptr(), GENERIC_READ, "
+                "FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, null(), "
+                "OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut()); }\n"
+                "}\n"
+                "fn open_destination_root_handle",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(any("raw volume open must use exactly" in error for error in errors))
+
+    def test_desktop_real_only_034_rejects_returned_byte_reassignment(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  };\n"
+                "  if descriptor_ok == 0 {",
+                "  };\n"
+                "  bytes_returned = descriptor.len() as u32;\n"
+                "  if descriptor_ok == 0 {",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("returned-byte flow must remain bounded and fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_035_rejects_decoy_header_size_dataflow(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  let descriptor_bytes =\n"
+                "    usize::try_from(header.Size).map_err(|_| StorageError::InvalidGeometry)?;",
+                "  let _checked_descriptor_bytes = usize::try_from(header.Size)\n"
+                "    .map_err(|_| StorageError::InvalidGeometry)?;\n"
+                "  let descriptor_bytes = caller_descriptor_bytes;",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("storage bus query implementation must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_036_rejects_decoy_terminal_bus_result(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  parse_storage_bus_type(&descriptor, bytes_returned as usize)\n",
+                "  let _ = parse_storage_bus_type(&descriptor, bytes_returned as usize);\n"
+                "  Ok(caller_bus_type)\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("storage bus query implementation must match" in error for error in errors)
         )
 
 
