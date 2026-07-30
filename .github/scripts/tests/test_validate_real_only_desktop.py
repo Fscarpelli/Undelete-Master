@@ -64,7 +64,9 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             'tempfile = "3"\n'
             'libc = "0.2"\n'
             'getrandom = "0.3.4"\n'
-            'subtle = "2.6"\n',
+            'subtle = "2.6"\n'
+            'cap-std = "=4.0.2"\n'
+            'cap-fs-ext = "=4.0.2"\n',
             encoding="utf-8",
         )
         (source / "api" / "storageDesktop.ts").write_text(
@@ -1896,6 +1898,63 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
                 in error
                 for error in errors
             )
+        )
+
+    def test_desktop_real_only_071_accepts_exact_restore_capability_dependencies(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "crates" / "restore"
+        restore.mkdir(parents=True)
+        (restore / "Cargo.toml").write_text(
+            "[dependencies]\n"
+            "cap-std = { workspace = true }\n"
+            "cap-fs-ext = { workspace = true }\n"
+            "serde = { workspace = true }\n"
+            "serde_json = { workspace = true }\n"
+            "sha2 = { workspace = true }\n"
+            "thiserror = { workspace = true }\n"
+            "um-core = { workspace = true }\n"
+            "\n"
+            "[target.'cfg(windows)'.dev-dependencies]\n"
+            'junction = "=2.0.0"\n',
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertFalse(
+            any("unreviewed dependency or macro expansion" in error for error in errors),
+            errors,
+        )
+
+    def test_desktop_real_only_072_rejects_restore_capability_version_drift(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        manifest = root / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'cap-std = "=4.0.2"\n',
+                'cap-std = "=4.0.3"\n',
+            ),
+            encoding="utf-8",
+        )
+        restore = root / "crates" / "restore"
+        restore.mkdir(parents=True)
+        (restore / "Cargo.toml").write_text(
+            "[dependencies]\n"
+            "cap-std = { workspace = true }\n"
+            "cap-fs-ext = { workspace = true }\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("workspace dependencies must match" in error for error in errors)
         )
 
 

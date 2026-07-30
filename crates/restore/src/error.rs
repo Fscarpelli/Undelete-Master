@@ -96,4 +96,75 @@ pub enum RestoreError {
         expected: [u8; 32],
         actual: [u8; 32],
     },
+
+    #[error("destination root handle does not identify a directory")]
+    DestinationRootNotDirectory,
+
+    #[error("destination root identity changed on the retained handle")]
+    DestinationRootIdentityChanged,
+
+    #[error("restore job ID must contain 1..={maximum} scalar values")]
+    InvalidJobId { maximum: usize },
+
+    #[error("restore job has {actual} items; expected 1..={maximum}")]
+    InvalidJobItemCount { actual: usize, maximum: usize },
+
+    #[error("destination {operation} failed ({kind:?}): {message}")]
+    DestinationIo {
+        operation: &'static str,
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+
+    #[error("temporary capability did not identify a regular file")]
+    TemporaryNotRegularFile,
+
+    #[error("temporary capability identity changed before publication")]
+    TemporaryIdentityChanged,
+
+    #[error("temporary file length {actual} does not match expected length {expected}")]
+    TemporaryLengthMismatch { expected: u64, actual: u64 },
+
+    #[error("collision retry limit of {maximum} was exhausted")]
+    CollisionLimitExceeded { maximum: usize },
+
+    #[error("hard-link publication failed ({kind:?}): {message}")]
+    HardLinkPublication {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+
+    #[error("namespace durability is unconfirmed and requires reconciliation: {message}")]
+    NeedsReconciliation { message: String },
+
+    #[error("journal {operation} failed ({kind:?}): {message}")]
+    JournalIo {
+        operation: &'static str,
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+
+    #[error("journal serialization failed: {message}")]
+    JournalSerialization { message: String },
+
+    #[error("journal payload is {actual} bytes; maximum is {maximum}")]
+    JournalPayloadTooLarge { actual: usize, maximum: usize },
+
+    #[error("journal record is {actual} bytes; maximum is {maximum}")]
+    JournalRecordTooLarge { actual: usize, maximum: usize },
+
+    #[error("journal record count reached its limit of {maximum}")]
+    JournalRecordLimit { maximum: u64 },
+
+    #[error("journal sequence overflow at {sequence}")]
+    JournalSequenceOverflow { sequence: u64 },
+
+    #[error("journal is poisoned after a durability-boundary failure")]
+    JournalPoisoned,
+
+    #[error("journal audit failed: {message}")]
+    JournalAudit { message: String },
+
+    #[error("manifest serialization failed: {message}")]
+    ManifestSerialization { message: String },
 }

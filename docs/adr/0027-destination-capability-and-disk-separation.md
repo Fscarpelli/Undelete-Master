@@ -3,11 +3,12 @@
 Status: Accepted
 Decision date: 2026-07-30
 
-Implementation status: `Implemented-unverified`. Task 3 implements source
-physical-disk propagation, destination-root admission, the pure separation
-policy, and deterministic component tests. It does not create a destination
-entry, publish a recovered file, retain desktop destination maps, or complete
-the Task 4–7 product/release acceptance gates.
+Implementation status: `Implemented-unverified`. Tasks 3 and 4 implement
+source physical-disk propagation, destination-root admission, pure separation
+policy, handle-relative path containment, transactional no-clobber
+publication, the durable job journal, partial sidecars, and the final manifest.
+Tasks 5–7 still own coordinator integration, desktop destination maps, the
+user workflow, vertical fixture acceptance, packaging, and release evidence.
 
 ## Context
 
@@ -91,6 +92,72 @@ No destination file or directory is created, removed, renamed, truncated, or
 written by Task 3. There is no path-based, overwrite-capable, or unsupported
 filesystem fallback.
 
+### Capability-relative restore and no-clobber publication
+
+Task 4 consumes the exact retained `std::fs::File` into
+`cap_std::fs::Dir`. There is no ambient-path constructor in
+`crates/restore`. Construction captures the root `(dev, ino)` identity through
+safe `cap_fs_ext::MetadataExt` access and revalidates that same retained handle
+before starting a job.
+
+Recovered relative paths are typed and immutable after validation. Empty,
+absolute/prefixed, separator-bearing, traversal, control-character,
+alternate-data-stream, trailing-dot/space, overlong, excessive-depth, and
+Windows reserved-device components are rejected. Unsafe recovered names use a
+deterministic SHA-256 fallback; the original untrusted spelling appears only
+as JSON evidence.
+
+The job creates one deterministic, no-clobber job directory and a
+`create_new` JSON Lines journal. Descendant directories are walked one
+component at a time from the currently retained capability. Existing
+directories use `open_dir_nofollow`; newly created directories are immediately
+rebound through the same no-follow operation. Final data, sidecar, journal,
+and manifest operations never reopen an ambient descendant path.
+
+Each selected file is streamed from `SourceReader` into a unique
+`.umrecovering` entry with a fixed 1 MiB scratch buffer. On Windows the
+capability open combines `create_new`, no-follow, and `maybe_dir(true)`, then
+requires a regular file. This retains the temporary handle without delete
+sharing. After flush, `sync_all`, length verification, and expected/actual
+SHA-256 validation, the still-open handle identity must match a new
+capability-relative no-follow name lookup.
+
+Publication uses only a capability-relative hard link. Partial sidecars are
+prepared and linked before their data name. A final-name race fails atomically;
+the deterministic `name (recovered N).ext` policy retries at most 10,000
+times. Unsupported hard links fail the item. There is no rename, overwrite,
+copy-to-final, or ambient fallback. The final manifest uses the same
+temporary-file and hard-link protocol and never replaces an existing entry.
+
+Directory `sync_all` evidence is reported as `Synced`, `Unsupported`, or
+`Failed`; unsupported or failed namespace durability retains temporary links
+and marks the result `NeedsReconciliation`. Cleanup starts only after
+`ItemPublished` is durable. Cleanup failures preserve the final link and are
+journaled; manifest cleanup warnings are recorded before the terminal job
+record.
+
+The version-1 append-only journal has bounded canonical JSON payloads,
+monotonic sequence numbers, one fixed hashed job identity, previous-record and
+record SHA-256 values, and complete-record audit checks. Its chain advances
+only after write, flush, and `sync_all`. Any durability failure poisons the
+journal. `ItemPrepared` must be durable before linking; a journal failure
+before that point prevents publication. The link-through-`ItemPublished`
+section is non-cancellable. A journal failure after a link preserves final and
+temporary evidence and returns an explicit reconciliation-needed result.
+
+The manifest is prepared from a frozen journal outcomes-prefix hash, written
+last, and returned with its literal SHA-256. It records published disposition,
+requested/safe paths, output and expected hashes, readable and zero-filled
+ranges with reasons, conflicts, read failures, warnings, sidecar identity,
+temporary disposition, namespace durability, completion status, and path
+substitution evidence.
+
+Cross-platform scripted transition injection replaces every newly created
+component between create and rebind. Windows acceptance also races real
+disposable NTFS junctions and competing temporary-file rename/delete attempts.
+All such tests use `TempDir` destinations and synthetic in-memory sources; no
+scan source or real disk namespace is mutated.
+
 ### Separation and expiry policy
 
 The source-at-scan, source-at-restore, and destination identities must all be
@@ -172,8 +239,8 @@ they do not open, write, or destructively query a real volume.
   authority release;
 - Storage Spaces/dynamic/composite mappings are rejected even when a user might
   consider them acceptable; and
-- no product restore exists until Tasks 4–6 integrate transaction, coordinator,
-  and UI behavior.
+- no product restore exists until Tasks 5–6 integrate the Task 4 transaction
+  into the coordinator and UI behavior.
 
 ADR-0023's unsigned-development, hotplug, active-volume, exact
 GUID-plus-serial-clone, and protected-installation residual risks remain.

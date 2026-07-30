@@ -143,6 +143,8 @@ ALLOWED_WORKSPACE_DEPENDENCIES = {
     "libc": "0.2",
     "getrandom": "0.3.4",
     "subtle": "2.6",
+    "cap-std": "=4.0.2",
+    "cap-fs-ext": "=4.0.2",
 }
 ALLOWED_IO_WINDOWS_MACROS = {
     "assert",
@@ -167,6 +169,9 @@ ALLOWED_PINNED_CHILD_DEPENDENCIES = {
         "tauri-plugin-dialog": ALLOWED_TAURI_DEPENDENCIES[
             "tauri-plugin-dialog"
         ],
+    },
+    "crates/restore/Cargo.toml": {
+        "junction": "=2.0.0",
     },
 }
 AUDITED_STORAGE_BUS_QUERY_SHA256 = (
