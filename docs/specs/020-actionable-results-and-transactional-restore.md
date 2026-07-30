@@ -63,6 +63,8 @@ simulated progress, placeholder restore, or browser fallback is permitted.
 - backend-owned query, stable sort, pagination, and selection;
 - a native destination capability that never exposes a path to the WebView;
 - same-physical-disk rejection;
+- NTFS restore destinations for capability-relative atomic hard-link
+  publication;
 - destination collision policy `rename`, with no silent replacement;
 - bounded streaming extraction and SHA-256;
 - per-file `.umrecovering` temporary state and no-clobber publication;
@@ -72,6 +74,8 @@ simulated progress, placeholder restore, or browser fallback is permitted.
 ### 3.2 Explicitly outside this increment
 
 - restoring to the original path or the same physical disk;
+- ReFS/FAT/exFAT/unknown restore destinations until a capability-relative atomic
+  no-replace publication primitive is implemented for them;
 - overwriting an existing destination file;
 - restoring NTFS ACLs, EFS keys, alternate data streams, reparse points, or
   executable state;
@@ -116,7 +120,8 @@ The destination is selected only through a native folder picker. Native code
 resolves and retains a bounded `DestinationAuthority` containing:
 
 - opaque destination ID;
-- native root path unavailable to the WebView;
+- a query-only directory handle opened without delete sharing and unavailable
+  to the WebView;
 - sanitized label and filesystem;
 - observed free bytes;
 - physical-disk identity set;
@@ -130,6 +135,16 @@ The source and destination physical-disk identity sets must both be known,
 single-disk, unchanged, and disjoint. Unknown, multi-disk, substituted, or
 same-disk destinations are rejected.
 
+The authority is derived from the same retained directory handle used for
+final-volume and disk-identity queries. Production restore code never reopens
+the picker path. On Windows the root is opened without delete sharing, so it
+cannot be renamed or substituted while the authority exists.
+
+The queried destination filesystem must be NTFS. ReFS, FAT, exFAT, unknown, and
+filesystems that reject hard links fail closed with an explicit
+unsupported-destination result. No overwrite-capable or path-based fallback is
+allowed.
+
 ### 4.3 Destination writes
 
 Destination writes occur in the unprivileged restore component. The elevated
@@ -137,10 +152,17 @@ broker never receives a destination, opens a destination, or writes recovered
 content.
 
 Every recovery job creates one uniquely named job directory beneath the
-authorized destination. All derived relative paths are sanitized before use.
-No absolute path, UNC component, drive prefix, `..`, alternate data stream,
-reserved device name, trailing-dot/space component, or reparse escape is
-accepted.
+authorized destination. All descendant operations are capability-relative to
+the retained root handle. Existing directories are opened one component at a
+time with no-follow semantics; newly created directories are immediately
+rebound through the same no-follow open. Final files are created without
+following the last component. No ambient descendant path is reopened.
+
+All derived relative paths are sanitized before use. No absolute path, UNC
+component, drive prefix, `..`, alternate data stream, reserved device name,
+trailing-dot/space component, or reparse escape is accepted. Deterministic
+tests must race a real temporary Windows junction plus a scripted replacement
+at every component transition and prove that no outside entry is created.
 
 ## 5. Candidate query and selection
 
@@ -209,6 +231,10 @@ The selection summary reports:
 - conflicted candidates;
 - candidates with no readable content plan.
 
+Each query-page response additionally reports `matchingSelectedCandidates` so
+the filtered-set checkbox can distinguish none, some, and all without
+enumerating selected IDs in the WebView.
+
 ## 6. Restore planning
 
 A restore plan is immutable and bound to:
@@ -255,12 +281,32 @@ For each planned file:
 9. honor cooperative cancellation between bounded reads and writes;
 10. flush and `sync_all` the temporary file;
 11. verify length and any expected carving hash;
-12. publish using a no-clobber operation; if the chosen name exists, derive a
-    deterministic renamed destination and retry within a bounded limit;
-13. record the item result in the job journal and final manifest.
+12. append and sync an `ItemPrepared` record to the versioned hash-chained job
+    journal;
+13. atomically create the final name as a capability-relative hard link to the
+    temporary file; if the name exists, derive a deterministic renamed
+    destination and retry within a bounded limit;
+14. append and sync `ItemPublished`, or an explicit failure/cancellation
+    record, to the journal;
+15. include the journal-backed item result in the final manifest.
 
 An interrupted or failed item never appears under its final name unless the
 publication step completed. Temporary-file disposition is recorded.
+
+The journal is append-only JSON Lines with a monotonic sequence, previous
+record hash, and record hash. Publication never begins unless `ItemPrepared`
+is durable. A journal write/flush/sync failure fails the job and never silently
+continues to another publication. The final manifest is written last from the
+journal-backed outcomes.
+
+Hard-link creation is the no-clobber commit primitive: it fails atomically when
+the destination name already exists and never replaces that entry. After
+`ItemPublished` is durable, the job removes only its temporary link. Hard-link
+failure is explicit; it never falls back to rename-overwrite or copy-to-final.
+The temporary handle remains open without delete sharing through publication,
+and its file identity must match a capability-relative no-follow lookup
+immediately before linking. Namespace substitution or identity mismatch fails
+closed.
 
 The implementation must not allocate memory proportional to candidate size.
 
@@ -328,6 +374,13 @@ manifest summary.
 ### `cancel_restore`
 
 Consumes only the job ID and requests cooperative cancellation.
+
+### `open_restore_destination`
+
+Consumes only request and completed job IDs. Native code revalidates the
+job-bound destination authority and asks the Windows shell to open the recovery
+job directory. No path or caller-selected executable crosses the WebView
+boundary.
 
 No command accepts a native source/destination path, extent, offset, handle,
 access mask, device-control code, executable, or recovered bytes.
@@ -409,6 +462,8 @@ structured partial/error state and is never described as complete.
 - `RESTORE-NO-CLOBBER-015`
 - `RESTORE-TEMP-PUBLICATION-016`
 - `RESTORE-MANIFEST-017`
+- `RESTORE-JOURNAL-DURABILITY-027`
+- `RESTORE-REPARSE-RACE-028`
 
 ### Authority and desktop
 
@@ -420,6 +475,7 @@ structured partial/error state and is never described as complete.
 - `DESKTOP-RESTORE-CONTRACT-023`
 - `DESKTOP-RESTORE-FLOW-024`
 - `DESKTOP-RESTORE-A11Y-025`
+- `DESKTOP-RESTORE-OPEN-DESTINATION-026`
 
 Tests use deterministic in-repository images and temporary destination
 directories only. No test writes to a real scan source or performs destructive
@@ -453,6 +509,8 @@ file is created. Completion requires:
   exact missing-range sidecar;
 - same-disk/unknown identity, path traversal, reparse, hash mismatch, stale
   selection, and collision cases fail as specified;
+- journal durability/failure injection and a real temporary Windows junction
+  race pass without any write outside the retained destination authority;
 - required Rust and frontend gates pass;
 - the traceability matrix and known limitations match the implemented
   boundary;
