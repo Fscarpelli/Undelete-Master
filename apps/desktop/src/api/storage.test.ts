@@ -135,6 +135,29 @@ describe("real storage contracts", () => {
     ).toThrow(StorageContractError);
   });
 
+  it("accepts every extension facet within the retained-scan bound", () => {
+    const extensionFacets = Array.from({ length: 129 }, (_, index) => ({
+      extension: `ext${index}`,
+      count: "1",
+    }));
+
+    expect(
+      parseCandidateQueryPage({ ...queryPage, extensionFacets })
+        .extensionFacets,
+    ).toHaveLength(129);
+  });
+
+  it("rejects non-canonical extension facets from hostile native names", () => {
+    for (const extension of ["TXT", "txt ", "t/xt", "t\\xt", ".txt"]) {
+      expect(() =>
+        parseCandidateQueryPage({
+          ...queryPage,
+          extensionFacets: [{ extension, count: "1" }],
+        }),
+      ).toThrow(StorageContractError);
+    }
+  });
+
   it("parses a bounded connected-disk inventory without native paths", () => {
     const parsed = parseStorageInventory(inventory);
 

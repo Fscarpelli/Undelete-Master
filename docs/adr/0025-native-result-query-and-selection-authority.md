@@ -51,7 +51,9 @@ applies a stable requested sort and returns at most 100 rows.
 
 Extensions are normalized case-insensitively. The empty extension represents
 no declared extension. Extension facets count the complete active scan and are
-not derived from the visible page.
+not derived from the visible page. The facet wire bound equals the retained
+scan bound of 100,000 candidates, so every distinct extension in a valid
+retained scan can be represented without truncation.
 
 Every supported sort uses the native `CandidateId` as its final ascending
 tie-breaker. Null scores sort after non-null scores in both directions.
@@ -65,7 +67,9 @@ sort, and page offset.
 
 Only cursors issued by the active native binding are accepted. A query, query
 revision, sort, scan, source binding, malformed token, or foreign-session
-change rejects the cursor without returning rows.
+change rejects the cursor without returning rows. A selected-only cursor also
+binds the selection revision because selection changes alter its filtered
+dataset.
 
 ### Selection
 
@@ -76,7 +80,9 @@ Direct ID mutations accept 1 through 100 unique decimal candidate IDs.
 `selectAllMatching` and `clearMatching` evaluate the active canonical query in
 Rust and accept no ID list. `clearAll` clears the complete selection. Every
 successful mutation increments the revision; a stale revision or invalid
-candidate rejects before mutation.
+candidate rejects before mutation. Each operation is applied to a proposed set;
+its next revision and complete summary must succeed before the authoritative
+set or revision is committed.
 
 Selection summaries report global selected files, directories, logical bytes,
 best-effort, conflicted, and ineligible counts. They also report the selected

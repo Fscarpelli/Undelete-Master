@@ -15,6 +15,7 @@ const RESULT_SCHEMA_VERSION: u32 = 1;
 const MAX_QUERY_TEXT_SCALARS: usize = 512;
 const MAX_QUERY_EXTENSIONS: usize = 128;
 const MAX_EXTENSION_SCALARS: usize = 255;
+const MAX_EXTENSION_FACETS: usize = 100_000;
 const MAX_DIRECT_SELECTION_IDS: usize = 100;
 
 #[derive(Debug, Clone)]
@@ -232,6 +233,7 @@ pub(crate) struct BoundCandidateQuery {
     source_fingerprint: String,
     query: CandidateQuery,
     sort: CandidateSort,
+    selection_revision: u64,
     cursors: HashMap<String, usize>,
 }
 
@@ -268,6 +270,8 @@ pub(crate) fn query_candidate_page(
                     && binding.source_fingerprint == source_fingerprint
                     && binding.query == query
                     && binding.sort == sort
+                    && (!query.selected_only
+                        || binding.selection_revision == context.selection_revision)
             })
             .ok_or(ResultAuthorityError::StaleCursor)?;
         binding
@@ -281,6 +285,7 @@ pub(crate) fn query_candidate_page(
             source_fingerprint: source_fingerprint.clone(),
             query: query.clone(),
             sort,
+            selection_revision: context.selection_revision,
             cursors: HashMap::new(),
         });
         0
@@ -310,6 +315,12 @@ pub(crate) fn query_candidate_page(
                 source_fingerprint.as_bytes(),
                 query_id.as_bytes(),
                 &sort_bytes,
+                &if query.selected_only {
+                    context.selection_revision
+                } else {
+                    0
+                }
+                .to_le_bytes(),
                 &u64::try_from(end)
                     .map_err(|_| ResultAuthorityError::Overflow)?
                     .to_le_bytes(),
@@ -367,6 +378,10 @@ pub(crate) fn update_candidate_selection(
     let binding = active_query
         .filter(|binding| binding.query_id == query_id)
         .ok_or(ResultAuthorityError::InvalidQuery)?;
+    let next_revision = selection_revision
+        .checked_add(1)
+        .ok_or(ResultAuthorityError::Overflow)?;
+    let mut proposed_selection = selected_candidates.clone();
 
     match operation {
         SelectionOperationDto::SetIds {
@@ -387,9 +402,9 @@ pub(crate) fn update_candidate_selection(
             }
             for id in parsed {
                 if selected {
-                    selected_candidates.insert(id);
+                    proposed_selection.insert(id);
                 } else {
-                    selected_candidates.remove(&id);
+                    proposed_selection.remove(&id);
                 }
             }
         }
@@ -397,37 +412,36 @@ pub(crate) fn update_candidate_selection(
             let matching = candidates
                 .iter()
                 .filter(|candidate| {
-                    candidate_matches(candidate, &binding.query, selected_candidates)
+                    candidate_matches(candidate, &binding.query, &proposed_selection)
                 })
                 .map(|candidate| candidate.candidate.id)
                 .collect::<Vec<_>>();
             for id in matching {
-                selected_candidates.insert(id);
+                proposed_selection.insert(id);
             }
         }
         SelectionOperationDto::ClearMatching => {
             let matching = candidates
                 .iter()
                 .filter(|candidate| {
-                    candidate_matches(candidate, &binding.query, selected_candidates)
+                    candidate_matches(candidate, &binding.query, &proposed_selection)
                 })
                 .map(|candidate| candidate.candidate.id)
                 .collect::<Vec<_>>();
             for id in matching {
-                selected_candidates.remove(&id);
+                proposed_selection.remove(&id);
             }
         }
-        SelectionOperationDto::ClearAll => selected_candidates.clear(),
+        SelectionOperationDto::ClearAll => proposed_selection.clear(),
     }
-    *selection_revision = selection_revision
-        .checked_add(1)
-        .ok_or(ResultAuthorityError::Overflow)?;
     let selection = selection_summary(
         candidates,
-        selected_candidates,
-        *selection_revision,
+        &proposed_selection,
+        next_revision,
         Some(&binding.query),
     )?;
+    *selected_candidates = proposed_selection;
+    *selection_revision = next_revision;
     Ok(CandidateSelectionUpdateDto {
         schema_version: RESULT_SCHEMA_VERSION,
         scan_id: scan_id.to_owned(),
@@ -447,14 +461,10 @@ fn canonical_query(mut query: CandidateQuery) -> Result<CandidateQuery, ResultAu
     }
     query.search = query.search.to_lowercase();
     for extension in &mut query.extensions {
-        if extension.chars().count() > MAX_EXTENSION_SCALARS
-            || extension.chars().any(forbidden_query_character)
-            || extension.contains(['.', '/', '\\'])
-            || extension.trim() != extension
-        {
-            return Err(ResultAuthorityError::InvalidQuery);
+        if !extension.is_empty() {
+            *extension =
+                canonical_extension(extension).ok_or(ResultAuthorityError::InvalidQuery)?;
         }
-        *extension = extension.to_lowercase();
     }
     query.extensions.sort();
     query.extensions.dedup();
@@ -610,9 +620,11 @@ fn extension_facets(
 ) -> Result<Vec<ExtensionFacetDto>, ResultAuthorityError> {
     let mut counts = BTreeMap::<String, u64>::new();
     for candidate in candidates {
-        let count = counts
-            .entry(candidate_extension(&candidate.candidate))
-            .or_default();
+        let extension = candidate_extension(&candidate.candidate);
+        if !counts.contains_key(&extension) && counts.len() == MAX_EXTENSION_FACETS {
+            return Err(ResultAuthorityError::Overflow);
+        }
+        let count = counts.entry(extension).or_default();
         *count = count.checked_add(1).ok_or(ResultAuthorityError::Overflow)?;
     }
     Ok(counts
@@ -716,12 +728,20 @@ fn candidate_extension(candidate: &Candidate) -> String {
     if stem.is_empty() || extension.is_empty() {
         String::new()
     } else {
-        extension
-            .chars()
-            .filter(|character| !forbidden_query_character(*character))
-            .take(MAX_EXTENSION_SCALARS)
-            .collect::<String>()
-            .to_lowercase()
+        canonical_extension(extension).unwrap_or_default()
+    }
+}
+
+fn canonical_extension(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().count() > MAX_EXTENSION_SCALARS
+        || trimmed.chars().any(forbidden_query_character)
+        || trimmed.contains(['.', '/', '\\'])
+    {
+        None
+    } else {
+        Some(trimmed.to_lowercase())
     }
 }
 
@@ -872,8 +892,8 @@ mod tests {
         query_candidate_page, update_candidate_selection, BoundCandidateQuery, CandidateKindDto,
         CandidateQuery, CandidateQueryContext, CandidateRowDto, CandidateSort,
         CandidateSortDirection, CandidateSortField, DiscoveryMethodDto, MetadataConfidenceDto,
-        RecoveryEligibility, ScanSourceBinding, SelectionOperationDto, StoredCandidate,
-        CANDIDATE_PAGE_LIMIT,
+        RecoveryEligibility, ResultAuthorityError, ScanSourceBinding, SelectionOperationDto,
+        StoredCandidate, CANDIDATE_PAGE_LIMIT, MAX_EXTENSION_SCALARS,
     };
 
     struct Harness {
@@ -1584,5 +1604,206 @@ mod tests {
             )
             .expect("one hundred unique ids");
         assert_eq!(update.selection.selected_candidates, "100");
+    }
+
+    #[test]
+    fn result_cursor_binding_003_selected_only_cursor_expires_on_selection_change() {
+        let candidates = (1..=205)
+            .map(|id| {
+                stored(
+                    id,
+                    &format!("file-{id}.bin"),
+                    CandidateKind::File,
+                    DiscoveryMethod::NtfsMetadata,
+                    CandidateState::CompleteUnvalidated,
+                    MetadataConfidence::High,
+                    1,
+                    Some(70),
+                    Some(ExtentAvailability::FreeInSnapshot),
+                )
+            })
+            .collect();
+        let mut harness = Harness::new("scan-selected-cursor", candidates);
+        let all = harness
+            .page(query(1), sort(CandidateSortField::Path), None)
+            .expect("all query");
+        harness
+            .update(&all.query_id, SelectionOperationDto::SelectAllMatching, 0)
+            .expect("select all");
+
+        let selected_query = CandidateQuery {
+            selected_only: true,
+            ..query(2)
+        };
+        let selected_page = harness
+            .page(selected_query.clone(), sort(CandidateSortField::Path), None)
+            .expect("selected first page");
+        let cursor = selected_page.next_cursor.expect("selected cursor");
+        harness
+            .update(
+                &selected_page.query_id,
+                SelectionOperationDto::SetIds {
+                    candidate_ids: vec!["1".to_owned()],
+                    selected: false,
+                },
+                1,
+            )
+            .expect("change selected dataset");
+
+        assert_eq!(
+            harness
+                .page(
+                    selected_query,
+                    sort(CandidateSortField::Path),
+                    Some(&cursor),
+                )
+                .expect_err("selected-only cursor must expire"),
+            ResultAuthorityError::StaleCursor
+        );
+    }
+
+    #[test]
+    fn result_selection_stale_006_failed_updates_are_transactional() {
+        let candidates = vec![
+            stored(
+                1,
+                "huge.bin",
+                CandidateKind::File,
+                DiscoveryMethod::NtfsMetadata,
+                CandidateState::CompleteUnvalidated,
+                MetadataConfidence::High,
+                u64::MAX,
+                Some(70),
+                Some(ExtentAvailability::FreeInSnapshot),
+            ),
+            stored(
+                2,
+                "one.bin",
+                CandidateKind::File,
+                DiscoveryMethod::NtfsMetadata,
+                CandidateState::CompleteUnvalidated,
+                MetadataConfidence::High,
+                1,
+                Some(70),
+                Some(ExtentAvailability::FreeInSnapshot),
+            ),
+        ];
+        let mut harness = Harness::new("scan-selection-overflow", candidates);
+        let page = harness
+            .page(query(1), sort(CandidateSortField::Path), None)
+            .expect("query");
+        assert_eq!(
+            harness
+                .update(
+                    &page.query_id,
+                    SelectionOperationDto::SetIds {
+                        candidate_ids: vec!["1".to_owned(), "2".to_owned()],
+                        selected: true,
+                    },
+                    0,
+                )
+                .expect_err("summary overflow must fail"),
+            ResultAuthorityError::Overflow
+        );
+        assert!(harness.selected.is_empty());
+        assert_eq!(harness.selection_revision, 0);
+
+        let mut revision_harness = Harness::new("scan-revision-overflow", fixture_candidates());
+        revision_harness.selected.insert(12);
+        revision_harness.selection_revision = u64::MAX;
+        let page = revision_harness
+            .page(query(1), sort(CandidateSortField::Path), None)
+            .expect("max revision query");
+        assert_eq!(
+            revision_harness
+                .update(&page.query_id, SelectionOperationDto::ClearAll, u64::MAX,)
+                .expect_err("revision overflow must fail"),
+            ResultAuthorityError::Overflow
+        );
+        assert_eq!(revision_harness.selected, HashSet::from([12]));
+        assert_eq!(revision_harness.selection_revision, u64::MAX);
+    }
+
+    #[test]
+    fn result_query_filter_003_facets_cover_129_distinct_extensions() {
+        let candidates = (1..=129)
+            .map(|id| {
+                stored(
+                    id,
+                    &format!("file-{id}.ext{id}"),
+                    CandidateKind::File,
+                    DiscoveryMethod::NtfsMetadata,
+                    CandidateState::CompleteUnvalidated,
+                    MetadataConfidence::High,
+                    1,
+                    Some(70),
+                    Some(ExtentAvailability::FreeInSnapshot),
+                )
+            })
+            .collect();
+        let mut harness = Harness::new("scan-many-facets", candidates);
+        let page = harness
+            .page(query(1), sort(CandidateSortField::Extension), None)
+            .expect("complete facets");
+        assert_eq!(page.extension_facets.len(), 129);
+    }
+
+    #[test]
+    fn result_query_filter_004_hostile_extensions_share_one_canonical_policy() {
+        let names = [
+            "report.TXT".to_owned(),
+            "report.txt ".to_owned(),
+            "report.t/xt".to_owned(),
+            "report.bad\u{0000}".to_owned(),
+            ".hidden".to_owned(),
+            format!("report.{}", "x".repeat(MAX_EXTENSION_SCALARS + 1)),
+        ];
+        let candidates = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut candidate = stored(
+                    index as u64 + 1,
+                    "placeholder.bin",
+                    CandidateKind::File,
+                    DiscoveryMethod::NtfsMetadata,
+                    CandidateState::CompleteUnvalidated,
+                    MetadataConfidence::High,
+                    1,
+                    Some(70),
+                    Some(ExtentAvailability::FreeInSnapshot),
+                );
+                candidate.candidate.name = name;
+                candidate
+            })
+            .collect();
+        let mut harness = Harness::new("scan-hostile-extensions", candidates);
+        let page = harness
+            .page(query(1), sort(CandidateSortField::Extension), None)
+            .expect("canonical facets");
+        let facets = page
+            .extension_facets
+            .into_iter()
+            .map(|facet| (facet.extension, facet.count))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            facets,
+            HashMap::from([
+                ("".to_owned(), "4".to_owned()),
+                ("txt".to_owned(), "2".to_owned())
+            ])
+        );
+
+        let query = CandidateQuery {
+            extensions: vec![" TXT ".to_owned()],
+            ..query(2)
+        };
+        assert_eq!(
+            harness
+                .page(query, sort(CandidateSortField::Path), None)
+                .expect("canonical query")
+                .filtered_total,
+            "2"
+        );
     }
 }
