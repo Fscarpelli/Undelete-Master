@@ -414,7 +414,8 @@ Initial hard limits:
 
 - 100 rows per page;
 - 100 candidate IDs per direct selection mutation;
-- 100,000 retained candidates per scan, matching the current scanner output
+- 110,000 retained candidates per scan, covering the scanner's 100,000
+  metadata-candidate budget plus the deep scanner's 10,000 carved-candidate
   budget;
 - four retained scans;
 - 32 destination authorities;

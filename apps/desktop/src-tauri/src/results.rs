@@ -15,8 +15,14 @@ const RESULT_SCHEMA_VERSION: u32 = 1;
 const MAX_QUERY_TEXT_SCALARS: usize = 512;
 const MAX_QUERY_EXTENSIONS: usize = 128;
 const MAX_EXTENSION_SCALARS: usize = 255;
-const MAX_EXTENSION_FACETS: usize = 100_000;
+// NTFS metadata retains at most 100,000 deleted candidates and a deep scan can
+// append at most 10,000 distinct carved candidates.
+pub(crate) const MAX_RETAINED_CANDIDATES_PER_SCAN: usize = 110_000;
 const MAX_DIRECT_SELECTION_IDS: usize = 100;
+
+pub(crate) fn retained_candidate_count_within_bound(candidate_count: usize) -> bool {
+    candidate_count <= MAX_RETAINED_CANDIDATES_PER_SCAN
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct StoredCandidate {
@@ -513,6 +519,7 @@ fn forbidden_query_character(character: char) -> bool {
                 | '\u{2067}'
                 | '\u{2068}'
                 | '\u{2069}'
+                | '\u{FEFF}'
         )
 }
 
@@ -621,7 +628,7 @@ fn extension_facets(
     let mut counts = BTreeMap::<String, u64>::new();
     for candidate in candidates {
         let extension = candidate_extension(&candidate.candidate);
-        if !counts.contains_key(&extension) && counts.len() == MAX_EXTENSION_FACETS {
+        if !counts.contains_key(&extension) && counts.len() == MAX_RETAINED_CANDIDATES_PER_SCAN {
             return Err(ResultAuthorityError::Overflow);
         }
         let count = counts.entry(extension).or_default();
@@ -741,7 +748,8 @@ fn canonical_extension(value: &str) -> Option<String> {
     {
         None
     } else {
-        Some(trimmed.to_lowercase())
+        let normalized = trimmed.to_lowercase();
+        (normalized.chars().count() <= MAX_EXTENSION_SCALARS).then_some(normalized)
     }
 }
 
@@ -894,6 +902,7 @@ mod tests {
         CandidateSortDirection, CandidateSortField, DiscoveryMethodDto, MetadataConfidenceDto,
         RecoveryEligibility, ResultAuthorityError, ScanSourceBinding, SelectionOperationDto,
         StoredCandidate, CANDIDATE_PAGE_LIMIT, MAX_EXTENSION_SCALARS,
+        MAX_RETAINED_CANDIDATES_PER_SCAN,
     };
 
     struct Harness {
@@ -1805,5 +1814,91 @@ mod tests {
                 .filtered_total,
             "2"
         );
+    }
+
+    #[test]
+    fn result_query_filter_005_retained_bound_covers_the_deep_producer_ceiling() {
+        assert_eq!(MAX_RETAINED_CANDIDATES_PER_SCAN, 110_000);
+        assert!(super::retained_candidate_count_within_bound(110_000));
+        assert!(!super::retained_candidate_count_within_bound(110_001));
+    }
+
+    #[test]
+    fn result_query_filter_006_normalization_bounds_lowercase_expansion_and_rejects_bom() {
+        let safe_raw = "\u{0130}".repeat(127);
+        let overflowing_raw = "\u{0130}".repeat(128);
+        let safe_normalized = safe_raw.to_lowercase();
+        assert_eq!(safe_normalized.chars().count(), 254);
+        assert_eq!(overflowing_raw.to_lowercase().chars().count(), 256);
+
+        let names = [
+            format!("report.{safe_raw}"),
+            format!("report.{overflowing_raw}"),
+            "report.\u{FEFF}txt".to_owned(),
+            "report.t\u{FEFF}xt".to_owned(),
+        ];
+        let candidates = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut candidate = stored(
+                    index as u64 + 1,
+                    "placeholder.bin",
+                    CandidateKind::File,
+                    DiscoveryMethod::NtfsMetadata,
+                    CandidateState::CompleteUnvalidated,
+                    MetadataConfidence::High,
+                    1,
+                    Some(70),
+                    Some(ExtentAvailability::FreeInSnapshot),
+                );
+                candidate.candidate.name = name;
+                candidate
+            })
+            .collect();
+        let mut harness = Harness::new("scan-unicode-extensions", candidates);
+        let page = harness
+            .page(query(1), sort(CandidateSortField::Extension), None)
+            .expect("bounded canonical extensions");
+        let facets = page
+            .extension_facets
+            .into_iter()
+            .map(|facet| (facet.extension, facet.count))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            facets,
+            HashMap::from([
+                (String::new(), "3".to_owned()),
+                (safe_normalized, "1".to_owned())
+            ])
+        );
+
+        let safe_query = CandidateQuery {
+            extensions: vec![safe_raw],
+            ..query(2)
+        };
+        assert_eq!(
+            harness
+                .page(safe_query, sort(CandidateSortField::Path), None)
+                .expect("safe lowercase expansion")
+                .filtered_total,
+            "1"
+        );
+        for (revision, extension) in [
+            (3, overflowing_raw),
+            (4, "\u{FEFF}txt".to_owned()),
+            (5, "t\u{FEFF}xt".to_owned()),
+        ] {
+            let invalid_query = CandidateQuery {
+                extensions: vec![extension],
+                ..query(revision)
+            };
+            assert_eq!(
+                harness
+                    .page(invalid_query, sort(CandidateSortField::Path), None)
+                    .expect_err("non-canonical extension query must fail"),
+                ResultAuthorityError::InvalidQuery
+            );
+        }
     }
 }

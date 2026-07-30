@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_RETAINED_CANDIDATES_PER_SCAN,
   StorageContractError,
   parseCandidateQueryPage,
   parseCandidatePage,
@@ -147,8 +148,50 @@ describe("real storage contracts", () => {
     ).toHaveLength(129);
   });
 
+  it("binds facet parsing to the complete deep-scan candidate ceiling", () => {
+    expect(MAX_RETAINED_CANDIDATES_PER_SCAN).toBe(110_000);
+
+    const beyondBound: unknown[] = [];
+    beyondBound.length = MAX_RETAINED_CANDIDATES_PER_SCAN + 1;
+    expect(() =>
+      parseCandidateQueryPage({
+        ...queryPage,
+        extensionFacets: beyondBound,
+      }),
+    ).toThrow(StorageContractError);
+  });
+
   it("rejects non-canonical extension facets from hostile native names", () => {
     for (const extension of ["TXT", "txt ", "t/xt", "t\\xt", ".txt"]) {
+      expect(() =>
+        parseCandidateQueryPage({
+          ...queryPage,
+          extensionFacets: [{ extension, count: "1" }],
+        }),
+      ).toThrow(StorageContractError);
+    }
+  });
+
+  it("round-trips bounded lowercase expansion and rejects overflow or BOM", () => {
+    const safe = "\u0130".repeat(127).toLowerCase();
+    const overflowing = "\u0130".repeat(128).toLowerCase();
+    expect([...safe]).toHaveLength(254);
+    expect([...overflowing]).toHaveLength(256);
+
+    const parsed = parseCandidateQueryPage({
+      ...queryPage,
+      extensionFacets: [{ extension: safe, count: "1" }],
+      candidates: [{ ...queryPage.candidates[0], extension: safe }],
+    });
+    expect(parsed.extensionFacets[0]!.extension).toBe(safe);
+    expect(parsed.candidates[0]!.extension).toBe(safe);
+
+    for (const extension of [
+      overflowing,
+      "\uFEFFtxt",
+      "txt\uFEFF",
+      "t\uFEFFxt",
+    ]) {
       expect(() =>
         parseCandidateQueryPage({
           ...queryPage,

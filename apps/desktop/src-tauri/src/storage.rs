@@ -921,7 +921,7 @@ fn build_scan_session_with_mode(
     source: ScanSourceBinding,
 ) -> Result<ScanSession, DesktopStorageError> {
     if !valid_opaque_id(scan_id)
-        || details.report.candidate_count != details.candidates.len()
+        || !valid_retained_candidate_count(details.report.candidate_count, details.candidates.len())
         || details.report.warnings.len() > MAX_WARNINGS
     {
         return Err(DesktopStorageError::incompatible());
@@ -1070,6 +1070,10 @@ fn build_scan_session_with_mode(
         cursors,
         cursor_for_offset,
     })
+}
+
+fn valid_retained_candidate_count(reported: usize, retained: usize) -> bool {
+    reported == retained && results::retained_candidate_count_within_bound(retained)
 }
 
 fn adapt_mft_coverage(coverage: MftScanCoverage) -> DesktopMftCoverage {
@@ -1577,6 +1581,13 @@ mod tests {
         let serialized = json.to_string();
         assert!(!serialized.contains(r"\\.\"));
         assert!(!serialized.contains(r"\\?\"));
+    }
+
+    #[test]
+    fn desktop_result_bound_001_accepts_the_deep_ceiling_and_rejects_one_more() {
+        assert!(valid_retained_candidate_count(110_000, 110_000));
+        assert!(!valid_retained_candidate_count(110_001, 110_001));
+        assert!(!valid_retained_candidate_count(110_000, 109_999));
     }
 
     #[test]

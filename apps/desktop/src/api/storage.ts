@@ -12,7 +12,7 @@ const MAX_DISKS = 128;
 const MAX_VOLUMES_PER_DISK = 128;
 const MAX_CANDIDATES_PER_PAGE = 200;
 const MAX_ACTIONABLE_CANDIDATES_PER_PAGE = 100;
-const MAX_EXTENSION_FACETS = 100_000;
+export const MAX_RETAINED_CANDIDATES_PER_SCAN = 110_000;
 const MAX_WARNINGS = 128;
 const MAX_TEXT_CODE_POINTS = 512;
 
@@ -747,6 +747,7 @@ function normalizedExtension(value: unknown): string {
     extension.includes(".") ||
     extension.includes("/") ||
     extension.includes("\\") ||
+    extension.includes("\uFEFF") ||
     extension.trim() !== extension
   ) {
     throw new StorageContractError();
@@ -885,7 +886,7 @@ export function parseCandidateQueryPage(value: unknown): CandidateQueryPage {
   if (
     item.schemaVersion !== CANDIDATE_QUERY_SCHEMA_VERSION ||
     !Array.isArray(item.extensionFacets) ||
-    item.extensionFacets.length > MAX_EXTENSION_FACETS ||
+    item.extensionFacets.length > MAX_RETAINED_CANDIDATES_PER_SCAN ||
     !Array.isArray(item.candidates) ||
     item.candidates.length > MAX_ACTIONABLE_CANDIDATES_PER_PAGE
   ) {

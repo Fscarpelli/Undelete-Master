@@ -51,9 +51,19 @@ applies a stable requested sort and returns at most 100 rows.
 
 Extensions are normalized case-insensitively. The empty extension represents
 no declared extension. Extension facets count the complete active scan and are
-not derived from the visible page. The facet wire bound equals the retained
-scan bound of 100,000 candidates, so every distinct extension in a valid
-retained scan can be represented without truncation.
+not derived from the visible page. Extension tokens are bounded both before
+and after lowercase normalization, so a Unicode lowercase expansion cannot
+cross the 255-scalar wire limit. Controls, bidirectional formatting controls,
+path separators, dots, and U+FEFF are rejected; rejecting U+FEFF explicitly
+keeps the Rust and ECMAScript contracts independent of their different trim
+tables.
+
+The desktop rejects a scan result before retention if its reported and actual
+candidate counts differ or its actual count exceeds 110,000. This aggregate
+bound covers the NTFS scanner's 100,000 deleted-metadata candidates plus the
+deep scanner's 10,000 carved candidates. The facet wire bound is the same
+110,000, so every distinct extension in a valid retained scan can be
+represented without truncation.
 
 Every supported sort uses the native `CandidateId` as its final ascending
 tie-breaker. Null scores sort after non-null scores in both directions.
@@ -133,7 +143,7 @@ The legacy schema-v2 page remains registered for the existing UI. SDD-020 Task
 - Only the current native query binding is retained. A mutation from an older
   view fails closed and the frontend must issue the current query again.
 - Facets are recomputed from the bounded retained scan. This is linear in the
-  candidate count but remains within the existing 100,000-candidate bound.
+  candidate count but remains within the 110,000-candidate aggregate bound.
 - Selection is durable only for the in-memory scan-session lifetime;
   persistent resume remains outside this increment.
 - Decimal candidate IDs are opaque contract values even though their wire
@@ -144,10 +154,13 @@ The legacy schema-v2 page remains registered for the existing UI. SDD-020 Task
 Focused Rust tests construct real `Candidate` values and cover every filter,
 every sort, extension facets, deterministic null placement and ID
 tie-breaking, the exact 100-row bound, cursor binding, select-all, direct-ID
-bounds, persistence, stale revisions, and summary consistency.
+bounds, persistence, stale revisions, and summary consistency. Constant-time
+boundary tests prove that 110,000 retained candidates are accepted and
+110,001 are rejected without constructing an unreasonably large fixture.
 
 Focused TypeScript tests cover the exact schema-v1 page, closed keys, decimal
-limits, duplicate IDs, authority-field rejection, and exact Tauri wrapper
+limits, duplicate IDs, authority-field rejection, the matching facet ceiling,
+post-lowercase Unicode expansion, U+FEFF rejection, and exact Tauri wrapper
 arguments. No test opens or writes a real disk.
 
 ## Relationship to earlier decisions
