@@ -109,6 +109,7 @@ pub enum Message {
         size: u64,
         logical_sector: u32,
         physical_sector: u32,
+        physical_disk_number: u32,
     },
     ReadAt {
         handle_id: u64,
@@ -160,6 +161,7 @@ impl Message {
                 size,
                 logical_sector,
                 physical_sector,
+                physical_disk_number: _,
             } => {
                 validate_nonzero("handle_id", *handle_id)?;
                 validate_nonzero("size", *size)?;
@@ -290,7 +292,13 @@ pub const MESSAGE_SCHEMA: [MessageSchema; 10] = [
     MessageSchema {
         opcode: Opcode::Opened,
         name: "Opened",
-        fields: &["handle_id", "size", "logical_sector", "physical_sector"],
+        fields: &[
+            "handle_id",
+            "size",
+            "logical_sector",
+            "physical_sector",
+            "physical_disk_number",
+        ],
     },
     MessageSchema {
         opcode: Opcode::ReadAt,

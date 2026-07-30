@@ -5,7 +5,7 @@ Status: Current for SDD-018; final native/package/security evidence pending
 ## Scope
 
 This model covers the unelevated Tauri desktop, mounted-volume inventory,
-native NTFS folder authority, protocol-v2 broker client, short-lived elevated
+native NTFS folder authority, protocol-v3 broker client, short-lived elevated
 broker, read-only mounted-volume source, unelevated partition/filesystem
 parsers, candidate adaptation and React rendering.
 
@@ -21,7 +21,7 @@ flowchart LR
     Facade -->|"query only"| Inventory["Mounted local volume inventory"]
     Facade -->|"native picker; path retained in Rust"| Folder["NTFS folder authority"]
     Facade -->|"fixed sibling + CSPRNG values"| Pipe["Current-user local pipe"]
-    Pipe -->|"peer PID/liveness + fixed sibling image + protocol v2"| Broker["Elevated read-only broker"]
+    Pipe -->|"peer PID/liveness + fixed sibling image + protocol v3"| Broker["Elevated read-only broker"]
     Broker -->|"GENERIC_READ / OPEN_EXISTING"| Volume["Selected mounted volume"]
     Broker -->|"bounded bytes"| Scanner["Unelevated partition + NTFS/FAT scanner"]
     Scanner -->|"namespace evidence"| Filter["Match / NoMatch / Unknown"]
@@ -40,11 +40,11 @@ folder/NTFS namespace, untrusted metadata/DTO and DTO/React rendering.
 
 | Threat | Boundary | Impact | Current mitigation | Residual / required evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Spoofed broker peer | Native client to pipe | Privileged read oracle or redirected session | Fixed sibling, restrictive one-instance pipe, bidirectional PID/liveness, broker-side `QueryFullProcessImageNameW` equality with the canonical fixed desktop sibling, v2 sequences and exact nonce echo | Image-path equality reduces confused-deputy exposure but is not publisher/package authentication; Authenticode, protected-directory and same-revision native evidence remain pending | Open |
+| Spoofed broker peer | Native client to pipe | Privileged read oracle or redirected session | Fixed sibling, restrictive one-instance pipe, bidirectional PID/liveness, broker-side `QueryFullProcessImageNameW` equality with the canonical fixed desktop sibling, v3 sequences and exact nonce echo | Image-path equality reduces confused-deputy exposure but is not publisher/package authentication; Authenticode, protected-directory and same-revision native evidence remain pending | Open |
 | Broker binary replacement | Package to process launch | Attacker receives elevated execution | The launcher derives the fixed broker sibling internally; the genuine broker checks the desktop sibling image before service; no UI executable path | A replaced broker can ignore its own peer check, and a user-replaceable sibling directory defeats path-only identity; Authenticode, hash binding, protected installation and clean-machine evidence pending | Open |
-| Protocol replay/confusion | Pipe framing | Wrong command/result applied | Fixed 20-byte header, exact v2, independent contiguous sequences, closed ten-message schema | Final full suite and fuzz campaign pending | Mitigating |
+| Protocol replay/confusion | Pipe framing | Wrong command/result applied | Fixed 20-byte header, exact v3 with v2 rejected, independent contiguous sequences, closed ten-message schema | Final full suite and fuzz campaign pending | Mitigating |
 | Privilege expansion | Protocol/native boundary | Write, arbitrary path or generic control under elevation | No mutation/path/access-mask/control field; three query-only IOCTLs; scan source uses `GENERIC_READ` | Static import/access-mask review and built-binary evidence pending | Open |
-| Stale volume substitution | Inventory to open/read | Wrong source scanned | Stable GUID+serial ID; UAC; independent broker canonical length/extents/mapping checks on the currently mounted source | An exact GUID+serial clone is indistinguishable at first open; post-open extents/length/geometry become that source's baseline; live volume remains mutable and no snapshot is claimed | Open |
+| Stale volume substitution | Inventory to open/read | Wrong source scanned | Stable GUID+serial ID; UAC; independent broker canonical length/extents/mapping and fixed direct-bus checks on the currently mounted source | An exact GUID+serial clone is indistinguishable at first open; post-open extents/length/geometry/bus become that source's baseline; a hypervisor can emulate a reviewed direct bus; live volume remains mutable and no snapshot is claimed | Open |
 | Identity change between reads | Mutable volume | Mixed or misleading result | Re-enumerate after both 256 valid reads and one second; every accepted read still reaches `ReadFile` | Not a snapshot; change between cadence points remains possible | Open |
 | Out-of-range/oversized read | Protocol to source | Escape, allocation or denial of service | Checked `offset + length`, source-length bound, 1 MiB cap, client chunking, one source | Hostile live-device campaign pending | Mitigating |
 | Source mutation by application | Broker to volume | Destroyed recoverable evidence | Read-only trait, `GENERIC_READ`, no mutation opcode or storage-changing IOCTL | Final static/native binary evidence pending | Open |
@@ -69,7 +69,7 @@ folder/NTFS namespace, untrusted metadata/DTO and DTO/React rendering.
   equality to the fixed desktop sibling.
 - Peer image-path equality is not Authenticode, publisher, package-revision or
   protected-directory authentication.
-- Protocol v2 permits exactly `Hello`, `HelloAck`, `OpenSource`, `Opened`,
+- Protocol v3 permits exactly `Hello`, `HelloAck`, `OpenSource`, `Opened`,
   `ReadAt`, `ReadData`, `CloseSource`, `Closed`, `Shutdown` and `Error`.
 - Maximum payload/read is 1 MiB.
 - One session opens at most one source.

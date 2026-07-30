@@ -4,7 +4,7 @@ use crate::message::{BrokerErrorCode, Message, Opcode};
 use crate::{FramePart, ProtocolError, SequenceDirection, MAX_READ_LEN};
 
 pub const PROTOCOL_MAGIC: [u8; 4] = *b"UMBP";
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const HEADER_LEN: usize = 20;
 pub const MAX_PAYLOAD_LEN: usize = MAX_READ_LEN;
 pub const MAX_FRAME_LEN: usize = HEADER_LEN + MAX_PAYLOAD_LEN;
@@ -262,11 +262,13 @@ fn encode_payload(message: &Message) -> Result<Vec<u8>, ProtocolError> {
             size,
             logical_sector,
             physical_sector,
+            physical_disk_number,
         } => {
             payload.u64(*handle_id)?;
             payload.u64(*size)?;
             payload.u32(*logical_sector)?;
             payload.u32(*physical_sector)?;
+            payload.u32(*physical_disk_number)?;
         }
         Message::ReadAt {
             handle_id,
@@ -311,6 +313,7 @@ fn decode_payload(opcode: Opcode, payload: &[u8]) -> Result<Message, ProtocolErr
             size: reader.u64()?,
             logical_sector: reader.u32()?,
             physical_sector: reader.u32()?,
+            physical_disk_number: reader.u32()?,
         },
         Opcode::ReadAt => Message::ReadAt {
             handle_id: reader.u64()?,

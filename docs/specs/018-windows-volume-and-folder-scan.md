@@ -47,7 +47,7 @@ to accept regular image files under ADR-0003.
 - optional folder scope only for NTFS;
 - native folder picker whose absolute path never crosses the WebView boundary;
 - short-lived elevated broker and local current-user named pipe;
-- protocol version 2 with ten message kinds and a maximum one-megabyte payload;
+- protocol version 3 with ten message kinds and a maximum one-megabyte payload;
 - bounded candidate pages of exactly at most 100 rows;
 - decimal-string transport for every `u64` exposed to JavaScript;
 - bounded native state: 32 folder scopes and 4 scan sessions;
@@ -128,17 +128,18 @@ friendly text are display data only.
 The stable opaque volume ID is derived from volume GUID plus volume serial; it
 does not include mount letter, quota-visible size/free values, extents,
 filesystem or disk number. On explicit scan, the elevated broker independently
-resolves the same volume, queries canonical length/sector geometry and disk
-extents, and rejects missing or multi-disk mappings before accepting the source
-or reading any source byte.
+resolves the same volume, queries canonical length/sector geometry, disk
+extents, and the fixed storage-device bus property, then rejects missing,
+multi-disk, virtual, file-backed, Storage Spaces, array/network, unknown, or
+future mappings before accepting the source or reading any source byte.
 
 The raw open is restricted to the internally resolved mounted-volume selector.
 Immediately after the `GENERIC_READ` handle is acquired, query-only
 `GetVolumeInformationByHandleW` must return the serial from the selected
 inventory identity. Source length, logical/physical sector geometry and
-extents are then derived authoritatively by the broker. Serial mismatch,
-disappearance, changed geometry, changed extents or unresolvable identity fails
-closed.
+extents and the reviewed direct bus class are then derived authoritatively by
+the broker. Serial mismatch, disappearance, changed geometry, changed extents,
+changed storage bus, or unresolvable identity fails closed.
 
 The pre-UAC identity tuple is exactly volume GUID plus serial. A replacement
 that preserves both values exactly is indistinguishable from the selected
@@ -152,7 +153,7 @@ forensic identity claim.
 The volume remains online and may change while it is scanned. SDD-018 makes no
 snapshot or forensic-chain-of-custody claim.
 
-## 5. Broker lifecycle and protocol v2
+## 5. Broker lifecycle and protocol v3
 
 The client creates a CSPRNG pipe suffix and 32-byte nonce, creates a one-instance
 local named pipe with a current-user DACL, launches only the fixed sibling
@@ -168,13 +169,13 @@ it does not verify Authenticode, publisher, package revision, directory ACLs or
 that the sibling directory is administrator-protected. An unsigned or
 user-replaceable package remains blocked from production distribution.
 
-Protocol v2 has a 20-byte little-endian frame header, monotonic independent
+Protocol v3 has a 20-byte little-endian frame header, monotonic independent
 sequence numbers, a maximum payload of 1 MiB and exactly these ten messages:
 
 1. `Hello { challenge }`
 2. `HelloAck { challenge }`
 3. `OpenSource { source_id }`
-4. `Opened { handle_id, size, logical_sector, physical_sector }`
+4. `Opened { handle_id, size, logical_sector, physical_sector, physical_disk_number }`
 5. `ReadAt { handle_id, offset, length }`
 6. `ReadData { bytes }`
 7. `CloseSource { handle_id }`
@@ -339,7 +340,7 @@ unavailable desktop runtime and invokes no native command.
   `apps/desktop/src-tauri/windows-app-manifest.xml`.
 - **Status:** `Implemented-unverified`.
 
-### SDD-WIN-003 — Closed protocol v2
+### SDD-WIN-003 — Closed protocol v3
 
 - **Rationale:** the privileged boundary must expose only the minimum read
   lifecycle.
@@ -347,8 +348,10 @@ unavailable desktop runtime and invokes no native command.
 - **Source:** ADR-0009 and ADR-0023.
 - **Preconditions:** native peer PID/liveness and fixed sibling image-path
   checks accepted the pipe.
-- **Behavior:** use exactly the ten v2 messages, one-megabyte payload cap,
-  contiguous sequences and exact constant-time nonce echo verification.
+- **Behavior:** use exactly the ten v3 messages, the authoritative
+  `physical_disk_number` in `Opened`, explicit v2 rejection, one-megabyte
+  payload cap, contiguous sequences and exact constant-time nonce echo
+  verification.
 - **Error behavior:** malformed, replayed, oversized or unknown traffic closes
   or rejects the session without free-form diagnostics.
 - **Security implications:** nonce echo is explicitly not a MAC; the native
@@ -375,7 +378,8 @@ unavailable desktop runtime and invokes no native command.
 - **Preconditions:** an eligible opaque volume ID exists in a fresh inventory.
 - **Behavior:** independently resolve identity, open only that mounted volume
   with `GENERIC_READ | OPEN_EXISTING`, bind the selected serial to the live
-  handle, and derive canonical extents, size and sector geometry.
+  handle, and derive canonical extents, size, sector geometry, and a reviewed
+  direct storage-bus classification.
 - **Error behavior:** disappearance, replacement, unsupported mapping or
   changed identity fails closed.
 - **Security implications:** no UI path, physical-disk selector or access mask

@@ -103,6 +103,7 @@ pub struct OpenedSource {
     pub size: u64,
     pub logical_sector: u32,
     pub physical_sector: u32,
+    pub physical_disk_number: u32,
 }
 
 /// Testable read-only session boundary used by [`BrokerSourceReader`].
@@ -218,11 +219,13 @@ where
                 size,
                 logical_sector,
                 physical_sector,
+                physical_disk_number,
             } => Ok(OpenedSource {
                 handle_id,
                 size,
                 logical_sector,
                 physical_sector,
+                physical_disk_number,
             }),
             Message::Error { code } => Err(BrokerClientError::from_broker(code)),
             _ => {
@@ -292,6 +295,7 @@ pub struct BrokerSourceReader<S: ReadSession> {
     identity: SourceIdentity,
     length: u64,
     sector_layout: SectorLayout,
+    physical_disk_number: u32,
 }
 
 impl<S: ReadSession> BrokerSourceReader<S> {
@@ -336,7 +340,12 @@ impl<S: ReadSession> BrokerSourceReader<S> {
             },
             length: opened.size,
             sector_layout: sector_layout.expect("sector layout checked above"),
+            physical_disk_number: opened.physical_disk_number,
         })
+    }
+
+    pub const fn physical_disk_number(&self) -> u32 {
+        self.physical_disk_number
     }
 
     fn range_is_valid(&self, offset: u64, length: usize) -> bool {

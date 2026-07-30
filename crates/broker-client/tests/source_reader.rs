@@ -65,6 +65,7 @@ impl ReadSession for ScriptedSession {
             size: self.bytes.len() as u64,
             logical_sector: 512,
             physical_sector: 4096,
+            physical_disk_number: 7,
         })
     }
 
@@ -124,6 +125,7 @@ fn broker_client_reader_001_returns_exact_source_bytes() {
     assert_eq!(reader.sector_layout().logical, 512);
     assert_eq!(reader.sector_layout().physical, 4096);
     assert_eq!(reader.identity().id, "inventory-source-17");
+    assert_eq!(reader.physical_disk_number(), 7);
 }
 
 #[test]

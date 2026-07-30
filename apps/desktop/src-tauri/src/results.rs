@@ -38,6 +38,7 @@ pub(crate) struct ScanSourceBinding {
     pub(crate) volume_id: String,
     pub(crate) source_len: u64,
     pub(crate) file_system: String,
+    pub(crate) physical_disk_number: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -929,6 +930,7 @@ mod tests {
                     volume_id: "volume-fixture".to_owned(),
                     source_len: 1_000_000,
                     file_system: "ntfs".to_owned(),
+                    physical_disk_number: 7,
                 },
                 candidates,
                 index,

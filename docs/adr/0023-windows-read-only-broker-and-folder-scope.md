@@ -70,11 +70,12 @@ Adopt the exact mounted-volume architecture in
    There is no service and inventory does not request UAC.
 5. The stable volume ID uses volume GUID plus serial only, excluding mount,
    quota-visible size/free data, filesystem, extents and disk number. The
-   broker independently resolves it, queries canonical length/geometry/extents,
-   opens the mounted volume with exactly `GENERIC_READ` and `OPEN_EXISTING`,
-   binds the selected serial to that live handle with the query-only
-   `GetVolumeInformationByHandleW`, and rejects composite mappings before any
-   source byte is read. A replacement preserving exactly the selected GUID plus
+   broker independently resolves it, queries canonical length/geometry/extents
+   plus the fixed storage-device bus property, opens the mounted volume with
+   exactly `GENERIC_READ` and `OPEN_EXISTING`, binds the selected serial to that
+   live handle with the query-only `GetVolumeInformationByHandleW`, and rejects
+   composite or unproven virtual/array mappings before any source byte is read.
+   A replacement preserving exactly the selected GUID plus
    serial remains indistinguishable at first open: UAC and broker enumeration
    still occur, but extents, length and geometry are derived from the source
    currently mounted and become its later revalidation baseline. No snapshot
@@ -84,10 +85,12 @@ Adopt the exact mounted-volume architecture in
    `QueryFullProcessImageNameW` on the already-bound peer process handle and
    requires the canonical fixed `undelete-master-desktop.exe` sibling derived
    from its own fixed broker path.
-7. Protocol version 2 has a 20-byte header, monotonic sequences, at most a
+7. Protocol version 3 has a 20-byte header, monotonic sequences, at most a
    one-megabyte payload and exactly ten messages: `Hello`, `HelloAck`,
    `OpenSource`, `Opened`, `ReadAt`, `ReadData`, `CloseSource`, `Closed`,
-   `Shutdown` and `Error`.
+   `Shutdown` and `Error`. Version 3 adds the authoritative single physical
+   disk number to `Opened`; version 2 is rejected rather than silently parsing
+   the incompatible payload.
 8. `HelloAck` echoes the exact CSPRNG 32-byte client nonce and the client checks
    it in constant time. The echo is not a MAC, shared secret or substitute for
    native peer verification.
@@ -99,8 +102,9 @@ Adopt the exact mounted-volume architecture in
 11. Expensive Windows identity re-enumeration occurs only after both 256 valid
     `ReadAt` requests and one elapsed second. This cadence is not a snapshot
     guarantee; the mounted volume remains mutable. Every due revalidation also
-    compares the live handle's serial, extents, canonical length and sector
-    layout with the values bound during open.
+    compares the live handle's serial, extents, canonical length, sector
+    layout, and reviewed direct storage-bus class with the values bound during
+    open.
 12. The audited Windows FFI boundary has a closed native-call allowlist for
     inventory, geometry, folder identity, local pipe/PID/liveness, the fixed
     peer-image query, fixed elevation, three query-only IOCTLs and read-only
@@ -121,14 +125,18 @@ Adopt the exact mounted-volume architecture in
 16. FAT supports a whole-mounted-volume scan only. Folder scope is NTFS-only.
 17. JavaScript sees exactly four commands and only opaque IDs, sanitized display
     data, decimal-string `u64` values and pages of at most 100 candidates.
-18. The desktop does not implement cancellation, hotplug subscription, restore,
-    preview, carving, exFAT, session persistence or a snapshot guarantee.
+18. The desktop does not implement cancellation, hotplug subscription,
+    destination writes, restore publication, preview, exFAT, session
+    persistence or a snapshot guarantee. ADR-0027 adds query-only destination
+    authority and disk-separation evidence without adding a write capability.
 19. Pull-request and ordinary local tests never open a real disk. The image CLI
     remains the read-only fallback and is not superseded.
 
-Any added broker opcode, source mutation, generic control path, physical-disk
-authority, privileged parser or path-bearing WebView contract requires a new
-accepted ADR.
+ADR-0027 authorizes only the fixed source/destination physical-disk evidence and
+query-only destination capability described there. Any added broker opcode,
+source mutation, generic control path, broader physical-disk authority,
+privileged parser or path-bearing WebView contract requires another accepted
+ADR.
 
 ## Formal audited-boundary expansion
 
@@ -137,10 +145,18 @@ placing native authority in an existing helper. `crates/io-windows` becomes the
 single audited Windows FFI boundary for this increment. Its allowed source
 authority is narrower than its implementation language surface:
 
-- query mounted-volume identity, extents, length and alignment;
+- query mounted-volume identity, extents, length, alignment, and exactly the
+  `StorageDeviceProperty` bus classification;
 - query the serial of the live read-only volume handle with
   `GetVolumeInformationByHandleW` during open and due revalidation;
 - validate one native NTFS directory identity;
+- open one Rust-owned destination selection with fixed query/list access,
+  read/write sharing without delete sharing, `OPEN_EXISTING`, backup semantics
+  and final-reparse no-follow; retain that exact directory handle;
+- derive a final volume GUID from that handle, open only that internally
+  derived GUID with desired access `0`, and query its serial, sanitized
+  label/filesystem, free bytes, bounded physical-disk extents, and the same
+  fixed storage-device bus classification;
 - create/connect one local broker pipe and verify peer PID/liveness;
 - query the already-bound peer image with `QueryFullProcessImageNameW` and
   compare it with the canonical fixed desktop sibling before serving;
@@ -148,7 +164,7 @@ authority is narrower than its implementation language surface:
 - open only an internally resolved mounted-volume selector for read;
 - seek and read bounded bytes.
 
-The only permitted storage control codes are
+The only permitted storage control codes remain
 `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`, `IOCTL_DISK_GET_LENGTH_INFO` and
 `IOCTL_STORAGE_QUERY_PROPERTY`. None changes storage state. The broker protocol
 cannot choose a control code.
@@ -170,6 +186,10 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
   packaged desktop sibling;
 - folder results separate proof from uncertainty;
 - protocol and UI surfaces are finite and testable;
+- destination validation retains one non-serializable, query-only handle and
+  rejects unknown, composite, same-disk, changed-source and non-NTFS evidence;
+- source and destination reject known virtual, file-backed, Storage Spaces,
+  array/network, unknown, and future bus classes before trusting a disk number;
 - the image CLI remains available.
 
 ### Negative
@@ -181,6 +201,9 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
 - a replacement preserving exactly the selected GUID plus serial cannot be
   distinguished at first open; extents, length and geometry are then derived
   from the currently mounted replacement and become its revalidation baseline;
+- storage bus classification catches native VHD/VHDX and Storage Spaces but is
+  not proof against a hypervisor or third-party filter that emulates an
+  allowlisted direct bus;
 - a live mounted volume can change during the scan;
 - there is no cancellation, snapshot or hotplug guarantee;
 - FAT cannot be folder-scoped;
@@ -201,6 +224,8 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
   authentication;
 - nonce echo is never described as cryptographic authentication;
 - no native path, GUID, handle, extent or source byte reaches JavaScript;
+- source and destination physical disk numbers remain native-only and never
+  reach JavaScript;
 - recovered labels are bounded, sanitized and rendered as text;
 - recursive NTFS namespace work is bounded before a saturated sibling descent;
   saturation remains incomplete/partial evidence and unproven ancestry remains
@@ -250,10 +275,14 @@ desktop path with opaque volume and NTFS directory identities.
 - [ADR-0009](0009-ipc-protocol.md): broker protocol principles.
 - [ADR-0011](0011-ntfs-raw-parsing-and-active-record-apis.md): NTFS namespace
   evidence.
+- [ADR-0027](0027-destination-capability-and-disk-separation.md): opaque
+  destination authority, protocol v3 source disk identity and fail-closed
+  physical-disk separation.
 
 ## Revisit triggers
 
 Revisit before adding whole-disk/unmounted authority, another filesystem folder
-scope, a protocol message, generic IOCTL, service, cancellation, progress,
-snapshot, restore, preview, carving, exFAT, content execution, real-disk test or
-public artifact without completed release gates.
+scope, a protocol message or wire-field change, generic IOCTL, service,
+cancellation, progress, snapshot, destination filesystem, same-disk override,
+restore write inside this boundary, preview, exFAT, content execution, real-disk
+test or public artifact without completed release gates.

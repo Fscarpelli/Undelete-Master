@@ -4,6 +4,7 @@ use std::{io, io::Read, io::Write};
 
 use um_core::{SectorLayout, SourceIdentity};
 
+use crate::DestinationError;
 use crate::{FolderScope, LocationError, StorageError, StorageInventory, StorageLocation};
 
 pub(super) fn classify_path(_path: &Path) -> Result<StorageLocation, LocationError> {
@@ -19,6 +20,44 @@ pub(super) fn validate_folder_scope(
     _folder: &Path,
 ) -> Result<FolderScope, StorageError> {
     Err(StorageError::UnsupportedPlatform)
+}
+
+pub(super) fn open_destination_root_binding(
+    _destination_root: &Path,
+) -> Result<DestinationRootBindingInner, StorageError> {
+    Err(DestinationError::UnsupportedPlatform.into())
+}
+
+pub(super) enum DestinationRootBindingInner {}
+
+impl DestinationRootBindingInner {
+    pub(super) fn display_label(&self) -> &str {
+        match *self {}
+    }
+
+    pub(super) fn volume_label(&self) -> &str {
+        match *self {}
+    }
+
+    pub(super) fn file_system(&self) -> &str {
+        match *self {}
+    }
+
+    pub(super) fn free_bytes(&self) -> u64 {
+        match *self {}
+    }
+
+    pub(super) fn physical_disk_number(&self) -> u32 {
+        match *self {}
+    }
+
+    pub(super) fn reparse_safe(&self) -> bool {
+        match *self {}
+    }
+
+    pub(super) fn into_directory_file(self) -> std::fs::File {
+        match self {}
+    }
 }
 
 pub(super) fn open_raw_volume(_volume_id: &str) -> Result<RawVolumeInner, StorageError> {
@@ -49,6 +88,7 @@ pub(super) struct RawVolumeInner {
     identity: SourceIdentity,
     length: u64,
     layout: SectorLayout,
+    physical_disk_number: u32,
 }
 
 impl RawVolumeInner {
@@ -62,6 +102,10 @@ impl RawVolumeInner {
 
     pub(super) fn sector_layout(&self) -> SectorLayout {
         self.layout
+    }
+
+    pub(super) fn physical_disk_number(&self) -> u32 {
+        self.physical_disk_number
     }
 
     pub(super) fn read_exact_at(

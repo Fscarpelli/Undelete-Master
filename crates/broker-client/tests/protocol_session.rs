@@ -90,6 +90,7 @@ fn broker_client_protocol_001_challenges_then_uses_contiguous_sequences() {
                 size: 8192,
                 logical_sector: 512,
                 physical_sector: 4096,
+                physical_disk_number: 7,
             },
         )
         .expect("open response");
@@ -115,6 +116,7 @@ fn broker_client_protocol_001_challenges_then_uses_contiguous_sequences() {
         .open_source("inventory-source-17")
         .expect("open source");
     assert_eq!(opened.handle_id, 73);
+    assert_eq!(opened.physical_disk_number, 7);
     assert_eq!(
         session.read_at(opened.handle_id, 4096, 16).expect("read"),
         vec![0xAB; 16]

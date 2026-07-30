@@ -97,15 +97,17 @@ formats, fragmented recovery, real-time progress, and cancellation do not.
 
 ## Actionable results and transactional restore increment
 
-These rows map the implemented Task 1 query/selection authority and Task 2
-bounded content planning/streaming from
+These rows map the implemented Task 1 query/selection authority, Task 2
+bounded content planning/streaming, and Task 3 physical-disk/destination
+authority from
 [SDD-020](specs/020-actionable-results-and-transactional-restore.md) and
 [ADR-0025](adr/0025-native-result-query-and-selection-authority.md) plus
-[ADR-0026](adr/0026-bounded-content-plan-and-partial-recovery.md). Focused
+[ADR-0026](adr/0026-bounded-content-plan-and-partial-recovery.md) plus
+[ADR-0027](adr/0027-destination-capability-and-disk-separation.md). Focused
 native, restore, and TypeScript tests pass. The bounded React consumer,
-destination authority, transactional publication, end-to-end recovery,
-packaged acceptance, and final same-revision workspace evidence remain later
-tasks, so these rows are not yet `Verified`.
+destination picker/coordinator retention, transactional publication,
+end-to-end recovery, packaged acceptance, and final same-revision workspace
+evidence remain later tasks, so these rows are not yet `Verified`.
 
 | Requirement | Design section | Code module | Unit tests | Integration tests | E2E scenario | Evidence artifact | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -126,6 +128,10 @@ tasks, so these rows are not yet `Verified`.
 | RESTORE-MEMORY-BOUND-008 | [SDD-020 §7](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0026](adr/0026-bounded-content-plan-and-partial-recovery.md) | `crates/restore/src/plan.rs`<br>`crates/restore/src/stream.rs` | Segment, scratch, malformed-plan, source-bound, and zero-evidence limits | `stream_multi_gigabyte_logical_file_keeps_reads_and_scratch_bounded` | Long-running external performance evidence pending Task 7 | Focused Task 2 Rust gates passed | Implemented-unverified |
 | RESTORE-HASH-MATCH-009 | [SDD-020 §7](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0026](adr/0026-bounded-content-plan-and-partial-recovery.md) | `crates/restore/src/stream.rs` | Literal SHA-256 and empty-stream regressions | `stream_expected_hash_match_passes_and_mismatch_fails` | Carving vertical fixture pending Task 5 | Focused Task 2 Rust gates passed | Implemented-unverified |
 | RESTORE-HASH-MISMATCH-010 | [SDD-020 §7](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0026](adr/0026-bounded-content-plan-and-partial-recovery.md) | `crates/restore/src/stream.rs` | Expected/actual SHA-256 mismatch regression | `stream_expected_hash_match_passes_and_mismatch_fails` | Publication rejection pending Task 4 | Focused Task 2 Rust gates passed | Implemented-unverified |
+| RESTORE-DIFFERENT-DISK-018 | [SDD-020 §4.1-4.2](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0027](adr/0027-destination-capability-and-disk-separation.md) | `crates/io-windows/src/model.rs`<br>`crates/io-windows/src/windows.rs`<br>`crates/broker-protocol/src/message.rs`<br>`crates/broker-client/src/lib.rs`<br>`crates/elevated-broker/src/lib.rs`<br>`apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `WINDOWS-DESTINATION-BINDING-001/006`<br>`WINDOWS-PHYSICAL-BACKING-003`<br>`DESKTOP-DISK-POLICY-001`<br>protocol/client/broker physical-disk propagation regressions | Query-double binding, fixed storage-device-property validator, and protocol-v3 round trip; no real disk opened by the destination tests | Native allowlisted-VHD rejection evidence, picker retention, and restore coordinator pending Task 5/7 | Focused Task 3 Rust and validator gates passed | Implemented-unverified |
+| RESTORE-SAME-DISK-REJECT-019 | [SDD-020 §4.2](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0027](adr/0027-destination-capability-and-disk-separation.md) | `crates/io-windows/src/model.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `DESKTOP-DISK-POLICY-002` | Exact same-disk structured-error assertion | Restore-plan admission pending Task 5 | Focused Task 3 desktop policy gate passed | Implemented-unverified |
+| RESTORE-UNKNOWN-DISK-REJECT-020 | [SDD-020 §4.2](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0027](adr/0027-destination-capability-and-disk-separation.md) | `crates/io-windows/src/model.rs`<br>`crates/io-windows/src/windows.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `WINDOWS-DESTINATION-BINDING-003/006`<br>`WINDOWS-PHYSICAL-BACKING-003`<br>`DESKTOP-DISK-POLICY-002` | Missing, multi-disk, virtual/file-backed/Spaces, array/network, and unknown bus assertions | Disposable allowlisted VHD must prove rejection; emulated direct buses remain a documented residual | Focused Task 3 io-windows, validator, and desktop policy gates passed | Implemented-unverified |
+| RESTORE-SOURCE-CHANGED-021 | [SDD-020 §4.1-4.2](specs/020-actionable-results-and-transactional-restore.md)<br>[ADR-0027](adr/0027-destination-capability-and-disk-separation.md) | `crates/io-windows/src/windows.rs`<br>`crates/broker-client/src/lib.rs`<br>`apps/desktop/src-tauri/src/results.rs`<br>`apps/desktop/src-tauri/src/storage.rs` | `WINDOWS-RAW-IDENTITY-001/002`<br>`DESKTOP-DISK-POLICY-003` | Scan-bound number differs from reopened authoritative number and fails closed | Reopen-before-plan/job integration pending Task 5 | Focused Task 3 source identity and policy gates passed | Implemented-unverified |
 
 ## Non-functional requirements
 

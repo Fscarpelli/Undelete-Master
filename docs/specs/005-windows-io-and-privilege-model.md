@@ -27,14 +27,16 @@ The main manifest is `asInvoker`; the fixed sibling broker manifest is
 `requireAdministrator`. UAC occurs only after explicit scan activation.
 
 The client creates a current-user, one-instance local named pipe and accepts
-only the launched broker PID. Protocol v2 then uses exact nonce echo, monotonic
+only the launched broker PID. Protocol v3 then uses exact nonce echo, monotonic
 sequences, ten messages and a maximum 1 MiB payload. Peer PID remains the
 primary identity check; nonce echo is not a MAC.
 
 The broker independently resolves the opaque volume ID, then queries canonical
-length, sector geometry and disk extents. Missing and multi-disk mappings fail
-closed. Only then does it open the internal mounted-volume selector with
-exactly `GENERIC_READ`, compatible sharing and `OPEN_EXISTING`.
+length, sector geometry, disk extents, and the fixed storage-device bus
+property. Missing, multi-disk, virtual/file-backed, Storage Spaces,
+array/network, unknown, and future mappings fail closed. Only then does it open
+the internal mounted-volume selector with exactly `GENERIC_READ`, compatible
+sharing and `OPEN_EXISTING`.
 
 Every valid read is range-checked and reaches `ReadFile` unless identity
 revalidation first fails. Expensive identity enumeration occurs only after
@@ -46,7 +48,8 @@ no snapshot, lock or dismount occurs.
 `crates/io-windows` is the sole Windows FFI boundary for:
 
 - mounted-volume discovery, identity, length and sector geometry;
-- the query-only IOCTLs for volume extents, disk length and storage alignment;
+- the query-only IOCTLs for volume extents, disk length, storage alignment, and
+  the fixed `StorageDeviceProperty` classification;
 - read-only NTFS directory identity;
 - local named-pipe creation/connect and peer PID/liveness;
 - fixed sibling elevation;

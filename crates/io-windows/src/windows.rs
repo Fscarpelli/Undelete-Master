@@ -24,18 +24,20 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetDriveTypeW, GetFileInformationByHandle,
-    GetFinalPathNameByHandleW, GetLogicalDrives, GetVolumeInformationByHandleW,
-    GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, ReadFile, SetFilePointerEx,
-    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BEGIN, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    PIPE_ACCESS_DUPLEX, SYNCHRONIZE, VOLUME_NAME_GUID,
+    BusTypeAta, BusTypeNvme, BusTypeSata, BusTypeUsb, CreateFileW, GetDiskFreeSpaceExW,
+    GetDiskFreeSpaceW, GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+    GetLogicalDrives, GetVolumeInformationByHandleW, GetVolumeInformationW,
+    GetVolumeNameForVolumeMountPointW, ReadFile, SetFilePointerEx, BY_HANDLE_FILE_INFORMATION,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BEGIN,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SYNCHRONIZE,
+    VOLUME_NAME_GUID,
 };
 use windows_sys::Win32::System::Ioctl::{
-    PropertyStandardQuery, StorageAccessAlignmentProperty, DISK_EXTENT, GET_LENGTH_INFORMATION,
-    IOCTL_DISK_GET_LENGTH_INFO, IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR,
+    PropertyStandardQuery, StorageAccessAlignmentProperty, StorageDeviceProperty, DISK_EXTENT,
+    GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_STORAGE_QUERY_PROPERTY,
+    STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR, STORAGE_DESCRIPTOR_HEADER, STORAGE_DEVICE_DESCRIPTOR,
     STORAGE_PROPERTY_QUERY, VOLUME_DISK_EXTENTS,
 };
 use windows_sys::Win32::System::Pipes::{
@@ -51,16 +53,18 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 
 use crate::model::{
     build_inventory_from_query_results, decode_ntfs_file_reference, derive_folder_scope_id,
-    derive_volume_id, drive_scan_policy, parse_folder_identity_path, plan_aligned_read, DiskExtent,
-    DriveKind, NativeVolumeSnapshot, ScanPolicy,
+    derive_volume_id, drive_scan_policy, open_destination_root_with, parse_folder_identity_path,
+    plan_aligned_read, DestinationRootEvidence, DestinationRootInformation, DestinationRootQuery,
+    DestinationVolumeInformation, DiskExtent, DriveKind, NativeVolumeSnapshot, PhysicalBacking,
+    ScanPolicy,
 };
 use crate::transport_config::{
     broker_executable_from_current, build_broker_arguments, build_pipe_name, build_pipe_sddl,
     desktop_executable_from_broker,
 };
 use crate::{
-    FolderScope, FolderScopeError, LocationError, StorageError, StorageInventory, StorageLocation,
-    UnsupportedReason,
+    DestinationError, FolderScope, FolderScopeError, LocationError, StorageError, StorageInventory,
+    StorageLocation, UnsupportedReason,
 };
 
 const DRIVE_UNKNOWN: u32 = 0;
@@ -72,6 +76,7 @@ const DRIVE_CDROM: u32 = 5;
 const DRIVE_RAMDISK: u32 = 6;
 const MAX_VOLUME_NAME_UNITS: usize = 261;
 const MAX_VOLUME_EXTENTS: usize = 128;
+const MAX_STORAGE_DEVICE_DESCRIPTOR_BYTES: usize = 64 * 1024;
 const INITIAL_EXTENT_BUFFER_BYTES: usize = 1024;
 const MAX_EXTENT_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_PROCESS_IMAGE_UNITS: usize = 32_768;
@@ -192,6 +197,134 @@ pub(super) fn validate_folder_scope(
     })
 }
 
+pub(super) fn open_destination_root_binding(
+    destination_root: &Path,
+) -> Result<DestinationRootBindingInner, StorageError> {
+    let mut query = WindowsDestinationRootQuery;
+    let evidence = open_destination_root_with(destination_root, &mut query)?;
+    let DestinationRootEvidence {
+        root_handle,
+        final_volume_guid,
+        display_label,
+        volume_label,
+        file_system,
+        free_bytes,
+        physical_disks,
+        physical_backing,
+        reparse_safe,
+        volume_serial,
+        file_index,
+    } = evidence;
+    let physical_disk_number = physical_disks.single()?;
+    Ok(DestinationRootBindingInner {
+        _root_handle: File::from(root_handle),
+        _final_volume_guid: final_volume_guid,
+        display_label,
+        volume_label,
+        file_system,
+        free_bytes,
+        physical_disk_number,
+        reparse_safe,
+        _physical_backing: physical_backing,
+        _volume_serial: volume_serial,
+        _file_index: file_index,
+    })
+}
+
+pub(super) struct DestinationRootBindingInner {
+    _root_handle: File,
+    _final_volume_guid: String,
+    display_label: String,
+    volume_label: String,
+    file_system: String,
+    free_bytes: u64,
+    physical_disk_number: u32,
+    reparse_safe: bool,
+    _physical_backing: PhysicalBacking,
+    _volume_serial: u32,
+    _file_index: u64,
+}
+
+impl DestinationRootBindingInner {
+    pub(super) fn display_label(&self) -> &str {
+        &self.display_label
+    }
+
+    pub(super) fn volume_label(&self) -> &str {
+        &self.volume_label
+    }
+
+    pub(super) fn file_system(&self) -> &str {
+        &self.file_system
+    }
+
+    pub(super) fn free_bytes(&self) -> u64 {
+        self.free_bytes
+    }
+
+    pub(super) fn physical_disk_number(&self) -> u32 {
+        self.physical_disk_number
+    }
+
+    pub(super) fn reparse_safe(&self) -> bool {
+        self.reparse_safe
+    }
+
+    pub(super) fn into_directory_file(self) -> File {
+        self._root_handle
+    }
+}
+
+struct WindowsDestinationRootQuery;
+
+impl DestinationRootQuery for WindowsDestinationRootQuery {
+    type RootHandle = OwnedHandle;
+
+    fn classify_root(&mut self, path: &Path) -> Result<(), DestinationError> {
+        let letter = drive_letter(path).map_err(|_| DestinationError::UnsupportedRoot)?;
+        let root = drive_root_wide(letter);
+        // SAFETY: `root` is a live fixed-size NUL-terminated UTF-16 drive
+        // root. GetDriveTypeW performs only a locality/classification query.
+        match drive_kind(unsafe { GetDriveTypeW(root.as_ptr()) }) {
+            DriveKind::Fixed | DriveKind::Removable => Ok(()),
+            DriveKind::Remote => Err(DestinationError::NonLocal),
+            DriveKind::Unknown | DriveKind::NoRoot | DriveKind::CdRom | DriveKind::RamDisk => {
+                Err(DestinationError::UnsupportedRoot)
+            }
+        }
+    }
+
+    fn open_root(&mut self, path: &Path) -> Result<Self::RootHandle, DestinationError> {
+        open_destination_root_handle(path).map_err(|_| DestinationError::IdentityUnavailable)
+    }
+
+    fn query_root(
+        &mut self,
+        handle: &Self::RootHandle,
+    ) -> Result<DestinationRootInformation, DestinationError> {
+        let information =
+            query_file_information(handle).map_err(|_| DestinationError::IdentityUnavailable)?;
+        Ok(DestinationRootInformation {
+            is_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+            is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+            volume_serial: information.dwVolumeSerialNumber,
+            file_index: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+        })
+    }
+
+    fn query_final_path(&mut self, handle: &Self::RootHandle) -> Result<String, DestinationError> {
+        query_final_guid_path(handle).map_err(|_| DestinationError::IdentityUnavailable)
+    }
+
+    fn query_volume(
+        &mut self,
+        volume_guid: &str,
+    ) -> Result<DestinationVolumeInformation, DestinationError> {
+        query_destination_volume(volume_guid).map_err(|_| DestinationError::IdentityUnavailable)
+    }
+}
+
 pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, StorageError> {
     let before = enumerate_native_volumes()?;
     let selected = before
@@ -207,6 +340,12 @@ pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, Storage
     let handle = open_volume_for_read(&selected)?;
     let handle_serial = query_handle_volume_serial(&handle)?;
     validate_handle_volume_serial(selected.volume_serial, handle_serial)?;
+    let storage_bus_type = query_storage_bus_type(&handle)?;
+    if physical_backing_from_bus_type(storage_bus_type) != PhysicalBacking::Direct {
+        return Err(StorageError::UnsupportedSource(
+            UnsupportedReason::UnprovenPhysicalBacking,
+        ));
+    }
     let extents = query_volume_disk_extents(&handle)?;
     let disk_numbers = distinct_disk_numbers(&extents);
     if !matches!(
@@ -217,6 +356,10 @@ pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, Storage
             authoritative_policy_reason(selected.drive_kind, &disk_numbers),
         ));
     }
+    let physical_disk_number = disk_numbers
+        .first()
+        .copied()
+        .ok_or(StorageError::InvalidGeometry)?;
     let length = query_handle_length(&handle)?;
     let layout = query_handle_sector_layout(&handle)?;
     if length == 0 || length > i64::MAX as u64 || length % u64::from(layout.logical) != 0 {
@@ -249,9 +392,11 @@ pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, Storage
         },
         length,
         layout,
+        physical_disk_number,
         expected_volume_id: volume_id.to_owned(),
         expected_volume_guid: selected.volume_guid,
         expected_volume_serial: selected.volume_serial,
+        expected_storage_bus_type: storage_bus_type,
         expected_extents: extents,
     })
 }
@@ -261,9 +406,11 @@ pub(super) struct RawVolumeInner {
     identity: SourceIdentity,
     length: u64,
     layout: SectorLayout,
+    physical_disk_number: u32,
     expected_volume_id: String,
     expected_volume_guid: String,
     expected_volume_serial: u32,
+    expected_storage_bus_type: i32,
     expected_extents: Vec<DiskExtent>,
 }
 
@@ -278,6 +425,10 @@ impl RawVolumeInner {
 
     pub(super) fn sector_layout(&self) -> SectorLayout {
         self.layout
+    }
+
+    pub(super) fn physical_disk_number(&self) -> u32 {
+        self.physical_disk_number
     }
 
     pub(super) fn revalidate_identity(&self) -> Result<(), StorageError> {
@@ -297,10 +448,16 @@ impl RawVolumeInner {
             .map_err(|_| StorageError::Synchronization)?;
         let handle_serial = query_handle_volume_serial(&guard)?;
         validate_handle_volume_serial(self.expected_volume_serial, handle_serial)?;
+        let storage_bus_type = query_storage_bus_type(&guard)?;
         let extents = query_volume_disk_extents(&guard)?;
         let length = query_handle_length(&guard)?;
         let layout = query_handle_sector_layout(&guard)?;
-        if extents != self.expected_extents || length != self.length || layout != self.layout {
+        if storage_bus_type != self.expected_storage_bus_type
+            || physical_backing_from_bus_type(storage_bus_type) != PhysicalBacking::Direct
+            || extents != self.expected_extents
+            || length != self.length
+            || layout != self.layout
+        {
             return Err(StorageError::SourceIdentityChanged);
         }
         Ok(())
@@ -1040,6 +1197,118 @@ fn open_volume_for_read(snapshot: &NativeVolumeSnapshot) -> Result<OwnedHandle, 
     owned_handle(handle, "CreateFileW(volume-read)")
 }
 
+fn open_destination_root_handle(destination_root: &Path) -> Result<OwnedHandle, StorageError> {
+    let wide = wide_string(destination_root.as_os_str());
+    // SAFETY: `wide` is a live NUL-terminated path owned by native Rust after
+    // native picker selection. Access is fixed to query/list only; sharing
+    // deliberately omits delete so the retained directory cannot be renamed
+    // or substituted; OPEN_EXISTING cannot create or mutate; reparse-point
+    // opening prevents following a final reparse object.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    owned_handle(handle, "CreateFileW(destination-root-query)")
+}
+
+fn open_destination_volume_for_query(volume_guid: &str) -> Result<OwnedHandle, StorageError> {
+    let selector = volume_selector(volume_guid)?;
+    let wide = wide_string(OsStr::new(&selector));
+    // SAFETY: `wide` is a live NUL-terminated volume GUID derived from the
+    // retained root handle. Desired access is exactly zero; sharing is
+    // read/write/delete; OPEN_EXISTING cannot create or mutate the volume.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    owned_handle(handle, "CreateFileW(destination-volume-query)")
+}
+
+fn query_destination_volume(
+    volume_guid: &str,
+) -> Result<DestinationVolumeInformation, StorageError> {
+    let handle = open_destination_volume_for_query(volume_guid)?;
+    let (label, file_system, volume_serial) = query_destination_volume_information(&handle)?;
+    let physical_backing = physical_backing_from_bus_type(query_storage_bus_type(&handle)?);
+    let extents = query_volume_disk_extents(&handle)?;
+    let disk_numbers = distinct_disk_numbers(&extents);
+
+    let wide = wide_string(OsStr::new(volume_guid));
+    let mut free_bytes = 0u64;
+    let mut total_bytes = 0u64;
+    // SAFETY: `wide` is the NUL-terminated volume GUID root derived from the
+    // retained directory handle. Both outputs are live u64 values; the API is
+    // query-only and does not create or mutate destination entries.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_bytes, &mut total_bytes, null_mut())
+    };
+    if ok == 0 {
+        return Err(last_windows_error(
+            "GetDiskFreeSpaceExW(destination-volume)",
+        ));
+    }
+
+    Ok(DestinationVolumeInformation {
+        label,
+        file_system,
+        volume_serial,
+        total_bytes,
+        free_bytes,
+        disk_numbers,
+        physical_backing,
+    })
+}
+
+fn query_destination_volume_information(
+    handle: &OwnedHandle,
+) -> Result<(String, String, u32), StorageError> {
+    let mut label = [0u16; MAX_VOLUME_NAME_UNITS];
+    let mut file_system = [0u16; MAX_VOLUME_NAME_UNITS];
+    let mut volume_serial = 0u32;
+    let mut maximum_component_length = 0u32;
+    let mut file_system_flags = 0u32;
+    // SAFETY: `handle` is the live desired-access-zero handle for the fixed
+    // volume GUID derived from the retained root. Both text buffers and all
+    // scalar outputs are live for their declared sizes; this API only queries
+    // volume metadata.
+    let ok = unsafe {
+        GetVolumeInformationByHandleW(
+            handle.as_raw_handle(),
+            label.as_mut_ptr(),
+            label.len() as u32,
+            &mut volume_serial,
+            &mut maximum_component_length,
+            &mut file_system_flags,
+            file_system.as_mut_ptr(),
+            file_system.len() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(last_windows_error(
+            "GetVolumeInformationByHandleW(destination-volume)",
+        ));
+    }
+    Ok((
+        utf16_buffer_to_string(&label),
+        utf16_buffer_to_string(&file_system),
+        volume_serial,
+    ))
+}
+
 fn open_folder_attributes(folder: &Path) -> Result<OwnedHandle, StorageError> {
     let wide = wide_string(folder.as_os_str());
     // SAFETY: `wide` is a live NUL-terminated path owned by native Rust code.
@@ -1249,6 +1518,110 @@ fn query_storage_alignment(handle: &OwnedHandle) -> Result<SectorLayout, Storage
         descriptor.BytesPerPhysicalSector,
     )
     .ok_or(StorageError::InvalidGeometry)
+}
+
+fn physical_backing_from_bus_type(bus_type: i32) -> PhysicalBacking {
+    if [BusTypeAta, BusTypeSata, BusTypeUsb, BusTypeNvme].contains(&bus_type) {
+        PhysicalBacking::Direct
+    } else {
+        PhysicalBacking::Unproven
+    }
+}
+
+fn query_storage_bus_type(handle: &OwnedHandle) -> Result<i32, StorageError> {
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceProperty,
+        QueryType: PropertyStandardQuery,
+        AdditionalParameters: [0],
+    };
+    let mut header = STORAGE_DESCRIPTOR_HEADER::default();
+    let mut bytes_returned = 0u32;
+    // SAFETY: `handle` is a live read/query volume handle; input points to the
+    // exact immutable StorageDeviceProperty query; output points to a live
+    // fixed-size descriptor header; bytes_returned is live; the synchronous
+    // query uses a null OVERLAPPED pointer.
+    let header_ok = unsafe {
+        DeviceIoControl(
+            handle.as_raw_handle(),
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            (&query as *const STORAGE_PROPERTY_QUERY).cast(),
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            (&mut header as *mut STORAGE_DESCRIPTOR_HEADER).cast(),
+            size_of::<STORAGE_DESCRIPTOR_HEADER>() as u32,
+            &mut bytes_returned,
+            null_mut(),
+        )
+    };
+    if header_ok == 0 {
+        return Err(last_windows_error(
+            "IOCTL_STORAGE_QUERY_PROPERTY(device-header)",
+        ));
+    }
+    let bus_end = offset_of!(STORAGE_DEVICE_DESCRIPTOR, BusType)
+        .checked_add(size_of::<i32>())
+        .ok_or(StorageError::InvalidGeometry)?;
+    let descriptor_bytes =
+        usize::try_from(header.Size).map_err(|_| StorageError::InvalidGeometry)?;
+    if bytes_returned < size_of::<STORAGE_DESCRIPTOR_HEADER>() as u32
+        || descriptor_bytes < bus_end
+        || descriptor_bytes > MAX_STORAGE_DEVICE_DESCRIPTOR_BYTES
+    {
+        return Err(StorageError::InvalidGeometry);
+    }
+
+    let mut descriptor = vec![0u8; descriptor_bytes];
+    bytes_returned = 0;
+    // SAFETY: `handle` and the immutable fixed property query remain live;
+    // `descriptor` is writable for its bounded declared length;
+    // bytes_returned is live; the synchronous query uses a null OVERLAPPED
+    // pointer and cannot select another property or control code.
+    let descriptor_ok = unsafe {
+        DeviceIoControl(
+            handle.as_raw_handle(),
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            (&query as *const STORAGE_PROPERTY_QUERY).cast(),
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            descriptor.as_mut_ptr().cast(),
+            descriptor.len() as u32,
+            &mut bytes_returned,
+            null_mut(),
+        )
+    };
+    if descriptor_ok == 0 {
+        return Err(last_windows_error("IOCTL_STORAGE_QUERY_PROPERTY(device)"));
+    }
+    parse_storage_bus_type(&descriptor, bytes_returned as usize)
+}
+
+fn parse_storage_bus_type(buffer: &[u8], bytes_returned: usize) -> Result<i32, StorageError> {
+    let size_offset = offset_of!(STORAGE_DEVICE_DESCRIPTOR, Size);
+    let size_end = size_offset
+        .checked_add(size_of::<u32>())
+        .ok_or(StorageError::InvalidGeometry)?;
+    let bus_offset = offset_of!(STORAGE_DEVICE_DESCRIPTOR, BusType);
+    let bus_end = bus_offset
+        .checked_add(size_of::<i32>())
+        .ok_or(StorageError::InvalidGeometry)?;
+    if bytes_returned > buffer.len() || bytes_returned < bus_end {
+        return Err(StorageError::InvalidGeometry);
+    }
+    let declared_size = u32::from_ne_bytes(
+        buffer
+            .get(size_offset..size_end)
+            .ok_or(StorageError::InvalidGeometry)?
+            .try_into()
+            .map_err(|_| StorageError::InvalidGeometry)?,
+    ) as usize;
+    if declared_size < bus_end || declared_size > bytes_returned {
+        return Err(StorageError::InvalidGeometry);
+    }
+    Ok(i32::from_ne_bytes(
+        buffer
+            .get(bus_offset..bus_end)
+            .ok_or(StorageError::InvalidGeometry)?
+            .try_into()
+            .map_err(|_| StorageError::InvalidGeometry)?,
+    ))
 }
 
 fn query_handle_sector_layout(handle: &OwnedHandle) -> Result<SectorLayout, StorageError> {
@@ -1565,6 +1938,10 @@ mod tests {
             open_path.contains("query_handle_volume_serial(&handle)"),
             "raw open must bind the selected serial to the opened handle"
         );
+        assert!(
+            open_path.contains("query_storage_bus_type(&handle)"),
+            "raw open must reject unproven virtual or composite backing"
+        );
 
         let revalidate_start = source
             .find("pub(super) fn revalidate_identity")
@@ -1578,6 +1955,55 @@ mod tests {
             revalidation_path.contains("query_handle_volume_serial(&guard)"),
             "identity revalidation must query serial from the live handle"
         );
+        assert!(
+            revalidation_path.contains("query_storage_bus_type(&guard)"),
+            "identity revalidation must recheck the storage bus"
+        );
+    }
+
+    #[test]
+    fn windows_physical_backing_003_rejects_virtual_spaces_network_array_and_unknown_buses() {
+        use windows_sys::Win32::Storage::FileSystem::{
+            BusType1394, BusTypeAtapi, BusTypeFibre, BusTypeFileBackedVirtual, BusTypeMax,
+            BusTypeMaxReserved, BusTypeMmc, BusTypeRAID, BusTypeSCM, BusTypeSas, BusTypeScsi,
+            BusTypeSd, BusTypeSpaces, BusTypeSsa, BusTypeUfs, BusTypeUnknown, BusTypeVirtual,
+            BusTypeiScsi,
+        };
+
+        for bus_type in [BusTypeAta, BusTypeUsb, BusTypeSata, BusTypeNvme] {
+            assert_eq!(
+                physical_backing_from_bus_type(bus_type),
+                PhysicalBacking::Direct,
+                "{bus_type}"
+            );
+        }
+        for bus_type in [
+            BusTypeUnknown,
+            BusTypeScsi,
+            BusTypeAtapi,
+            BusType1394,
+            BusTypeSsa,
+            BusTypeFibre,
+            BusTypeRAID,
+            BusTypeiScsi,
+            BusTypeSas,
+            BusTypeSd,
+            BusTypeMmc,
+            BusTypeVirtual,
+            BusTypeFileBackedVirtual,
+            BusTypeSpaces,
+            BusTypeSCM,
+            BusTypeUfs,
+            BusTypeMax,
+            BusTypeMaxReserved,
+            -1,
+        ] {
+            assert_eq!(
+                physical_backing_from_bus_type(bus_type),
+                PhysicalBacking::Unproven,
+                "{bus_type}"
+            );
+        }
     }
 
     #[test]

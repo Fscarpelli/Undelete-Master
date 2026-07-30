@@ -4,7 +4,7 @@
 //! source identifier, expected source identity, bounded read requests, read
 //! results, lifecycle messages, and stable error codes.
 //!
-//! Handshake version 2 carries a 32-byte client nonce in `Hello`; `HelloAck`
+//! Handshake version 3 carries a 32-byte client nonce in `Hello`; `HelloAck`
 //! echoes those exact bytes. The echo binds the response to this connection but
 //! is not a MAC or mutual secret. Native named-pipe peer-PID verification
 //! remains the primary broker identity check.

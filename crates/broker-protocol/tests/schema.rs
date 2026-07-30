@@ -18,7 +18,13 @@ fn broker_protocol_arch_002_schema_is_the_exact_operation_allowlist() {
         (
             Opcode::Opened,
             "Opened",
-            &["handle_id", "size", "logical_sector", "physical_sector"][..],
+            &[
+                "handle_id",
+                "size",
+                "logical_sector",
+                "physical_sector",
+                "physical_disk_number",
+            ][..],
         ),
         (
             Opcode::ReadAt,

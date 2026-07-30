@@ -62,6 +62,7 @@ impl ReadOnlyBrokerSource for ScriptedSource {
             size: self.bytes.len() as u64,
             logical_sector: 512,
             physical_sector: 4096,
+            physical_disk_number: 7,
         }
     }
 
@@ -187,6 +188,7 @@ fn elevated_broker_session_001_handshakes_opens_reads_closes_and_shuts_down() {
                 size: 8192,
                 logical_sector: 512,
                 physical_sector: 4096,
+                physical_disk_number: 7,
             },
             Message::ReadData {
                 bytes: source_bytes[4093..4112].to_vec(),
@@ -236,6 +238,7 @@ fn elevated_broker_session_002_rejects_out_of_range_before_source_read() {
                 size: 4096,
                 logical_sector: 512,
                 physical_sector: 4096,
+                physical_disk_number: 7,
             },
             Message::Error {
                 code: BrokerErrorCode::ReadOutOfRange,
@@ -279,6 +282,7 @@ fn elevated_broker_session_003_identity_change_closes_the_handle() {
                 size: 4096,
                 logical_sector: 512,
                 physical_sector: 4096,
+                physical_disk_number: 7,
             },
             Message::Error {
                 code: BrokerErrorCode::SourceChanged,
@@ -342,6 +346,7 @@ fn elevated_broker_session_005_allows_only_one_open_source() {
                 size: 4096,
                 logical_sector: 512,
                 physical_sector: 4096,
+                physical_disk_number: 7,
             },
             Message::Error {
                 code: BrokerErrorCode::InvalidRequest,

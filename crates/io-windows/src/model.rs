@@ -78,6 +78,7 @@ pub enum UnsupportedReason {
     NonLocalDrive,
     MultiDiskVolume,
     MissingDiskMapping,
+    UnprovenPhysicalBacking,
     UnsupportedDriveType,
     UnsupportedFileSystem,
 }
@@ -88,6 +89,7 @@ impl UnsupportedReason {
             Self::NonLocalDrive => "UNSUPPORTED_NON_LOCAL_DRIVE",
             Self::MultiDiskVolume => "UNSUPPORTED_MULTI_DISK_LAYOUT",
             Self::MissingDiskMapping => "UNSUPPORTED_DISK_MAPPING",
+            Self::UnprovenPhysicalBacking => "UNSUPPORTED_PHYSICAL_BACKING",
             Self::UnsupportedDriveType => "UNSUPPORTED_DRIVE_TYPE",
             Self::UnsupportedFileSystem => "UNSUPPORTED_FOLDER_SCOPE_FILESYSTEM",
         }
@@ -106,6 +108,8 @@ pub enum StorageError {
     UnsupportedSource(UnsupportedReason),
     #[error("the selected folder could not be authorized: {0}")]
     FolderScope(#[from] FolderScopeError),
+    #[error("the selected restore destination could not be authorized: {0}")]
+    Destination(#[from] DestinationError),
     #[error("invalid read request: {0}")]
     ReadPlan(#[from] ReadPlanError),
     #[error("the read-only source returned an incomplete read")]
@@ -136,6 +140,36 @@ pub enum StorageError {
     BrokerExitedBeforeConnect,
     #[error("the broker pipe accept timeout is outside the allowed bound")]
     InvalidPipeTimeout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum DestinationError {
+    #[error("destination-root authority is unavailable on this platform")]
+    UnsupportedPlatform,
+    #[error("the destination path does not have an eligible local drive root")]
+    UnsupportedRoot,
+    #[error("the destination path is remote or redirected")]
+    NonLocal,
+    #[error("the destination root is not a directory")]
+    NotDirectory,
+    #[error("the destination root is a reparse point")]
+    ReparsePoint,
+    #[error("the destination identity could not be proven")]
+    IdentityUnavailable,
+    #[error("the destination physical-disk mapping is unavailable")]
+    MissingDiskMapping,
+    #[error("the destination spans more than one physical disk")]
+    MultiDiskVolume,
+    #[error("the destination physical backing cannot be proven safe")]
+    UnprovenPhysicalBacking,
+    #[error("the destination filesystem is unsupported")]
+    UnsupportedFileSystem,
+    #[error("the source physical-disk identity is unavailable")]
+    SourceIdentityUnavailable,
+    #[error("the source physical-disk identity changed since the scan")]
+    SourceIdentityChanged,
+    #[error("the destination is on the same physical disk as the source")]
+    SamePhysicalDisk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -187,6 +221,39 @@ pub(crate) struct DiskExtent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PhysicalDiskSet {
+    Unknown,
+    Known(BTreeSet<u32>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PhysicalBacking {
+    Direct,
+    Unproven,
+}
+
+impl PhysicalDiskSet {
+    pub(crate) fn from_numbers(numbers: &[u32]) -> Self {
+        if numbers.is_empty() {
+            Self::Unknown
+        } else {
+            Self::Known(numbers.iter().copied().collect())
+        }
+    }
+
+    pub(crate) fn single(&self) -> Result<u32, DestinationError> {
+        match self {
+            Self::Unknown => Err(DestinationError::MissingDiskMapping),
+            Self::Known(numbers) if numbers.len() == 1 => numbers
+                .first()
+                .copied()
+                .ok_or(DestinationError::MissingDiskMapping),
+            Self::Known(_) => Err(DestinationError::MultiDiskVolume),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeVolumeSnapshot {
     pub mount_label: String,
     pub drive_kind: DriveKind,
@@ -215,6 +282,60 @@ pub(crate) struct FolderIdentityPath {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DestinationRootInformation {
+    pub is_directory: bool,
+    pub is_reparse_point: bool,
+    pub volume_serial: u32,
+    pub file_index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DestinationVolumeInformation {
+    pub label: String,
+    pub file_system: String,
+    pub volume_serial: u32,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub disk_numbers: Vec<u32>,
+    pub physical_backing: PhysicalBacking,
+}
+
+pub(crate) trait DestinationRootQuery {
+    type RootHandle;
+
+    fn classify_root(&mut self, path: &std::path::Path) -> Result<(), DestinationError>;
+
+    fn open_root(&mut self, path: &std::path::Path) -> Result<Self::RootHandle, DestinationError>;
+
+    fn query_root(
+        &mut self,
+        handle: &Self::RootHandle,
+    ) -> Result<DestinationRootInformation, DestinationError>;
+
+    fn query_final_path(&mut self, handle: &Self::RootHandle) -> Result<String, DestinationError>;
+
+    fn query_volume(
+        &mut self,
+        volume_guid: &str,
+    ) -> Result<DestinationVolumeInformation, DestinationError>;
+}
+
+#[derive(Debug)]
+pub(crate) struct DestinationRootEvidence<H> {
+    pub root_handle: H,
+    pub final_volume_guid: String,
+    pub display_label: String,
+    pub volume_label: String,
+    pub file_system: String,
+    pub free_bytes: u64,
+    pub physical_disks: PhysicalDiskSet,
+    pub physical_backing: PhysicalBacking,
+    pub reparse_safe: bool,
+    pub volume_serial: u32,
+    pub file_index: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AlignedReadPlan {
     pub aligned_offset: u64,
     pub aligned_length: usize,
@@ -238,6 +359,132 @@ pub(crate) fn drive_scan_policy(drive_kind: DriveKind, disk_numbers: &[u32]) -> 
         1 => ScanPolicy::Supported,
         _ => ScanPolicy::Unsupported(UnsupportedReason::MultiDiskVolume),
     }
+}
+
+pub(crate) fn validate_destination_policy_inner(
+    source_at_scan: Option<u32>,
+    source_now: Option<u32>,
+    destination_disks: &PhysicalDiskSet,
+    destination_file_system: &str,
+) -> Result<(), DestinationError> {
+    let source_at_scan = source_at_scan.ok_or(DestinationError::SourceIdentityUnavailable)?;
+    let source_now = source_now.ok_or(DestinationError::SourceIdentityUnavailable)?;
+    if source_at_scan != source_now {
+        return Err(DestinationError::SourceIdentityChanged);
+    }
+    let destination_disk = validate_destination_volume(
+        destination_disks,
+        PhysicalBacking::Direct,
+        destination_file_system,
+    )?;
+    if source_now == destination_disk {
+        return Err(DestinationError::SamePhysicalDisk);
+    }
+    Ok(())
+}
+
+fn validate_destination_volume(
+    destination_disks: &PhysicalDiskSet,
+    physical_backing: PhysicalBacking,
+    destination_file_system: &str,
+) -> Result<u32, DestinationError> {
+    if physical_backing != PhysicalBacking::Direct {
+        return Err(DestinationError::UnprovenPhysicalBacking);
+    }
+    if !destination_file_system.eq_ignore_ascii_case("NTFS") {
+        return Err(DestinationError::UnsupportedFileSystem);
+    }
+    destination_disks.single()
+}
+
+pub(crate) fn open_destination_root_with<Q: DestinationRootQuery>(
+    path: &std::path::Path,
+    query: &mut Q,
+) -> Result<DestinationRootEvidence<Q::RootHandle>, DestinationError> {
+    query.classify_root(path)?;
+    let root_handle = query.open_root(path)?;
+    let root = query.query_root(&root_handle)?;
+    if !root.is_directory {
+        return Err(DestinationError::NotDirectory);
+    }
+    if root.is_reparse_point {
+        return Err(DestinationError::ReparsePoint);
+    }
+
+    let final_path = query.query_final_path(&root_handle)?;
+    let final_volume_guid = volume_guid_root_from_final_path(&final_path)?;
+    let volume = query.query_volume(&final_volume_guid)?;
+    if root.volume_serial != volume.volume_serial || volume.total_bytes == 0 {
+        return Err(DestinationError::IdentityUnavailable);
+    }
+
+    let physical_disks = PhysicalDiskSet::from_numbers(&volume.disk_numbers);
+    validate_destination_volume(
+        &physical_disks,
+        volume.physical_backing,
+        &volume.file_system,
+    )?;
+    let file_system = sanitize_display_text(&volume.file_system, 64);
+    let volume_label = sanitize_display_text(&volume.label, 128);
+    let display_label = path
+        .file_name()
+        .map(|name| sanitize_display_text(&name.to_string_lossy(), 128))
+        .filter(|name| !name.is_empty())
+        .or_else(|| (!volume_label.is_empty()).then(|| volume_label.clone()))
+        .unwrap_or_else(|| "Selected destination".to_owned());
+
+    Ok(DestinationRootEvidence {
+        root_handle,
+        final_volume_guid,
+        display_label,
+        volume_label,
+        file_system,
+        free_bytes: volume.free_bytes.min(volume.total_bytes),
+        physical_disks,
+        physical_backing: volume.physical_backing,
+        reparse_safe: true,
+        volume_serial: root.volume_serial,
+        file_index: root.file_index,
+    })
+}
+
+pub(crate) fn volume_guid_root_from_final_path(
+    final_path: &str,
+) -> Result<String, DestinationError> {
+    const PREFIX: &str = r"\\?\Volume{";
+    if !final_path.starts_with(PREFIX)
+        || final_path
+            .chars()
+            .any(|character| character.is_control() || !is_safe_display_character(character))
+    {
+        return Err(DestinationError::IdentityUnavailable);
+    }
+    let remainder = final_path
+        .get(PREFIX.len()..)
+        .ok_or(DestinationError::IdentityUnavailable)?;
+    let closing = remainder
+        .find(r"}\")
+        .ok_or(DestinationError::IdentityUnavailable)?;
+    let identity = remainder
+        .get(..closing)
+        .ok_or(DestinationError::IdentityUnavailable)?;
+    if identity.is_empty()
+        || identity.len() > 128
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(DestinationError::IdentityUnavailable);
+    }
+    let root_end = PREFIX
+        .len()
+        .checked_add(closing)
+        .and_then(|length| length.checked_add(2))
+        .ok_or(DestinationError::IdentityUnavailable)?;
+    final_path
+        .get(..root_end)
+        .map(str::to_owned)
+        .ok_or(DestinationError::IdentityUnavailable)
 }
 
 pub(crate) fn derive_volume_id(snapshot: &NativeVolumeSnapshot) -> String {
@@ -432,7 +679,7 @@ pub(crate) fn parse_folder_identity_path(
     })
 }
 
-fn sanitize_display_text(value: &str, max_chars: usize) -> String {
+pub(crate) fn sanitize_display_text(value: &str, max_chars: usize) -> String {
     value
         .chars()
         .filter(|character| is_safe_display_character(*character))

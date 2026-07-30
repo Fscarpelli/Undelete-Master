@@ -47,7 +47,7 @@ that a real source scan succeeded.
 | --- | --- | --- |
 | Windows inventory | local/mapped/composite policy, opaque IDs, display grouping, decimal strings, no native paths | Same-revision synthetic/full gate passed; native observation remains pending |
 | Folder authority | NTFS-only, remote/reparse/cross-volume refusal, volume serial and record/sequence binding | Focused tests present; native acceptance pending |
-| Protocol v2 | exact ten-message schema, one-megabyte cap, malformed frames, sequence replay/gap, nonce mismatch | Same-revision full Rust gate passed; packaged binary evidence remains pending |
+| Protocol v3 | exact ten-message schema, authoritative `Opened` disk field, explicit v2 rejection, one-megabyte cap, malformed frames, sequence replay/gap, nonce mismatch | Focused v3 Rust gate passed; same-revision full and packaged binary evidence remain pending |
 | Broker lifecycle | fixed sibling, manifests, current-user pipe, peer PID/liveness, timeout, close/shutdown | Focused tests present; packaged evidence pending |
 | Read path | exact geometry, checked ranges, one-megabyte chunking, source change, 256-and-one-second cadence | Synthetic tests present; no real scan claim |
 | Scanner | deterministic NTFS/FAT/partition candidates, partial truth and namespace ancestry | Focused tests present; external corpora pending |

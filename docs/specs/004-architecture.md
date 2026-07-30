@@ -28,7 +28,7 @@ query. Scanning opens the selected mounted volume; a logical group does not
 authorize `PhysicalDriveN`, an unmounted partition or a whole-disk scan.
 
 Starting a scan launches the fixed sibling elevated broker. The broker speaks
-the closed protocol-v2 read lifecycle and performs no partition/filesystem
+the closed protocol-v3 read lifecycle and performs no partition/filesystem
 parsing. The broker-backed reader is passed to
 `um_cli::scan_volume_reader` on `spawn_blocking`; partition, NTFS and FAT
 parsing therefore remains unelevated.
@@ -84,7 +84,7 @@ destination or generic control field. Peer PID is primary identity. The
 - `crates/io-common`: regular image readers used by the CLI.
 - `crates/io-windows`: single audited Windows FFI boundary with closed
   query/identity/pipe/process/read-only-volume allowlists.
-- `crates/broker-protocol`: safe protocol-v2 framing, schema and bounds.
+- `crates/broker-protocol`: safe protocol-v3 framing, schema and bounds.
 - `crates/broker-client`: unelevated broker session and `SourceReader` adapter.
 - `crates/elevated-broker`: privileged protocol server; no filesystem parser.
 - `crates/partition`: bounded MBR/GPT parsing.

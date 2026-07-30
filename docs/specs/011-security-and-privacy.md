@@ -21,10 +21,11 @@ write, destination, path, access-mask or generic control field. The selected
 mounted volume is opened internally with exactly `GENERIC_READ` and
 `OPEN_EXISTING`; all offsets and lengths are checked before I/O.
 
-The only allowed storage IOCTLs query volume extents, disk length and storage
-alignment. No trim, format, delete, repair, lock, dismount or mount operation is
-present. Duplex `GENERIC_WRITE` belongs only to named-pipe transport, never a
-scan-source handle.
+The only allowed storage IOCTLs query volume extents, disk length, storage
+alignment, and the fixed `StorageDeviceProperty` bus classification. No trim,
+format, delete, repair, lock, dismount or mount operation is present. Duplex
+`GENERIC_WRITE` belongs only to named-pipe transport, never a scan-source
+handle.
 
 ### Privilege separation
 
@@ -39,9 +40,10 @@ launched broker PID; peer PID and liveness are the primary identity checks.
 
 ### Protocol boundary
 
-Protocol v2 has exactly ten messages, a fixed 20-byte header, monotonic
+Protocol v3 has exactly ten messages, a fixed 20-byte header, monotonic
 independent sequences, bounded opaque identifiers and at most a 1 MiB payload.
-One session opens at most one source.
+One session opens at most one source. The incompatible v3 `Opened` expansion
+adds one authoritative native physical-disk number; v2 frames are rejected.
 
 The client generates a 32-byte nonce and checks the exact `HelloAck` echo in
 constant time. The echo is not a MAC, shared secret or proof of publisher
@@ -58,8 +60,9 @@ free-form native diagnostics.
 Unelevated inventory is display metadata. Its stable volume ID uses GUID plus
 serial and excludes mount, quota-visible size/free data, filesystem, extents
 and disk number. The broker independently derives disk/volume mapping,
-canonical length and sector geometry, rejects composite mappings and verifies
-the opened source.
+canonical length, sector geometry, and a reviewed direct storage-bus class,
+rejects composite or unproven virtual/array mappings, and verifies the opened
+source.
 
 Every valid `ReadAt` invokes a revalidation hook. Expensive Windows
 re-enumeration occurs only when both 256 valid requests and one second have

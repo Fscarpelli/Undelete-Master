@@ -412,21 +412,54 @@ def validate_windows_ffi_boundary(
         )
 
     raw_span = rust_item_span(code, "open_volume_for_read")
+    destination_root_span = rust_item_span(code, "open_destination_root_handle")
+    destination_volume_span = rust_item_span(
+        code, "open_destination_volume_for_query"
+    )
+    storage_bus_span = rust_item_span(code, "query_storage_bus_type")
     pipe_span = rust_item_span(code, "connect_broker_pipe")
     if raw_span is None:
         errors.append(f"{name}: missing audited open_volume_for_read boundary")
+    if destination_root_span is None:
+        errors.append(f"{name}: missing audited destination-root query boundary")
+    if destination_volume_span is None:
+        errors.append(f"{name}: missing audited destination-volume query boundary")
+    if storage_bus_span is None:
+        errors.append(f"{name}: missing audited storage-bus query boundary")
+    else:
+        storage_bus_code = compact(code[storage_bus_span[0] : storage_bus_span[1]])
+        if not all(
+            token in storage_bus_code
+            for token in (
+                "PropertyId:StorageDeviceProperty",
+                "QueryType:PropertyStandardQuery",
+                "AdditionalParameters:[0]",
+                "IOCTL_STORAGE_QUERY_PROPERTY",
+            )
+        ):
+            errors.append(
+                f"{name}: storage bus query must use the fixed device property"
+            )
     if pipe_span is None:
         errors.append(f"{name}: missing audited connect_broker_pipe boundary")
 
     create_calls = rust_call_arguments(code, "CreateFileW")
     raw_calls = [call for call in create_calls if within(call[0], raw_span)]
+    destination_root_calls = [
+        call for call in create_calls if within(call[0], destination_root_span)
+    ]
+    destination_volume_calls = [
+        call for call in create_calls if within(call[0], destination_volume_span)
+    ]
     pipe_calls = [call for call in create_calls if within(call[0], pipe_span)]
     expected_raw_access = joined("GENERIC_", "READ")
     expected_pipe_access = joined("GENERIC_", "READ|GENERIC_", "WRITE")
+    expected_destination_access = "FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY"
     allowed_access = {
         "0",
         expected_raw_access,
         "FILE_READ_ATTRIBUTES",
+        expected_destination_access,
         expected_pipe_access,
     }
     for _, _, arguments in create_calls:
@@ -448,6 +481,33 @@ def validate_windows_ffi_boundary(
     ):
         errors.append(
             f"{name}: raw volume open must use exactly GENERIC_READ and OPEN_EXISTING"
+        )
+    if (
+        len(destination_root_calls) != 1
+        or len(destination_root_calls[0][2]) != 7
+        or compact(destination_root_calls[0][2][1])
+        != expected_destination_access
+        or compact(destination_root_calls[0][2][2])
+        != "FILE_SHARE_READ|FILE_SHARE_WRITE"
+        or compact(destination_root_calls[0][2][4]) != "OPEN_EXISTING"
+        or compact(destination_root_calls[0][2][5])
+        != "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT"
+    ):
+        errors.append(
+            f"{name}: destination root open must use exact query-only authority"
+        )
+    if (
+        len(destination_volume_calls) != 1
+        or len(destination_volume_calls[0][2]) != 7
+        or compact(destination_volume_calls[0][2][1]) != "0"
+        or compact(destination_volume_calls[0][2][2])
+        != "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE"
+        or compact(destination_volume_calls[0][2][4]) != "OPEN_EXISTING"
+        or compact(destination_volume_calls[0][2][5]) != "FILE_ATTRIBUTE_NORMAL"
+    ):
+        errors.append(
+            f"{name}: destination volume query must use desired access zero "
+            "and fixed query sharing"
         )
     if (
         len(pipe_calls) != 1

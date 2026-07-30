@@ -111,6 +111,7 @@ pub struct BrokerSourceGeometry {
     pub size: u64,
     pub logical_sector: u32,
     pub physical_sector: u32,
+    pub physical_disk_number: u32,
 }
 
 /// One identity-bound read-only source.
@@ -223,6 +224,7 @@ where
                             size: geometry.size,
                             logical_sector: geometry.logical_sector,
                             physical_sector: geometry.physical_sector,
+                            physical_disk_number: geometry.physical_disk_number,
                         };
                         if opened_message.validate().is_err() {
                             send_broker_error(
@@ -448,6 +450,7 @@ mod windows_runtime {
                 size: self.source.len(),
                 logical_sector: layout.logical,
                 physical_sector: layout.physical,
+                physical_disk_number: self.source.physical_disk_number(),
             }
         }
 

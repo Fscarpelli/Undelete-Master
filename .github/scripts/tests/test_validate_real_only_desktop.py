@@ -137,6 +137,24 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "    null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut(),\n"
             "  ); }\n"
             "}\n"
+            "fn open_destination_root_handle(wide: &[u16]) {\n"
+            "  // SAFETY: fixed query-only destination root arguments.\n"
+            "  unsafe { CreateFileW(\n"
+            "    wide.as_ptr(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,\n"
+            "    FILE_SHARE_READ | FILE_SHARE_WRITE,\n"
+            "    null(), OPEN_EXISTING,\n"
+            "    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,\n"
+            "    null_mut(),\n"
+            "  ); }\n"
+            "}\n"
+            "fn open_destination_volume_for_query(wide: &[u16]) {\n"
+            "  // SAFETY: fixed derived-volume query-only arguments.\n"
+            "  unsafe { CreateFileW(\n"
+            "    wide.as_ptr(), 0,\n"
+            "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,\n"
+            "    null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null_mut(),\n"
+            "  ); }\n"
+            "}\n"
             "fn connect_broker_pipe(pipe_suffix: &str, wide_name: &[u16]) {\n"
             "  let _pipe_name = build_pipe_name(pipe_suffix);\n"
             "  // SAFETY: fixed local named-pipe selector and duplex transport.\n"
@@ -160,6 +178,16 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "  // SAFETY: fixed read-only storage-property query.\n"
             "  unsafe { DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, "
             "null(), 0, null_mut(), 0, null_mut(), null_mut()); }\n"
+            "}\n"
+            "fn query_storage_bus_type(handle: HANDLE) {\n"
+            "  let query = STORAGE_PROPERTY_QUERY {\n"
+            "    PropertyId: StorageDeviceProperty,\n"
+            "    QueryType: PropertyStandardQuery,\n"
+            "    AdditionalParameters: [0],\n"
+            "  };\n"
+            "  // SAFETY: fixed read-only device-property query.\n"
+            "  unsafe { DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, "
+            "&query, 0, null_mut(), 0, null_mut(), null_mut()); }\n"
             "}\n"
             "fn launch_elevated_broker() {\n"
             "  let current = std::env::current_exe().unwrap();\n"
@@ -569,6 +597,76 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
         errors = self.validate(root)
 
         self.assertTrue(any("PerMonitorV2 DPI awareness" in error for error in errors))
+
+    def test_desktop_real_only_023_destination_root_open_has_exact_query_authority(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "FILE_SHARE_READ | FILE_SHARE_WRITE,\n"
+                "    null(), OPEN_EXISTING,\n"
+                "    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,",
+                "FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,\n"
+                "    null(), OPEN_EXISTING,\n"
+                "    FILE_FLAG_BACKUP_SEMANTICS,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("destination root open must use exact query-only authority" in error for error in errors)
+        )
+
+    def test_desktop_real_only_024_destination_volume_open_is_access_zero(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        read_access = token("GENERIC_", "READ")
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "wide.as_ptr(), 0,\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+                f"wide.as_ptr(), {read_access},\n"
+                "    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("destination volume query must use desired access zero" in error for error in errors)
+        )
+
+    def test_desktop_real_only_025_storage_bus_query_is_fixed_and_not_caller_chosen(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "PropertyId: StorageDeviceProperty,",
+                "PropertyId: caller_chosen_property,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("storage bus query must use the fixed device property" in error for error in errors)
+        )
 
 
 if __name__ == "__main__":

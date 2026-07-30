@@ -23,8 +23,8 @@ use model::{
     DriveKind, NativeVolumeSnapshot, ScanPolicy,
 };
 pub use model::{
-    BusType, FolderScope, FolderScopeError, ReadPlanError, StorageDisk, StorageError,
-    StorageInventory, StorageVolume, UnsupportedReason,
+    BusType, DestinationError, FolderScope, FolderScopeError, ReadPlanError, StorageDisk,
+    StorageError, StorageInventory, StorageVolume, UnsupportedReason,
 };
 #[cfg(test)]
 use transport_config::{
@@ -74,6 +74,76 @@ pub fn validate_folder_scope(volume_id: &str, folder: &Path) -> Result<FolderSco
     platform::validate_folder_scope(volume_id, folder)
 }
 
+/// Applies the native-only, fail-closed physical-disk destination policy.
+///
+/// Disk numbers are never included in a serializable desktop DTO. Empty,
+/// multi-disk, changed-source, same-disk, and non-NTFS inputs are rejected.
+pub fn validate_destination_policy(
+    source_at_scan: Option<u32>,
+    source_now: Option<u32>,
+    destination_disk_numbers: &[u32],
+    destination_file_system: &str,
+) -> Result<(), DestinationError> {
+    let destination_disks = model::PhysicalDiskSet::from_numbers(destination_disk_numbers);
+    model::validate_destination_policy_inner(
+        source_at_scan,
+        source_now,
+        &destination_disks,
+        destination_file_system,
+    )
+}
+
+/// Opaque native destination-root authority.
+///
+/// This value is intentionally neither cloneable nor serializable. It retains
+/// the exact query-only directory handle opened by native Rust; no path,
+/// volume GUID, physical-disk number, or native handle is exposed to the
+/// WebView contract.
+pub struct DestinationRootBinding {
+    inner: platform::DestinationRootBindingInner,
+}
+
+impl DestinationRootBinding {
+    pub fn display_label(&self) -> &str {
+        self.inner.display_label()
+    }
+
+    pub fn volume_label(&self) -> &str {
+        self.inner.volume_label()
+    }
+
+    pub fn file_system(&self) -> &str {
+        self.inner.file_system()
+    }
+
+    pub fn free_bytes(&self) -> u64 {
+        self.inner.free_bytes()
+    }
+
+    pub fn physical_disk_number(&self) -> u32 {
+        self.inner.physical_disk_number()
+    }
+
+    pub fn reparse_safe(&self) -> bool {
+        self.inner.reparse_safe()
+    }
+
+    /// Consumes the opaque binding and transfers the exact retained directory
+    /// handle to native capability-relative restore code.
+    pub fn into_directory_file(self) -> std::fs::File {
+        self.inner.into_directory_file()
+    }
+}
+
+/// Opens and queries a Rust-owned native destination selection without
+/// creating, removing, renaming, truncating, or writing any entry.
+pub fn open_destination_root_binding(
+    destination_root: &Path,
+) -> Result<DestinationRootBinding, StorageError> {
+    platform::open_destination_root_binding(destination_root)
+        .map(|inner| DestinationRootBinding { inner })
+}
+
 /// Broker-facing read-only RAW volume.
 ///
 /// Construction is identity-bound: the caller supplies only an opaque ID and
@@ -101,6 +171,10 @@ impl RawVolume {
 
     pub fn sector_layout(&self) -> SectorLayout {
         self.inner.sector_layout()
+    }
+
+    pub fn physical_disk_number(&self) -> u32 {
+        self.inner.physical_disk_number()
     }
 
     pub fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> Result<(), StorageError> {
@@ -624,5 +698,237 @@ mod storage_contract_tests {
         ))
         .is_err());
         assert!(desktop_executable_from_broker(Path::new("relative-broker.exe")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod destination_root_contract_tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::model::{
+        DestinationRootInformation, DestinationRootQuery, DestinationVolumeInformation,
+        PhysicalBacking,
+    };
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MarkerHandle(u32);
+
+    struct ScriptedDestinationQuery {
+        calls: Vec<&'static str>,
+        root: DestinationRootInformation,
+        final_path: String,
+        volume: DestinationVolumeInformation,
+    }
+
+    impl ScriptedDestinationQuery {
+        fn ntfs_single_disk() -> Self {
+            Self {
+                calls: Vec::new(),
+                root: DestinationRootInformation {
+                    is_directory: true,
+                    is_reparse_point: false,
+                    volume_serial: 0xA1B2_C3D4,
+                    file_index: 42,
+                },
+                final_path: r"\\?\Volume{DEST-0001}\Recovery".to_owned(),
+                volume: DestinationVolumeInformation {
+                    label: "\u{202e}Recovery\n".to_owned(),
+                    file_system: "ntfs".to_owned(),
+                    volume_serial: 0xA1B2_C3D4,
+                    total_bytes: 1_000,
+                    free_bytes: 700,
+                    disk_numbers: vec![9],
+                    physical_backing: PhysicalBacking::Direct,
+                },
+            }
+        }
+    }
+
+    impl DestinationRootQuery for ScriptedDestinationQuery {
+        type RootHandle = MarkerHandle;
+
+        fn classify_root(&mut self, _path: &Path) -> Result<(), DestinationError> {
+            self.calls.push("classify");
+            Ok(())
+        }
+
+        fn open_root(&mut self, _path: &Path) -> Result<Self::RootHandle, DestinationError> {
+            self.calls.push("open_root");
+            Ok(MarkerHandle(17))
+        }
+
+        fn query_root(
+            &mut self,
+            _handle: &Self::RootHandle,
+        ) -> Result<DestinationRootInformation, DestinationError> {
+            self.calls.push("query_root");
+            Ok(self.root)
+        }
+
+        fn query_final_path(
+            &mut self,
+            _handle: &Self::RootHandle,
+        ) -> Result<String, DestinationError> {
+            self.calls.push("query_final_path");
+            Ok(self.final_path.clone())
+        }
+
+        fn query_volume(
+            &mut self,
+            _volume_guid: &str,
+        ) -> Result<DestinationVolumeInformation, DestinationError> {
+            self.calls.push("query_volume");
+            Ok(self.volume.clone())
+        }
+    }
+
+    #[test]
+    fn windows_destination_binding_001_retains_the_exact_query_handle_and_sanitized_evidence() {
+        let mut query = ScriptedDestinationQuery::ntfs_single_disk();
+
+        let binding =
+            crate::model::open_destination_root_with(Path::new(r"E:\Recovery"), &mut query)
+                .expect("authorize destination root");
+
+        assert_eq!(
+            query.calls,
+            [
+                "classify",
+                "open_root",
+                "query_root",
+                "query_final_path",
+                "query_volume",
+            ]
+        );
+        assert_eq!(binding.root_handle, MarkerHandle(17));
+        assert_eq!(binding.final_volume_guid, r"\\?\Volume{DEST-0001}\");
+        assert_eq!(binding.display_label, "Recovery");
+        assert_eq!(binding.volume_label, "Recovery");
+        assert_eq!(binding.file_system, "ntfs");
+        assert_eq!(binding.free_bytes, 700);
+        assert_eq!(binding.physical_disks.single(), Ok(9));
+        assert!(binding.reparse_safe);
+        assert_eq!(binding.volume_serial, 0xA1B2_C3D4);
+        assert_eq!(binding.file_index, 42);
+    }
+
+    #[test]
+    fn windows_destination_binding_002_rejects_non_directory_or_reparse_before_volume_query() {
+        for (is_directory, is_reparse_point, expected) in [
+            (false, false, DestinationError::NotDirectory),
+            (true, true, DestinationError::ReparsePoint),
+        ] {
+            let mut query = ScriptedDestinationQuery::ntfs_single_disk();
+            query.root.is_directory = is_directory;
+            query.root.is_reparse_point = is_reparse_point;
+
+            let error =
+                crate::model::open_destination_root_with(Path::new(r"E:\Recovery"), &mut query)
+                    .expect_err("unsafe destination root must be rejected");
+
+            assert_eq!(error, expected);
+            assert_eq!(query.calls, ["classify", "open_root", "query_root"]);
+        }
+    }
+
+    #[test]
+    fn windows_destination_binding_003_rejects_changed_unknown_multi_disk_or_non_ntfs_volume() {
+        let cases = [
+            (
+                Some(0xA1B2_C3D5),
+                vec![9],
+                "NTFS",
+                DestinationError::IdentityUnavailable,
+            ),
+            (
+                None,
+                Vec::new(),
+                "NTFS",
+                DestinationError::MissingDiskMapping,
+            ),
+            (None, vec![9, 10], "NTFS", DestinationError::MultiDiskVolume),
+            (
+                None,
+                vec![9],
+                "ReFS",
+                DestinationError::UnsupportedFileSystem,
+            ),
+            (
+                None,
+                vec![9],
+                "N\0TFS",
+                DestinationError::UnsupportedFileSystem,
+            ),
+        ];
+
+        for (changed_serial, disk_numbers, file_system, expected) in cases {
+            let mut query = ScriptedDestinationQuery::ntfs_single_disk();
+            if let Some(serial) = changed_serial {
+                query.volume.volume_serial = serial;
+            }
+            query.volume.disk_numbers = disk_numbers;
+            query.volume.file_system = file_system.to_owned();
+
+            assert_eq!(
+                crate::model::open_destination_root_with(Path::new(r"E:\Recovery"), &mut query)
+                    .expect_err("unsafe destination volume must be rejected"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn windows_destination_binding_004_parses_only_a_final_volume_guid_root() {
+        assert_eq!(
+            crate::model::volume_guid_root_from_final_path(
+                r"\\?\Volume{ABC-123}\folder\destination"
+            ),
+            Ok(r"\\?\Volume{ABC-123}\".to_owned())
+        );
+        for invalid in [
+            r"C:\destination",
+            r"\\server\share\destination",
+            r"\\.\PhysicalDrive0",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+            "\\\\?\\Volume{ABC\u{202e}}\u{5c}destination",
+        ] {
+            assert_eq!(
+                crate::model::volume_guid_root_from_final_path(invalid),
+                Err(DestinationError::IdentityUnavailable),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_destination_binding_005_exposes_only_the_opaque_native_binding_api() {
+        let _open: fn(&Path) -> Result<DestinationRootBinding, StorageError> =
+            open_destination_root_binding;
+        let _consume: fn(DestinationRootBinding) -> std::fs::File =
+            DestinationRootBinding::into_directory_file;
+    }
+
+    #[test]
+    fn windows_destination_binding_006_rejects_unproven_virtual_or_composite_backing() {
+        let mut query = ScriptedDestinationQuery::ntfs_single_disk();
+        query.volume.physical_backing = PhysicalBacking::Unproven;
+
+        assert_eq!(
+            crate::model::open_destination_root_with(Path::new(r"E:\Recovery"), &mut query)
+                .expect_err("a distinct virtual disk number is not physical separation"),
+            DestinationError::UnprovenPhysicalBacking
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_destination_binding_007_non_windows_is_structured_unsupported() {
+        assert!(matches!(
+            open_destination_root_binding(Path::new("/tmp")),
+            Err(StorageError::Destination(
+                DestinationError::UnsupportedPlatform
+            ))
+        ));
     }
 }

@@ -513,9 +513,12 @@ pub(crate) async fn scan_storage_volume(
         .transpose()?;
 
     let broker_volume_id = volume_id.clone();
-    let details = tauri::async_runtime::spawn_blocking(move || {
+    let (details, physical_disk_number) = tauri::async_runtime::spawn_blocking(move || {
         let reader = open_windows_source(&broker_volume_id).map_err(map_broker_error)?;
-        um_cli::scan_volume_reader_with_mode(&reader, mode.cli_mode()).map_err(map_cli_scan_error)
+        let physical_disk_number = reader.physical_disk_number();
+        let details = um_cli::scan_volume_reader_with_mode(&reader, mode.cli_mode())
+            .map_err(map_cli_scan_error)?;
+        Ok::<_, DesktopStorageError>((details, physical_disk_number))
     })
     .await
     .map_err(|_| {
@@ -534,6 +537,7 @@ pub(crate) async fn scan_storage_volume(
         volume_id,
         source_len: details.report.length_bytes,
         file_system: details.report.file_system.clone(),
+        physical_disk_number,
     };
     let session =
         build_scan_session_with_mode(&scan_id, &source_label, details, scope, mode, source)?;
@@ -901,6 +905,7 @@ pub(crate) fn build_scan_session(
         volume_id: format!("test-volume-{scan_id}"),
         source_len: details.report.length_bytes,
         file_system: details.report.file_system.clone(),
+        physical_disk_number: 7,
     };
     build_scan_session_with_mode(
         scan_id,
@@ -1537,6 +1542,7 @@ mod tests {
             volume_id: format!("volume-{scan_id}"),
             source_len: details.report.length_bytes,
             file_system: details.report.file_system.clone(),
+            physical_disk_number: 7,
         }
     }
 
@@ -1581,6 +1587,91 @@ mod tests {
         let serialized = json.to_string();
         assert!(!serialized.contains(r"\\.\"));
         assert!(!serialized.contains(r"\\?\"));
+    }
+
+    #[test]
+    fn desktop_disk_policy_001_allows_only_unchanged_source_and_different_ntfs_disk() {
+        assert_eq!(
+            um_io_windows::validate_destination_policy(Some(7), Some(7), &[9], "NTFS"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn desktop_disk_policy_002_rejects_same_unknown_or_multi_disk_identity() {
+        use um_io_windows::DestinationError;
+
+        assert_eq!(
+            um_io_windows::validate_destination_policy(Some(7), Some(7), &[7], "NTFS"),
+            Err(DestinationError::SamePhysicalDisk)
+        );
+        assert_eq!(
+            um_io_windows::validate_destination_policy(None, Some(7), &[9], "NTFS"),
+            Err(DestinationError::SourceIdentityUnavailable)
+        );
+        assert_eq!(
+            um_io_windows::validate_destination_policy(Some(7), None, &[9], "NTFS"),
+            Err(DestinationError::SourceIdentityUnavailable)
+        );
+        assert_eq!(
+            um_io_windows::validate_destination_policy(Some(7), Some(7), &[], "NTFS"),
+            Err(DestinationError::MissingDiskMapping)
+        );
+        assert_eq!(
+            um_io_windows::validate_destination_policy(Some(7), Some(7), &[9, 10], "NTFS"),
+            Err(DestinationError::MultiDiskVolume)
+        );
+    }
+
+    #[test]
+    fn desktop_disk_policy_003_rejects_non_ntfs_and_changed_source_identity() {
+        use um_io_windows::DestinationError;
+
+        for file_system in ["ReFS", "FAT32", "exFAT", "unrecognized"] {
+            assert_eq!(
+                um_io_windows::validate_destination_policy(Some(7), Some(7), &[9], file_system),
+                Err(DestinationError::UnsupportedFileSystem),
+                "{file_system}"
+            );
+        }
+        assert_eq!(
+            um_io_windows::validate_destination_policy(Some(7), Some(8), &[9], "NTFS"),
+            Err(DestinationError::SourceIdentityChanged)
+        );
+    }
+
+    #[test]
+    fn desktop_disk_identity_001_keeps_source_disk_number_out_of_webview_dtos() {
+        let scan_details = details(
+            Vec::new(),
+            NtfsNamespace {
+                paths: Vec::new(),
+                directories: Vec::new(),
+                is_complete: true,
+            },
+        );
+        let scan_source = source("disk-secrecy", &scan_details);
+        assert_eq!(scan_source.physical_disk_number, 7);
+
+        let session = build_scan_session_with_mode(
+            "scan-disk-secrecy",
+            "External disk",
+            scan_details,
+            SessionScope::Volume,
+            DesktopScanMode::Metadata,
+            scan_source,
+        )
+        .expect("build native scan session");
+        let serialized = serde_json::to_value(&session.summary).expect("serialize summary");
+
+        assert!(
+            serialized.get("physicalDiskNumber").is_none(),
+            "the WebView scan summary must not expose native disk identity"
+        );
+        assert!(
+            !serialized.to_string().contains("physicalDiskNumber"),
+            "nested WebView values must not expose native disk identity"
+        );
     }
 
     #[test]

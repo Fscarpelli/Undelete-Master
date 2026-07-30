@@ -22,6 +22,7 @@ fn all_messages() -> Vec<Message> {
             size: 8 * 1024 * 1024,
             logical_sector: 512,
             physical_sector: 4096,
+            physical_disk_number: 7,
         },
         Message::ReadAt {
             handle_id: 71,
@@ -171,6 +172,39 @@ fn broker_protocol_malformed_002_rejects_magic_version_opcode_and_sequence() {
 }
 
 #[test]
+fn broker_protocol_version_003_rejects_legacy_v2_after_opened_schema_expansion() {
+    assert_eq!(PROTOCOL_VERSION, 3);
+    let current = encode_frame(
+        1,
+        &Message::Opened {
+            handle_id: 71,
+            size: 8192,
+            logical_sector: 512,
+            physical_sector: 4096,
+            physical_disk_number: 7,
+        },
+    )
+    .expect("v3 opened frame");
+    assert_eq!(
+        decode_frame(&current).expect("current frame").message,
+        Message::Opened {
+            handle_id: 71,
+            size: 8192,
+            logical_sector: 512,
+            physical_sector: 4096,
+            physical_disk_number: 7,
+        }
+    );
+
+    let mut legacy_version = current;
+    legacy_version[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    assert!(matches!(
+        decode_frame(&legacy_version),
+        Err(ProtocolError::UnsupportedVersion { actual: 2 })
+    ));
+}
+
+#[test]
 fn broker_protocol_malformed_003_rejects_oversized_payload_before_allocation() {
     let mut header = raw_frame(2, 1, &[]);
     header[16..20].copy_from_slice(
@@ -257,6 +291,24 @@ fn broker_protocol_malformed_006_rejects_unknown_stable_error_code() {
 }
 
 #[test]
+fn broker_protocol_malformed_007_rejects_opened_without_physical_disk_identity() {
+    let mut legacy_opened = Vec::new();
+    legacy_opened.extend_from_slice(&71_u64.to_le_bytes());
+    legacy_opened.extend_from_slice(&(8_u64 * 1024 * 1024).to_le_bytes());
+    legacy_opened.extend_from_slice(&512_u32.to_le_bytes());
+    legacy_opened.extend_from_slice(&4096_u32.to_le_bytes());
+
+    assert!(matches!(
+        decode_frame(&raw_frame(4, 1, &legacy_opened)),
+        Err(ProtocolError::PayloadUnderflow {
+            opcode: 4,
+            needed: 4,
+            remaining: 0
+        })
+    ));
+}
+
+#[test]
 fn broker_protocol_bounds_001_rejects_invalid_read_ranges() {
     for message in [
         Message::ReadAt {
@@ -298,24 +350,28 @@ fn broker_protocol_bounds_002_rejects_invalid_handles_size_and_sector_geometry()
             size: 4096,
             logical_sector: 512,
             physical_sector: 4096,
+            physical_disk_number: 7,
         },
         Message::Opened {
             handle_id: 1,
             size: 0,
             logical_sector: 512,
             physical_sector: 4096,
+            physical_disk_number: 7,
         },
         Message::Opened {
             handle_id: 1,
             size: 4096,
             logical_sector: 513,
             physical_sector: 4096,
+            physical_disk_number: 7,
         },
         Message::Opened {
             handle_id: 1,
             size: 4096,
             logical_sector: 4096,
             physical_sector: 512,
+            physical_disk_number: 7,
         },
         Message::CloseSource { handle_id: 0 },
         Message::Closed { handle_id: 0 },
