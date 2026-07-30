@@ -492,7 +492,62 @@ def validate_windows_ffi_boundary(
     if pipe_span is None:
         errors.append(f"{name}: missing audited connect_broker_pipe boundary")
 
+    use_spans = [
+        (match.start(), match.end())
+        for match in re.finditer(r"\buse\b[^;]*;", code, re.DOTALL)
+    ]
     create_calls = rust_call_arguments(code, "CreateFileW")
+    direct_create_positions = {call[0] for call in create_calls}
+    canonical_create_file_module = (
+        r"\buse\s+windows_sys\s*::\s*Win32\s*::\s*Storage\s*::\s*"
+        r"FileSystem"
+    )
+    approved_import_positions: set[int] = set()
+    for direct_import in re.finditer(
+        canonical_create_file_module
+        + r"\s*::\s*(?P<symbol>CreateFileW)\s*;",
+        code,
+    ):
+        approved_import_positions.add(direct_import.start("symbol"))
+    for grouped_import in re.finditer(
+        canonical_create_file_module
+        + r"\s*::\s*\{(?P<body>[^{}]*)\}\s*;",
+        code,
+        re.DOTALL,
+    ):
+        body = grouped_import.group("body")
+        body_start = grouped_import.start("body")
+        for imported_item in re.finditer(
+            r"(?:\A|,)\s*(?P<symbol>CreateFileW)\s*(?=,|\Z)",
+            body,
+        ):
+            approved_import_positions.add(
+                body_start + imported_item.start("symbol")
+            )
+
+    for reference in CREATE_FILE_TOKEN.finditer(code):
+        if (
+            reference.group(0) == "CreateFileW"
+            and reference.start() in direct_create_positions
+            and re.search(r"(?:::|\.)\s*$", code[: reference.start()]) is None
+        ):
+            continue
+        if (
+            reference.group(0) == "CreateFileW"
+            and reference.start() in approved_import_positions
+        ):
+            continue
+        errors.append(
+            f"{name}: CreateFile symbol reference must be the one canonical "
+            "unaliased CreateFileW import or one of the five bare audited "
+            "direct calls"
+        )
+    if len(approved_import_positions) != 1:
+        errors.append(
+            f"{name}: CreateFileW must have exactly one canonical unaliased "
+            "windows_sys FileSystem import"
+        )
+
     expected_raw_access = joined("GENERIC_", "READ")
     expected_pipe_access = joined("GENERIC_", "READ|GENERIC_", "WRITE")
     expected_destination_access = "FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY"
@@ -604,10 +659,6 @@ def validate_windows_ffi_boundary(
         if len(calls) != 1 or observed_arguments != expected_arguments:
             errors.append(f"{name}: {error_message}")
 
-    use_spans = [
-        (match.start(), match.end())
-        for match in re.finditer(r"\buse\b[^;]*;", code, re.DOTALL)
-    ]
     for match in GENERIC_WRITE_TOKEN.finditer(code):
         if within(match.start(), pipe_span) or any(
             start <= match.start() < end for start, end in use_spans

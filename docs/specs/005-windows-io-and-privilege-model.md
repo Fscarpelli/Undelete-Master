@@ -92,7 +92,12 @@ no snapshot, lock or dismount occurs.
 forbidden for a scan source. No write, trim, format, delete, repair, lock,
 dismount, mount or arbitrary `DeviceIoControl` capability is allowed. Every
 `CreateFileW` call is restricted to exactly one of the five audited functions
-above, with all seven arguments fixed by that function's policy.
+above, with all seven arguments fixed by that function's policy. Static
+validation permits exactly one canonical, unaliased
+`windows_sys::Win32::Storage::FileSystem::CreateFileW` import and five bare,
+unqualified direct call references; address-taking, function-pointer binding,
+imported or module aliases, qualified calls, macro references and every other
+symbol use fail closed.
 
 ## Regular image CLI
 

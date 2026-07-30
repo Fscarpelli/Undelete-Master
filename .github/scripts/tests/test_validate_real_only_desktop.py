@@ -135,6 +135,7 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "use windows_sys::Win32::Foundation::{"
             f"{read_access}, {pipe_write_access}"
             "};\n"
+            "use windows_sys::Win32::Storage::FileSystem::CreateFileW;\n"
             "fn open_volume_for_read(wide: &[u16]) {\n"
             "  // SAFETY: fixed read-only selector and arguments.\n"
             "  unsafe { CreateFileW(\n"
@@ -971,6 +972,127 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
 
         self.assertTrue(
             any("storage bus query implementation must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_037_rejects_an_indirect_create_file_binding(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn indirect_open(caller_path: &[u16]) {\n"
+            + "  let indirect = CreateFileW;\n"
+            + "  // SAFETY: regression-only indirect open.\n"
+            + "  unsafe { indirect(caller_path.as_ptr(), FILE_READ_ATTRIBUTES, "
+            + "FILE_SHARE_READ, null(), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, "
+            + "null_mut()); }\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_038_rejects_a_typed_create_file_pointer_cast(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "fn retain_create_file_address() {\n"
+            + "  let _indirect: *const () = CreateFileW as *const ();\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_039_rejects_an_imported_create_file_alias(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "use windows_sys::Win32::Storage::FileSystem::"
+            + "CreateFileW as ImportedCreateFile;\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_040_rejects_a_macro_create_file_reference(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8")
+            + "macro_rules! retain_symbol { ($symbol:path) => { const _: () = (); }; }\n"
+            + "fn macro_reference() { retain_symbol!(CreateFileW); }\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_041_rejects_qualified_create_file_calls(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary_text = boundary.read_text(encoding="utf-8")
+        boundary.write_text(
+            "use windows_sys::Win32::Storage::FileSystem as file_system;\n"
+            + boundary_text.replace("CreateFileW(", "file_system::CreateFileW("),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
+        )
+
+    def test_desktop_real_only_042_rejects_create_file_as_an_alias_target(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "use windows_sys::Win32::Storage::FileSystem::CreateFileW;",
+                "use crate::alternate::Open as CreateFileW;",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("CreateFile symbol reference must be" in error for error in errors)
         )
 
 
