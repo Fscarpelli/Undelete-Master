@@ -247,6 +247,15 @@ h2 {
   grid-column: 2;
 }
 
+.pending-panel {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.pending-panel .scan-progress-native,
+.pending-panel .scan-progress-facts {
+  grid-column: 2;
+}
+
 .unavailable-panel {
   border-color: rgba(255, 188, 85, 0.34);
   background: var(--amber-tint);
@@ -659,7 +668,7 @@ tbody th {
 }
 
 .storage-page {
-  width: min(100%, 1060px);
+  width: min(100%, 1600px);
 }
 
 .storage-page-header {
