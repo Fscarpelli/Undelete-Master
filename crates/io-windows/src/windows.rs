@@ -1483,7 +1483,7 @@ fn query_destination_volume(
     volume_guid: &str,
 ) -> Result<DestinationVolumeInformation, StorageError> {
     let handle = open_destination_volume_for_query(volume_guid)?;
-    let (label, file_system, volume_serial) = query_destination_volume_information(&handle)?;
+    let (label, file_system, volume_serial) = query_destination_volume_information(volume_guid)?;
     let physical_backing = physical_backing_from_bus_type(query_storage_bus_type(&handle)?);
     let extents = query_volume_disk_extents(&handle)?;
     let disk_numbers = distinct_disk_numbers(&extents);
@@ -1515,20 +1515,23 @@ fn query_destination_volume(
 }
 
 fn query_destination_volume_information(
-    handle: &OwnedHandle,
+    volume_guid: &str,
 ) -> Result<(String, String, u32), StorageError> {
+    let wide = wide_string(OsStr::new(volume_guid));
     let mut label = [0u16; MAX_VOLUME_NAME_UNITS];
     let mut file_system = [0u16; MAX_VOLUME_NAME_UNITS];
     let mut volume_serial = 0u32;
     let mut maximum_component_length = 0u32;
     let mut file_system_flags = 0u32;
-    // SAFETY: `handle` is the live desired-access-zero handle for the fixed
-    // volume GUID derived from the retained root. Both text buffers and all
-    // scalar outputs are live for their declared sizes; this API only queries
-    // volume metadata.
+    // SAFETY: `wide` is the NUL-terminated volume GUID root derived from the
+    // retained directory handle. Both text buffers and all scalar outputs are
+    // live for their declared sizes; this API only queries volume metadata.
+    // GetVolumeInformationByHandleW rejects desired-access-zero volume handles
+    // on supported Windows versions, while this root-name form is explicitly
+    // designed for volume metadata queries.
     let ok = unsafe {
-        GetVolumeInformationByHandleW(
-            handle.as_raw_handle(),
+        GetVolumeInformationW(
+            wide.as_ptr(),
             label.as_mut_ptr(),
             label.len() as u32,
             &mut volume_serial,
@@ -1540,7 +1543,7 @@ fn query_destination_volume_information(
     };
     if ok == 0 {
         return Err(last_windows_error(
-            "GetVolumeInformationByHandleW(destination-volume)",
+            "GetVolumeInformationW(destination-volume)",
         ));
     }
     Ok((

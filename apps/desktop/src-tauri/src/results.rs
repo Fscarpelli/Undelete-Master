@@ -204,7 +204,12 @@ pub(crate) struct CandidateQueryPageDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub(crate) enum SelectionOperationDto {
     SetIds {
         candidate_ids: Vec<String>,
@@ -905,6 +910,24 @@ mod tests {
         StoredCandidate, CANDIDATE_PAGE_LIMIT, MAX_EXTENSION_SCALARS,
         MAX_RETAINED_CANDIDATES_PER_SCAN,
     };
+
+    #[test]
+    fn result_selection_contract_030_accepts_camel_case_candidate_ids() {
+        let operation: SelectionOperationDto = serde_json::from_value(serde_json::json!({
+            "type": "setIds",
+            "candidateIds": ["315159"],
+            "selected": true
+        }))
+        .expect("the desktop camelCase selection payload must deserialize");
+
+        assert_eq!(
+            operation,
+            SelectionOperationDto::SetIds {
+                candidate_ids: vec!["315159".to_owned()],
+                selected: true,
+            }
+        );
+    }
 
     struct Harness {
         scan_id: String,
