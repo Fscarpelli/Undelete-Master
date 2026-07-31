@@ -118,8 +118,7 @@ function CandidateRow({
 }) {
   const KindIcon = candidate.kind === "directory" ? Folder : File;
   const selectionDisabled =
-    controller.state.selectionPhase === "updating" ||
-    controller.state.phase !== "ready";
+    controller.state.selectionPhase === "updating";
   return (
     <tr
       data-candidate-id={candidate.id}
@@ -267,8 +266,7 @@ export function CandidateResultsTable({
     matchingSelected > 0n && matchingSelected < filteredTotal;
   const selectionDisabled =
     filteredTotal === 0n ||
-    controller.state.selectionPhase === "updating" ||
-    controller.state.phase !== "ready";
+    controller.state.selectionPhase === "updating";
 
   return (
     <div className="results-table-region">

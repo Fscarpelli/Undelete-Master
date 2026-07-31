@@ -926,7 +926,7 @@ export function useResultsWorkspace(
         current.scanId === null ||
         current.page === null ||
         current.selection === null ||
-        current.phase !== "ready" ||
+        current.phase === "loading" ||
         current.selectionPhase === "updating"
       ) {
         return;

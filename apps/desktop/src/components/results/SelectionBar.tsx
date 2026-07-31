@@ -38,8 +38,7 @@ export function SelectionBar({
   const matchingSelected = BigInt(selection.matchingSelectedCandidates);
   const ineligible = BigInt(selection.ineligibleCandidates);
   const updating =
-    controller.state.selectionPhase === "updating" ||
-    controller.state.phase !== "ready";
+    controller.state.selectionPhase === "updating";
   const recoveryBlocked =
     selected === 0n ||
     ineligible > 0n ||
