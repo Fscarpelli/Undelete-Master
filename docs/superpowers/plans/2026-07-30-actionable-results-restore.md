@@ -662,9 +662,11 @@ parent_dir.hard_link(&temporary_name, &parent_dir, &final_name)
 `Dir::hard_link`/the operating-system link primitive fails atomically when the
 final name already exists. On collision, derive the next bounded name and
 retry; never pre-check then rename. After a successful link, sync the parent
-directory where supported, append/sync `ItemPublished`, then remove only the
-temporary link created by this job. A cleanup failure is recorded but never
-causes the final link to be replaced or removed.
+directory where supported and append/sync `ItemPublished`. Security review
+supersedes the original path-cleanup step: protected `.umrecovering` links are
+retained and truthfully manifested because the current safe capability API has
+no identity-atomic unlink primitive. There is no close-then-delete-by-path
+fallback, which would introduce a substitution race.
 
 Keep the capability-created temporary file handle open through publication.
 The pinned capability implementation opens Windows path components without

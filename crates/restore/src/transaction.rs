@@ -1,8 +1,8 @@
 use crate::journal::{hex_lower, JobJournal, JOURNAL_NAME};
 use crate::manifest::{
-    build_manifest, build_partial_sidecar, NamespaceDurability, RestoreCompletionStatus,
-    RestoreItemResult, RestoreSummary, TemporaryFileDisposition, MANIFEST_NAME,
-    PARTIAL_SIDECAR_SUFFIX,
+    build_manifest, build_partial_sidecar, ManifestItemDisposition, ManifestItemOutcome,
+    NamespaceDurability, PublishedSidecarEvidence, RestoreCompletionStatus, RestoreItemResult,
+    RestoreSummary, TemporaryFileDisposition, MANIFEST_NAME,
 };
 use crate::{
     stream_candidate, CancellationProbe, ContentPlan, DerivedSafePath, ProgressSink, RestoreError,
@@ -20,15 +20,16 @@ use um_core::SourceReader;
 pub const RESTORE_SCRATCH_BYTES: usize = 1024 * 1024;
 pub const MAX_COLLISION_ATTEMPTS: usize = 10_000;
 pub const MAX_RESTORE_JOB_ITEMS: usize = 100_000;
+pub const MAX_RESTORE_PATH_COMPONENTS_PER_JOB: usize = 1_000_000;
+pub const MAX_PATH_EVIDENCE_BYTES_PER_JOB: usize = 8 * 1024 * 1024;
 const MAX_JOB_ID_CHARS: usize = 128;
 const MAX_TEMP_CREATE_ATTEMPTS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NamespaceBoundary {
-    SidecarPublished,
-    CollisionSidecarRemoved,
-    DataPublished,
-    ManifestPublished,
+    Sidecar,
+    Data,
+    Manifest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,12 +46,52 @@ enum ParentTransition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemovalBoundary {
-    CollisionSidecarFinal,
-    FailedPublicationSidecarFinal,
-    ItemDataTemporary,
-    ItemSidecarTemporary,
-    ManifestTemporary,
+enum JobTerminal {
+    Completed,
+    Failed { error_kind: &'static str },
+    Cancelled,
+}
+
+struct TerminalItemOutcome {
+    index: usize,
+    disposition: ManifestItemDisposition,
+    failure_kind: &'static str,
+    published_sidecar: Option<PublishedSidecarEvidence>,
+}
+
+struct ItemRestoreFailure {
+    error: Box<RestoreError>,
+    published_sidecar: Option<Box<PublishedSidecarEvidence>>,
+}
+
+impl ItemRestoreFailure {
+    fn with_sidecar(
+        error: RestoreError,
+        published_sidecar: Option<PublishedSidecarEvidence>,
+    ) -> Self {
+        Self {
+            error: Box::new(error),
+            published_sidecar: published_sidecar.map(Box::new),
+        }
+    }
+}
+
+impl From<RestoreError> for ItemRestoreFailure {
+    fn from(error: RestoreError) -> Self {
+        Self {
+            error: Box::new(error),
+            published_sidecar: None,
+        }
+    }
+}
+
+struct ItemRestoreContext<'a> {
+    job_dir: &'a Dir,
+    source: &'a dyn SourceReader,
+    cancel: &'a dyn CancellationProbe,
+    progress: &'a mut dyn ProgressSink,
+    journal: &'a mut JobJournal,
+    runtime: &'a dyn TransactionRuntime,
 }
 
 trait TransactionRuntime {
@@ -80,15 +121,6 @@ trait TransactionRuntime {
     ) -> Result<(), RestoreError> {
         Ok(())
     }
-
-    fn remove_file(
-        &self,
-        parent: &Dir,
-        name: &str,
-        _boundary: RemovalBoundary,
-    ) -> std::io::Result<()> {
-        parent.remove_file(name)
-    }
 }
 
 struct ProductionRuntime;
@@ -99,8 +131,14 @@ impl TransactionRuntime for ProductionRuntime {}
 pub struct FileRestorePlan {
     path: SafeRelativePath,
     path_evidence_json: String,
-    content: ContentPlan,
+    item: RestorePlanItem,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum RestorePlanItem {
+    File(ContentPlan),
+    Directory { candidate_id: u64 },
 }
 
 impl FileRestorePlan {
@@ -109,7 +147,17 @@ impl FileRestorePlan {
         Ok(Self {
             path,
             path_evidence_json,
-            content,
+            item: RestorePlanItem::File(content),
+            warnings: Vec::new(),
+        })
+    }
+
+    pub fn directory(candidate_id: u64, path: DerivedSafePath) -> Result<Self, RestoreError> {
+        let (path, path_evidence_json) = path.into_parts();
+        Ok(Self {
+            path,
+            path_evidence_json,
+            item: RestorePlanItem::Directory { candidate_id },
             warnings: Vec::new(),
         })
     }
@@ -126,6 +174,27 @@ impl FileRestorePlan {
         }
         self.warnings = warnings;
         Ok(self)
+    }
+
+    fn candidate_id(&self) -> u64 {
+        match &self.item {
+            RestorePlanItem::File(content) => content.candidate_id,
+            RestorePlanItem::Directory { candidate_id } => *candidate_id,
+        }
+    }
+
+    fn expected_sha256(&self) -> Option<[u8; 32]> {
+        match &self.item {
+            RestorePlanItem::File(content) => content.expected_sha256,
+            RestorePlanItem::Directory { .. } => None,
+        }
+    }
+
+    fn item_kind(&self) -> &'static str {
+        match &self.item {
+            RestorePlanItem::File(_) => "file",
+            RestorePlanItem::Directory { .. } => "directory",
+        }
     }
 }
 
@@ -154,11 +223,43 @@ impl RestoreJobPlan {
                 maximum: MAX_RESTORE_JOB_ITEMS,
             });
         }
+        let path_components = checked_job_budget_total(
+            items.iter().map(|item| item.path.components().len()),
+            MAX_RESTORE_PATH_COMPONENTS_PER_JOB,
+        )
+        .map_err(|actual| RestoreError::JobPathComponentLimit {
+            actual,
+            maximum: MAX_RESTORE_PATH_COMPONENTS_PER_JOB,
+        })?;
+        debug_assert!(path_components <= MAX_RESTORE_PATH_COMPONENTS_PER_JOB);
+        let path_evidence_bytes = checked_job_budget_total(
+            items.iter().map(|item| item.path_evidence_json.len()),
+            MAX_PATH_EVIDENCE_BYTES_PER_JOB,
+        )
+        .map_err(|actual| RestoreError::JobPathEvidenceLimit {
+            actual,
+            maximum: MAX_PATH_EVIDENCE_BYTES_PER_JOB,
+        })?;
+        debug_assert!(path_evidence_bytes <= MAX_PATH_EVIDENCE_BYTES_PER_JOB);
         Ok(Self {
             job_id: job_id.to_owned(),
             items,
         })
     }
+}
+
+fn checked_job_budget_total(
+    values: impl IntoIterator<Item = usize>,
+    maximum: usize,
+) -> Result<usize, usize> {
+    let mut total = 0usize;
+    for value in values {
+        total = total.checked_add(value).ok_or(usize::MAX)?;
+        if total > maximum {
+            return Err(total);
+        }
+    }
+    Ok(total)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,143 +328,99 @@ impl DestinationRoot {
         )?;
 
         let mut results = Vec::with_capacity(plan.items.len());
-        for item in &plan.items {
+        for (item_index, item) in plan.items.iter().enumerate() {
             if cancel.is_cancelled() {
                 let error = RestoreError::Cancelled { bytes_written: 0 };
-                record_item_and_job_failure(&mut journal, item.content.candidate_id, &error)?;
+                record_item_failure(&mut journal, item.candidate_id(), &error)?;
+                let outcomes = build_manifest_outcomes(
+                    plan,
+                    &results,
+                    Some(TerminalItemOutcome {
+                        index: item_index,
+                        disposition: ManifestItemDisposition::Cancelled,
+                        failure_kind: "cancelled",
+                        published_sidecar: None,
+                    }),
+                )?;
+                publish_final_manifest(
+                    &job_dir,
+                    &job_directory_name,
+                    plan,
+                    &results,
+                    &outcomes,
+                    &mut journal,
+                    runtime,
+                    JobTerminal::Cancelled,
+                )?;
                 return Err(error);
             }
             match restore_item(
-                &job_dir,
-                source,
+                ItemRestoreContext {
+                    job_dir: &job_dir,
+                    source,
+                    cancel,
+                    progress: &mut *progress,
+                    journal: &mut journal,
+                    runtime,
+                },
                 item,
-                cancel,
-                progress,
-                &mut journal,
-                runtime,
+                item_index,
             ) {
                 Ok(result) => results.push(result),
-                Err(error) => {
-                    if !journal.is_poisoned() {
-                        record_item_and_job_failure(
-                            &mut journal,
-                            item.content.candidate_id,
-                            &error,
-                        )?;
+                Err(failure) => {
+                    let error = *failure.error;
+                    if journal.is_poisoned() {
+                        return Err(error);
                     }
+                    let failure_kind = error_kind(&error);
+                    let cancelled = matches!(error, RestoreError::Cancelled { .. });
+                    record_item_failure(&mut journal, item.candidate_id(), &error)?;
+                    let outcomes = build_manifest_outcomes(
+                        plan,
+                        &results,
+                        Some(TerminalItemOutcome {
+                            index: item_index,
+                            disposition: if cancelled {
+                                ManifestItemDisposition::Cancelled
+                            } else {
+                                ManifestItemDisposition::Failed
+                            },
+                            failure_kind,
+                            published_sidecar: failure.published_sidecar.map(|sidecar| *sidecar),
+                        }),
+                    )?;
+                    publish_final_manifest(
+                        &job_dir,
+                        &job_directory_name,
+                        plan,
+                        &results,
+                        &outcomes,
+                        &mut journal,
+                        runtime,
+                        if cancelled {
+                            JobTerminal::Cancelled
+                        } else {
+                            JobTerminal::Failed {
+                                error_kind: failure_kind,
+                            }
+                        },
+                    )?;
                     return Err(error);
                 }
             }
         }
 
-        let outcomes_prefix_sha256 = journal.head_hash().to_owned();
-        let (manifest_bytes, manifest_sha256) =
-            build_manifest(&plan.job_id, &outcomes_prefix_sha256, &results).map_err(|error| {
-                RestoreError::ManifestSerialization {
-                    message: error.to_string(),
-                }
-            })?;
-        let mut manifest_temp =
-            prepare_bytes(&job_dir, "manifest", &manifest_bytes, manifest_sha256)?;
-        journal.append(
-            "manifestPrepared",
-            &ManifestPrepared {
-                name: MANIFEST_NAME,
-                length: manifest_bytes.len(),
-                sha256: hex_lower(&manifest_sha256),
-                outcomes_prefix_sha256: outcomes_prefix_sha256.clone(),
-                temporary_name: manifest_temp.name.clone(),
-            },
-        )?;
-
-        verify_prelink_identity(&job_dir, &manifest_temp)?;
-        if let Err(error) = runtime.hard_link(
+        let outcomes = build_manifest_outcomes(plan, &results, None)?;
+        publish_final_manifest(
             &job_dir,
-            &manifest_temp.name,
-            MANIFEST_NAME,
-            LinkBoundary::Manifest,
-        ) {
-            let error = hard_link_error(error);
-            if let Err(journal_error) = record_job_failure(&mut journal, &error) {
-                return Err(publication_reconciliation_error(
-                    "manifest failure record",
-                    MANIFEST_NAME,
-                    journal_error,
-                ));
-            }
-            return Err(error);
-        }
-        let manifest_sync = runtime.sync_parent(&job_dir, NamespaceBoundary::ManifestPublished);
-        let manifest_status = durability_status(&manifest_sync);
-        if let Err(error) = journal.append(
-            "manifestPublished",
-            &ManifestPublished {
-                name: MANIFEST_NAME,
-                namespace_durability: &manifest_sync,
-                completion_status: manifest_status,
-            },
-        ) {
-            return Err(publication_reconciliation_error(
-                "manifest",
-                MANIFEST_NAME,
-                error,
-            ));
-        }
-
-        let overall_status = if manifest_status == RestoreCompletionStatus::NeedsReconciliation
-            || results
-                .iter()
-                .any(|item| item.completion_status == RestoreCompletionStatus::NeedsReconciliation)
-        {
-            RestoreCompletionStatus::NeedsReconciliation
-        } else {
-            RestoreCompletionStatus::CompletedDurable
-        };
-        if manifest_sync.is_synced() {
-            match runtime.remove_file(
-                &job_dir,
-                &manifest_temp.name,
-                RemovalBoundary::ManifestTemporary,
-            ) {
-                Ok(()) => manifest_temp.removed = true,
-                Err(_) => {
-                    if let Err(error) = journal.append(
-                        "manifestCleanupWarning",
-                        &ManifestCleanupWarning {
-                            temporary_name: manifest_temp.name.clone(),
-                        },
-                    ) {
-                        return Err(publication_reconciliation_error(
-                            "manifest cleanup warning",
-                            MANIFEST_NAME,
-                            error,
-                        ));
-                    }
-                }
-            }
-        }
-        if let Err(error) = journal.append(
-            "jobCompleted",
-            &JobCompleted {
-                item_count: results.len(),
-                completion_status: overall_status,
-            },
-        ) {
-            return Err(publication_reconciliation_error(
-                "job terminal record",
-                MANIFEST_NAME,
-                error,
-            ));
-        }
-
-        Ok(RestoreSummary {
-            job_directory_name,
-            manifest_name: MANIFEST_NAME.to_owned(),
-            journal_name: JOURNAL_NAME.to_owned(),
-            manifest_sha256,
-            items: results,
-            completion_status: overall_status,
-        })
+            &job_directory_name,
+            plan,
+            &results,
+            &outcomes,
+            &mut journal,
+            runtime,
+            JobTerminal::Completed,
+        )
     }
 
     fn revalidate(&self) -> Result<(), RestoreError> {
@@ -378,27 +435,278 @@ impl DestinationRoot {
     }
 }
 
+fn build_manifest_outcomes(
+    plan: &RestoreJobPlan,
+    published: &[RestoreItemResult],
+    terminal_item: Option<TerminalItemOutcome>,
+) -> Result<Vec<ManifestItemOutcome>, RestoreError> {
+    if published.len() > plan.items.len() {
+        return Err(RestoreError::ManifestSerialization {
+            message: "published outcomes exceed immutable plan items".into(),
+        });
+    }
+    let mut outcomes = Vec::with_capacity(plan.items.len());
+    for (index, item) in plan.items.iter().enumerate() {
+        let path_evidence = serde_json::from_str(&item.path_evidence_json).map_err(|error| {
+            RestoreError::ManifestSerialization {
+                message: error.to_string(),
+            }
+        })?;
+        let (disposition, failure_kind, published_result, warnings, evidence) =
+            if let Some(result) = published.get(index) {
+                (
+                    match &item.item {
+                        RestorePlanItem::File(_) => ManifestItemDisposition::Published,
+                        RestorePlanItem::Directory { .. } => {
+                            ManifestItemDisposition::DirectoryCreated
+                        }
+                    },
+                    None,
+                    Some(result.clone()),
+                    result.warnings.clone(),
+                    result.path_evidence.clone(),
+                )
+            } else if let Some(terminal) = terminal_item.as_ref() {
+                if index == terminal.index {
+                    (
+                        terminal.disposition,
+                        Some(terminal.failure_kind),
+                        None,
+                        item.warnings.clone(),
+                        path_evidence,
+                    )
+                } else {
+                    (
+                        ManifestItemDisposition::NotAttempted,
+                        None,
+                        None,
+                        item.warnings.clone(),
+                        path_evidence,
+                    )
+                }
+            } else {
+                return Err(RestoreError::ManifestSerialization {
+                    message: "successful outcomes do not match immutable plan items".into(),
+                });
+            };
+        outcomes.push(ManifestItemOutcome {
+            candidate_id: item.candidate_id(),
+            item_key: restore_item_key(index, item.candidate_id()),
+            item_kind: item.item_kind(),
+            disposition,
+            requested_path: item.path.to_slash_string(),
+            expected_sha256: item.expected_sha256(),
+            warnings,
+            path_evidence: evidence,
+            failure_kind,
+            published_sidecar: if let Some(result) = published_result.as_ref() {
+                match (&result.sidecar_name, result.sidecar_sha256) {
+                    (Some(name), Some(sha256)) => Some(PublishedSidecarEvidence {
+                        item_key: result.item_key.clone(),
+                        name: name.clone(),
+                        sha256,
+                    }),
+                    _ => None,
+                }
+            } else if terminal_item
+                .as_ref()
+                .is_some_and(|terminal| terminal.index == index)
+            {
+                terminal_item
+                    .as_ref()
+                    .and_then(|terminal| terminal.published_sidecar.clone())
+            } else {
+                None
+            },
+            published: published_result,
+        });
+    }
+    Ok(outcomes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_final_manifest(
+    job_dir: &Dir,
+    job_directory_name: &str,
+    plan: &RestoreJobPlan,
+    results: &[RestoreItemResult],
+    outcomes: &[ManifestItemOutcome],
+    journal: &mut JobJournal,
+    runtime: &dyn TransactionRuntime,
+    terminal: JobTerminal,
+) -> Result<RestoreSummary, RestoreError> {
+    let outcomes_prefix_sha256 = journal.head_hash().to_owned();
+    let (manifest_bytes, manifest_sha256) =
+        build_manifest(&plan.job_id, &outcomes_prefix_sha256, outcomes).map_err(|error| {
+            RestoreError::ManifestSerialization {
+                message: error.to_string(),
+            }
+        })?;
+    let manifest_temp = prepare_bytes(job_dir, "manifest", &manifest_bytes, manifest_sha256)?;
+    journal.append(
+        "manifestPrepared",
+        &ManifestPrepared {
+            name: MANIFEST_NAME,
+            length: manifest_bytes.len(),
+            sha256: hex_lower(&manifest_sha256),
+            outcomes_prefix_sha256: outcomes_prefix_sha256.clone(),
+            temporary_name: manifest_temp.name.clone(),
+        },
+    )?;
+
+    verify_prelink_identity(job_dir, &manifest_temp)?;
+    if let Err(error) = runtime.hard_link(
+        job_dir,
+        &manifest_temp.name,
+        MANIFEST_NAME,
+        LinkBoundary::Manifest,
+    ) {
+        let error = hard_link_error(error);
+        if let Err(journal_error) = record_job_failure(journal, &error) {
+            return Err(publication_reconciliation_error(
+                "manifest failure record",
+                MANIFEST_NAME,
+                journal_error,
+            ));
+        }
+        return Err(error);
+    }
+    let manifest_sync = runtime.sync_parent(job_dir, NamespaceBoundary::Manifest);
+    let manifest_status = durability_status(&manifest_sync);
+    if let Err(error) = journal.append(
+        "manifestPublished",
+        &ManifestPublished {
+            name: MANIFEST_NAME,
+            namespace_durability: &manifest_sync,
+            completion_status: manifest_status,
+        },
+    ) {
+        return Err(publication_reconciliation_error(
+            "manifest",
+            MANIFEST_NAME,
+            error,
+        ));
+    }
+
+    let overall_status = if manifest_status == RestoreCompletionStatus::NeedsReconciliation
+        || results
+            .iter()
+            .any(|item| item.completion_status == RestoreCompletionStatus::NeedsReconciliation)
+    {
+        RestoreCompletionStatus::NeedsReconciliation
+    } else {
+        RestoreCompletionStatus::CompletedDurable
+    };
+    let terminal_result = match terminal {
+        JobTerminal::Completed => journal.append(
+            "jobCompleted",
+            &JobCompleted {
+                item_count: outcomes.len(),
+                completion_status: overall_status,
+            },
+        ),
+        JobTerminal::Failed { error_kind } => journal.append(
+            "jobFailed",
+            &FailureRecord {
+                candidate_id: None,
+                error_kind,
+            },
+        ),
+        JobTerminal::Cancelled => journal.append(
+            "jobCancelled",
+            &FailureRecord {
+                candidate_id: None,
+                error_kind: "cancelled",
+            },
+        ),
+    };
+    if let Err(error) = terminal_result {
+        return Err(publication_reconciliation_error(
+            "job terminal record",
+            MANIFEST_NAME,
+            error,
+        ));
+    }
+
+    Ok(RestoreSummary {
+        job_directory_name: job_directory_name.to_owned(),
+        manifest_name: MANIFEST_NAME.to_owned(),
+        journal_name: JOURNAL_NAME.to_owned(),
+        manifest_sha256,
+        items: results.to_vec(),
+        completion_status: overall_status,
+    })
+}
+
 pub fn job_directory_component(job_id: &str) -> String {
     let digest = Sha256::digest(job_id.as_bytes());
     format!(".um-recovery-{}", &hex_lower(&digest)[..32])
 }
 
+fn restore_item_key(item_index: usize, candidate_id: u64) -> String {
+    format!("{item_index:06}-{candidate_id:016x}")
+}
+
+fn partial_sidecar_base_name(item_key: &str) -> String {
+    format!(".um-partial-{item_key}.json")
+}
+
 fn restore_item(
+    context: ItemRestoreContext<'_>,
+    plan: &FileRestorePlan,
+    item_index: usize,
+) -> Result<RestoreItemResult, ItemRestoreFailure> {
+    let item_key = restore_item_key(item_index, plan.candidate_id());
+    match &plan.item {
+        RestorePlanItem::File(content) => restore_file_item(
+            context.job_dir,
+            context.source,
+            plan,
+            content,
+            &item_key,
+            context.cancel,
+            context.progress,
+            context.journal,
+            context.runtime,
+        ),
+        RestorePlanItem::Directory { candidate_id } => restore_directory_item(
+            context.job_dir,
+            plan,
+            *candidate_id,
+            &item_key,
+            context.journal,
+            context.runtime,
+        )
+        .map_err(Into::into),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_file_item(
     job_dir: &Dir,
     source: &dyn SourceReader,
     plan: &FileRestorePlan,
+    content: &ContentPlan,
+    item_key: &str,
     cancel: &dyn CancellationProbe,
     progress: &mut dyn ProgressSink,
     journal: &mut JobJournal,
     runtime: &dyn TransactionRuntime,
-) -> Result<RestoreItemResult, RestoreError> {
+) -> Result<RestoreItemResult, ItemRestoreFailure> {
     let parent = open_or_create_parents(job_dir, &plan.path, runtime)?;
-    let mut temporary = prepare_stream(&parent, source, &plan.content, cancel, progress)?;
-    let sidecar_bytes = build_partial_sidecar(plan.content.logical_size, &temporary.outcome)
-        .map_err(|error| RestoreError::ManifestSerialization {
-            message: error.to_string(),
-        })?;
-    let mut sidecar_temp = match sidecar_bytes {
+    let temporary = prepare_stream(&parent, source, content, cancel, progress)?;
+    let sidecar_bytes = build_partial_sidecar(
+        item_key,
+        content.candidate_id,
+        content.logical_size,
+        &temporary.outcome,
+        content.expected_sha256,
+        &plan.warnings,
+    )
+    .map_err(|error| RestoreError::ManifestSerialization {
+        message: error.to_string(),
+    })?;
+    let sidecar_temp = match sidecar_bytes {
         Some(bytes) => {
             let hash = Sha256::digest(&bytes).into();
             Some(prepare_bytes(&parent, "partial", &bytes, hash)?)
@@ -409,169 +717,121 @@ fn restore_item(
     journal.append(
         "itemPrepared",
         &ItemPrepared {
-            candidate_id: plan.content.candidate_id,
+            candidate_id: content.candidate_id,
+            item_key: item_key.to_owned(),
             requested_path: plan.path.to_slash_string(),
             temporary_name: temporary.name.clone(),
             output_length: temporary.outcome.bytes_written,
             output_sha256: hex_lower(&temporary.outcome.sha256),
-            expected_sha256: plan.content.expected_sha256.map(|hash| hex_lower(&hash)),
+            expected_sha256: content.expected_sha256.map(|hash| hex_lower(&hash)),
             sidecar_temporary_name: sidecar_temp.as_ref().map(|file| file.name.clone()),
         },
     )?;
 
+    let (published_sidecar, sidecar_durability) = match sidecar_temp.as_ref() {
+        Some(sidecar) => {
+            let base_name = partial_sidecar_base_name(item_key);
+            let mut published = None;
+            let mut durability = NamespaceDurability::Synced;
+            for collision_index in 0..MAX_COLLISION_ATTEMPTS {
+                let sidecar_name = collision_name(&base_name, collision_index);
+                verify_prelink_identity(&parent, sidecar)?;
+                match runtime.hard_link(
+                    &parent,
+                    &sidecar.name,
+                    &sidecar_name,
+                    LinkBoundary::PartialSidecar,
+                ) {
+                    Ok(()) => {
+                        durability = merge_durability(
+                            durability,
+                            runtime.sync_parent(&parent, NamespaceBoundary::Sidecar),
+                        );
+                        let evidence = PublishedSidecarEvidence {
+                            item_key: item_key.to_owned(),
+                            name: sidecar_name,
+                            sha256: sidecar.outcome.sha256,
+                        };
+                        if let Err(error) = journal.append(
+                            "itemSidecarPublished",
+                            &ItemSidecarPublished {
+                                candidate_id: content.candidate_id,
+                                item_key,
+                                name: &evidence.name,
+                                sha256: hex_lower(&evidence.sha256),
+                                namespace_durability: &durability,
+                            },
+                        ) {
+                            return Err(ItemRestoreFailure::with_sidecar(
+                                publication_reconciliation_error("sidecar", &evidence.name, error),
+                                Some(evidence),
+                            ));
+                        }
+                        published = Some(evidence);
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(hard_link_error(error).into()),
+                }
+            }
+            let published = published.ok_or_else(|| {
+                ItemRestoreFailure::from(RestoreError::CollisionLimitExceeded {
+                    maximum: MAX_COLLISION_ATTEMPTS,
+                })
+            })?;
+            (Some(published), durability)
+        }
+        None => (None, NamespaceDurability::Synced),
+    };
+
     let base_name = plan.path.file_name();
     for collision_index in 0..MAX_COLLISION_ATTEMPTS {
         let final_name = collision_name(base_name, collision_index);
-        let sidecar_name = sidecar_temp
-            .as_ref()
-            .map(|_| partial_sidecar_name(&final_name));
-        let mut sidecar_linked = false;
-        let mut durability = NamespaceDurability::Synced;
+        let mut durability = sidecar_durability.clone();
 
-        if let (Some(sidecar), Some(sidecar_final)) = (sidecar_temp.as_ref(), sidecar_name.as_ref())
-        {
-            verify_prelink_identity(&parent, sidecar)?;
-            match runtime.hard_link(
-                &parent,
-                &sidecar.name,
-                sidecar_final,
-                LinkBoundary::PartialSidecar,
-            ) {
-                Ok(()) => {
-                    sidecar_linked = true;
-                    durability = merge_durability(
-                        durability,
-                        runtime.sync_parent(&parent, NamespaceBoundary::SidecarPublished),
-                    );
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(hard_link_error(error)),
-            }
-        }
-
-        verify_prelink_identity(&parent, &temporary)?;
+        verify_prelink_identity(&parent, &temporary)
+            .map_err(|error| ItemRestoreFailure::with_sidecar(error, published_sidecar.clone()))?;
         match runtime.hard_link(&parent, &temporary.name, &final_name, LinkBoundary::Data) {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if sidecar_linked {
-                    let sidecar_final = sidecar_name
-                        .as_ref()
-                        .expect("linked sidecar has a final name");
-                    runtime
-                        .remove_file(
-                            &parent,
-                            sidecar_final,
-                            RemovalBoundary::CollisionSidecarFinal,
-                        )
-                        .map_err(|cleanup_error| RestoreError::NeedsReconciliation {
-                            message: format!(
-                                "collision sidecar cleanup failed ({:?}): {}",
-                                cleanup_error.kind(),
-                                cleanup_error
-                            ),
-                        })?;
-                    durability = merge_durability(
-                        durability,
-                        runtime.sync_parent(&parent, NamespaceBoundary::CollisionSidecarRemoved),
-                    );
-                    if matches!(durability, NamespaceDurability::Failed { .. }) {
-                        return Err(RestoreError::NeedsReconciliation {
-                            message: "collision cleanup namespace sync failed".into(),
-                        });
-                    }
-                }
-                continue;
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                if sidecar_linked {
-                    let sidecar_final = sidecar_name
-                        .as_ref()
-                        .expect("linked sidecar has a final name");
-                    runtime
-                        .remove_file(
-                            &parent,
-                            sidecar_final,
-                            RemovalBoundary::FailedPublicationSidecarFinal,
-                        )
-                        .map_err(|cleanup_error| RestoreError::NeedsReconciliation {
-                            message: format!(
-                                "failed-publication sidecar cleanup failed ({:?}): {}",
-                                cleanup_error.kind(),
-                                cleanup_error
-                            ),
-                        })?;
-                    let cleanup_durability =
-                        runtime.sync_parent(&parent, NamespaceBoundary::CollisionSidecarRemoved);
-                    if matches!(cleanup_durability, NamespaceDurability::Failed { .. }) {
-                        return Err(RestoreError::NeedsReconciliation {
-                            message: "failed-publication sidecar cleanup namespace sync failed"
-                                .into(),
-                        });
-                    }
-                }
-                return Err(hard_link_error(error));
+                return Err(ItemRestoreFailure::with_sidecar(
+                    hard_link_error(error),
+                    published_sidecar.clone(),
+                ));
             }
         }
 
         durability = merge_durability(
             durability,
-            runtime.sync_parent(&parent, NamespaceBoundary::DataPublished),
+            runtime.sync_parent(&parent, NamespaceBoundary::Data),
         );
         let completion_status = durability_status(&durability);
         let published_path = join_published_path(&plan.path, &final_name);
         if let Err(error) = journal.append(
             "itemPublished",
             &ItemPublished {
-                candidate_id: plan.content.candidate_id,
+                candidate_id: content.candidate_id,
                 published_path: published_path.clone(),
-                sidecar_name: sidecar_name.clone(),
+                sidecar_name: published_sidecar
+                    .as_ref()
+                    .map(|sidecar| sidecar.name.clone()),
                 namespace_durability: &durability,
                 completion_status,
             },
         ) {
-            return Err(publication_reconciliation_error(
-                "item",
-                &published_path,
-                error,
+            return Err(ItemRestoreFailure::with_sidecar(
+                publication_reconciliation_error("item", &published_path, error),
+                published_sidecar.clone(),
             ));
         }
 
-        let mut warnings = plan.warnings.clone();
-        let mut temporary_disposition = TemporaryFileDisposition::RetainedForReconciliation;
-        if durability.is_synced() {
-            let data_cleanup =
-                runtime.remove_file(&parent, &temporary.name, RemovalBoundary::ItemDataTemporary);
-            let sidecar_cleanup = match sidecar_temp.as_ref() {
-                Some(sidecar) => runtime.remove_file(
-                    &parent,
-                    &sidecar.name,
-                    RemovalBoundary::ItemSidecarTemporary,
-                ),
-                None => Ok(()),
-            };
-            if data_cleanup.is_ok() && sidecar_cleanup.is_ok() {
-                temporary.removed = true;
-                if let Some(sidecar) = sidecar_temp.as_mut() {
-                    sidecar.removed = true;
-                }
-                temporary_disposition = TemporaryFileDisposition::Removed;
-            } else {
-                temporary_disposition = TemporaryFileDisposition::RetainedAfterCleanupFailure;
-                warnings.push("published output is durable; temporary-link cleanup failed".into());
-                if let Err(error) = journal.append(
-                    "itemCleanupWarning",
-                    &ItemCleanupWarning {
-                        candidate_id: plan.content.candidate_id,
-                    },
-                ) {
-                    return Err(publication_reconciliation_error(
-                        "item cleanup warning",
-                        &published_path,
-                        error,
-                    ));
-                }
-            }
-        }
+        let warnings = plan.warnings.clone();
+        let temporary_disposition = if durability.is_synced() {
+            TemporaryFileDisposition::RetainedBySafeCleanupPolicy
+        } else {
+            TemporaryFileDisposition::RetainedForReconciliation
+        };
 
         let path_evidence = serde_json::from_str(&plan.path_evidence_json).map_err(|error| {
             RestoreError::ManifestSerialization {
@@ -579,18 +839,112 @@ fn restore_item(
             }
         })?;
         return Ok(RestoreItemResult {
-            candidate_id: plan.content.candidate_id,
+            candidate_id: content.candidate_id,
+            item_key: item_key.to_owned(),
             requested_path: plan.path.to_slash_string(),
             published_path,
             published_name: final_name,
             output_len: temporary.outcome.bytes_written,
             output_sha256: temporary.outcome.sha256,
-            expected_sha256: plan.content.expected_sha256,
+            expected_sha256: content.expected_sha256,
             zero_filled_ranges: temporary.outcome.zero_filled_ranges.clone(),
-            sidecar_name,
+            sidecar_name: published_sidecar
+                .as_ref()
+                .map(|sidecar| sidecar.name.clone()),
+            sidecar_sha256: published_sidecar.as_ref().map(|sidecar| sidecar.sha256),
             temporary_disposition,
             path_evidence,
             warnings,
+            namespace_durability: durability,
+            completion_status,
+        });
+    }
+
+    Err(ItemRestoreFailure::with_sidecar(
+        RestoreError::CollisionLimitExceeded {
+            maximum: MAX_COLLISION_ATTEMPTS,
+        },
+        published_sidecar,
+    ))
+}
+
+fn restore_directory_item(
+    job_dir: &Dir,
+    plan: &FileRestorePlan,
+    candidate_id: u64,
+    item_key: &str,
+    journal: &mut JobJournal,
+    runtime: &dyn TransactionRuntime,
+) -> Result<RestoreItemResult, RestoreError> {
+    let parent = open_or_create_parents(job_dir, &plan.path, runtime)?;
+    journal.append(
+        "itemPrepared",
+        &DirectoryPrepared {
+            candidate_id,
+            item_key,
+            requested_path: plan.path.to_slash_string(),
+            item_kind: "directory",
+        },
+    )?;
+
+    let base_name = plan.path.file_name();
+    for collision_index in 0..MAX_COLLISION_ATTEMPTS {
+        let final_name = collision_name(base_name, collision_index);
+        match parent.create_dir(&final_name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(destination_io(
+                    "create selected destination directory",
+                    error,
+                ));
+            }
+        }
+        let final_component_index = plan.path.components().len() - 1;
+        runtime.parent_transition(
+            final_component_index,
+            &final_name,
+            ParentTransition::CreatedBeforeBind,
+        )?;
+        let bound = parent
+            .open_dir_nofollow(&final_name)
+            .map_err(|error| destination_io("bind selected destination directory", error))?;
+        runtime.parent_transition(final_component_index, &final_name, ParentTransition::Bound)?;
+        drop(bound);
+
+        let durability = runtime.sync_parent(&parent, NamespaceBoundary::Data);
+        let completion_status = durability_status(&durability);
+        let published_path = join_published_path(&plan.path, &final_name);
+        journal.append(
+            "itemPublished",
+            &ItemPublished {
+                candidate_id,
+                published_path: published_path.clone(),
+                sidecar_name: None,
+                namespace_durability: &durability,
+                completion_status,
+            },
+        )?;
+        let path_evidence = serde_json::from_str(&plan.path_evidence_json).map_err(|error| {
+            RestoreError::ManifestSerialization {
+                message: error.to_string(),
+            }
+        })?;
+        return Ok(RestoreItemResult {
+            candidate_id,
+            item_key: item_key.to_owned(),
+            requested_path: plan.path.to_slash_string(),
+            published_path,
+            published_name: final_name,
+            output_len: 0,
+            output_sha256: Sha256::digest([]).into(),
+            expected_sha256: None,
+            zero_filled_ranges: Vec::new(),
+            sidecar_name: None,
+            sidecar_sha256: None,
+            temporary_disposition: TemporaryFileDisposition::Removed,
+            path_evidence,
+            warnings: plan.warnings.clone(),
             namespace_durability: durability,
             completion_status,
         });
@@ -606,13 +960,6 @@ struct PreparedFile {
     file: File,
     identity: FileIdentity,
     outcome: crate::StreamOutcome,
-    removed: bool,
-}
-
-impl Drop for PreparedFile {
-    fn drop(&mut self) {
-        let _ = self.removed;
-    }
 }
 
 fn prepare_stream(
@@ -648,7 +995,6 @@ fn prepare_stream(
         file,
         identity,
         outcome,
-        removed: false,
     })
 }
 
@@ -695,7 +1041,6 @@ fn prepare_bytes(
             zero_filled_ranges: Vec::new(),
             requires_best_effort: false,
         },
-        removed: false,
     })
 }
 
@@ -835,16 +1180,6 @@ fn collision_name(base: &str, collision_index: usize) -> String {
     }
 }
 
-fn partial_sidecar_name(final_name: &str) -> String {
-    let candidate = format!("{final_name}{PARTIAL_SIDECAR_SUFFIX}");
-    if SafeRelativePath::try_from_components([candidate.as_str()]).is_ok() {
-        candidate
-    } else {
-        let digest = Sha256::digest(candidate.as_bytes());
-        format!("partial-{}.json", &hex_lower(&digest)[..40])
-    }
-}
-
 fn join_published_path(path: &SafeRelativePath, final_name: &str) -> String {
     let mut components = path.parent_components().collect::<Vec<_>>();
     components.push(final_name);
@@ -882,8 +1217,8 @@ fn sync_parent(parent: &Dir) -> NamespaceDurability {
 }
 
 #[cfg(windows)]
-fn namespace_sync_is_unsupported(_error: &std::io::Error) -> bool {
-    true
+fn namespace_sync_is_unsupported(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 50 | 120))
 }
 
 #[cfg(not(windows))]
@@ -915,7 +1250,7 @@ fn durability_status(durability: &NamespaceDurability) -> RestoreCompletionStatu
     }
 }
 
-fn record_item_and_job_failure(
+fn record_item_failure(
     journal: &mut JobJournal,
     candidate_id: u64,
     error: &RestoreError,
@@ -929,17 +1264,6 @@ fn record_item_and_job_failure(
         },
         &FailureRecord {
             candidate_id: Some(candidate_id),
-            error_kind: error_kind(error),
-        },
-    )?;
-    journal.append(
-        if cancelled {
-            "jobCancelled"
-        } else {
-            "jobFailed"
-        },
-        &FailureRecord {
-            candidate_id: None,
             error_kind: error_kind(error),
         },
     )
@@ -1006,6 +1330,7 @@ struct JobStarted {
 #[serde(rename_all = "camelCase")]
 struct ItemPrepared {
     candidate_id: u64,
+    item_key: String,
     requested_path: String,
     temporary_name: String,
     output_length: u64,
@@ -1016,18 +1341,31 @@ struct ItemPrepared {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DirectoryPrepared<'a> {
+    candidate_id: u64,
+    item_key: &'a str,
+    requested_path: String,
+    item_kind: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemSidecarPublished<'a> {
+    candidate_id: u64,
+    item_key: &'a str,
+    name: &'a str,
+    sha256: String,
+    namespace_durability: &'a NamespaceDurability,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ItemPublished<'a> {
     candidate_id: u64,
     published_path: String,
     sidecar_name: Option<String>,
     namespace_durability: &'a NamespaceDurability,
     completion_status: RestoreCompletionStatus,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ItemCleanupWarning {
-    candidate_id: u64,
 }
 
 #[derive(Serialize)]
@@ -1046,12 +1384,6 @@ struct ManifestPublished<'a> {
     name: &'static str,
     namespace_durability: &'a NamespaceDurability,
     completion_status: RestoreCompletionStatus,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestCleanupWarning {
-    temporary_name: String,
 }
 
 #[derive(Serialize)]
@@ -1342,6 +1674,27 @@ mod tests {
         }
     }
 
+    struct UnsupportedDataAfterSidecar;
+
+    impl TransactionRuntime for UnsupportedDataAfterSidecar {
+        fn hard_link(
+            &self,
+            parent: &Dir,
+            temporary_name: &str,
+            final_name: &str,
+            boundary: LinkBoundary,
+        ) -> io::Result<()> {
+            if boundary == LinkBoundary::Data {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "injected data publication failure after sidecar",
+                ))
+            } else {
+                parent.hard_link(temporary_name, parent, final_name)
+            }
+        }
+    }
+
     struct RacingCreator {
         collisions: usize,
         attempts: Mutex<usize>,
@@ -1447,14 +1800,16 @@ mod tests {
     }
 
     struct SidecarCollisionRecorder {
-        injected: AtomicBool,
+        sidecar_injected: AtomicBool,
+        data_injected: AtomicBool,
         events: Mutex<Vec<LinkBoundary>>,
     }
 
     impl SidecarCollisionRecorder {
         fn new() -> Self {
             Self {
-                injected: AtomicBool::new(false),
+                sidecar_injected: AtomicBool::new(false),
+                data_injected: AtomicBool::new(false),
                 events: Mutex::new(Vec::new()),
             }
         }
@@ -1470,56 +1825,56 @@ mod tests {
         ) -> io::Result<()> {
             self.events.lock().unwrap().push(boundary);
             if boundary == LinkBoundary::PartialSidecar
-                && !self.injected.swap(true, Ordering::SeqCst)
+                && !self.sidecar_injected.swap(true, Ordering::SeqCst)
             {
                 let mut existing = create_new_protected(parent, final_name)
                     .expect("the first sidecar name is initially free");
                 existing.write_all(b"existing sidecar sentinel").unwrap();
                 existing.sync_all().unwrap();
             }
+            if boundary == LinkBoundary::Data && !self.data_injected.swap(true, Ordering::SeqCst) {
+                let mut existing = create_new_protected(parent, final_name)
+                    .expect("the first data name is initially free");
+                existing.write_all(b"existing data sentinel").unwrap();
+                existing.sync_all().unwrap();
+            }
             parent.hard_link(temporary_name, parent, final_name)
         }
     }
 
-    struct CleanupFailure;
+    struct AlwaysSynced;
 
-    impl TransactionRuntime for CleanupFailure {
+    impl TransactionRuntime for AlwaysSynced {
         fn sync_parent(&self, _parent: &Dir, _boundary: NamespaceBoundary) -> NamespaceDurability {
             NamespaceDurability::Synced
-        }
-
-        fn remove_file(
-            &self,
-            parent: &Dir,
-            name: &str,
-            boundary: RemovalBoundary,
-        ) -> io::Result<()> {
-            if boundary == RemovalBoundary::ItemDataTemporary {
-                Err(io::Error::other("injected temporary cleanup failure"))
-            } else {
-                parent.remove_file(name)
-            }
         }
     }
 
-    struct ManifestCleanupFailure;
+    #[cfg(windows)]
+    struct SyncedDataCollisionOnce {
+        injected: AtomicBool,
+    }
 
-    impl TransactionRuntime for ManifestCleanupFailure {
+    #[cfg(windows)]
+    impl TransactionRuntime for SyncedDataCollisionOnce {
         fn sync_parent(&self, _parent: &Dir, _boundary: NamespaceBoundary) -> NamespaceDurability {
             NamespaceDurability::Synced
         }
 
-        fn remove_file(
+        fn hard_link(
             &self,
             parent: &Dir,
-            name: &str,
-            boundary: RemovalBoundary,
+            temporary_name: &str,
+            final_name: &str,
+            boundary: LinkBoundary,
         ) -> io::Result<()> {
-            if boundary == RemovalBoundary::ManifestTemporary {
-                Err(io::Error::other("injected manifest cleanup failure"))
-            } else {
-                parent.remove_file(name)
+            if boundary == LinkBoundary::Data && !self.injected.swap(true, Ordering::SeqCst) {
+                let mut existing = create_new_protected(parent, final_name)
+                    .expect("the first data collision name is initially free");
+                existing.write_all(b"existing data sentinel").unwrap();
+                existing.sync_all().unwrap();
             }
+            parent.hard_link(temporary_name, parent, final_name)
         }
     }
 
@@ -1615,6 +1970,138 @@ mod tests {
         .unwrap();
         let path = SafeRelativePath::derive_for_recovery(&[] as &[&str], "partial.bin").unwrap();
         RestoreJobPlan::new(job_id, vec![FileRestorePlan::file(path, content).unwrap()]).unwrap()
+    }
+
+    #[test]
+    fn restore_job_plan_rejects_more_than_one_million_sanitized_components() {
+        let parents = (0..(crate::MAX_SAFE_PATH_COMPONENTS - 1))
+            .map(|index| format!("p{index}"))
+            .collect::<Vec<_>>();
+        let path = SafeRelativePath::derive_for_recovery(&parents, "published.bin").unwrap();
+        let content = match &one_item_job("component-template", b"x").items[0].item {
+            RestorePlanItem::File(content) => content.clone(),
+            RestorePlanItem::Directory { .. } => unreachable!("fixture is a file"),
+        };
+        let item = FileRestorePlan::file(path, content).unwrap();
+        let item_count =
+            (MAX_RESTORE_PATH_COMPONENTS_PER_JOB / crate::MAX_SAFE_PATH_COMPONENTS) + 1;
+
+        assert!(matches!(
+            RestoreJobPlan::new("component-overflow", vec![item; item_count]),
+            Err(RestoreError::JobPathComponentLimit {
+                maximum: MAX_RESTORE_PATH_COMPONENTS_PER_JOB,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn restore_job_plan_rejects_aggregate_untrusted_path_evidence_over_budget() {
+        let unsafe_name = format!("{}:", "x".repeat(32 * 1024));
+        let path = SafeRelativePath::derive_for_recovery(&[] as &[&str], &unsafe_name).unwrap();
+        let evidence_len = path.evidence_json().len();
+        let content = match &one_item_job("evidence-template", b"x").items[0].item {
+            RestorePlanItem::File(content) => content.clone(),
+            RestorePlanItem::Directory { .. } => unreachable!("fixture is a file"),
+        };
+        let item = FileRestorePlan::file(path, content).unwrap();
+        let item_count = (MAX_PATH_EVIDENCE_BYTES_PER_JOB / evidence_len) + 1;
+
+        assert!(matches!(
+            RestoreJobPlan::new("evidence-overflow", vec![item; item_count]),
+            Err(RestoreError::JobPathEvidenceLimit {
+                maximum: MAX_PATH_EVIDENCE_BYTES_PER_JOB,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn restore_job_path_budget_checked_arithmetic_accepts_boundary_and_rejects_overflow() {
+        assert_eq!(
+            checked_job_budget_total([999_999usize, 1], MAX_RESTORE_PATH_COMPONENTS_PER_JOB)
+                .unwrap(),
+            MAX_RESTORE_PATH_COMPONENTS_PER_JOB
+        );
+        assert!(matches!(
+            checked_job_budget_total(
+                [MAX_RESTORE_PATH_COMPONENTS_PER_JOB, 1],
+                MAX_RESTORE_PATH_COMPONENTS_PER_JOB
+            ),
+            Err(actual) if actual == MAX_RESTORE_PATH_COMPONENTS_PER_JOB + 1
+        ));
+        assert!(matches!(
+            checked_job_budget_total([usize::MAX, 1], usize::MAX),
+            Err(usize::MAX)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_namespace_sync_classifier_distinguishes_unsupported_from_media_failures() {
+        for raw in [5, 50, 120] {
+            assert!(
+                namespace_sync_is_unsupported(&io::Error::from_raw_os_error(raw)),
+                "raw Windows error {raw} is an expected unsupported directory-flush method"
+            );
+        }
+        for raw in [1, 6, 21, 23, 29, 31, 87, 112, 1117, 1167] {
+            assert!(
+                !namespace_sync_is_unsupported(&io::Error::from_raw_os_error(raw)),
+                "raw Windows error {raw} must remain a failed durability boundary"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transaction_windows_data_collision_keeps_item_sidecar_and_safe_temp_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "windows-protected-cleanup";
+        let summary = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b"read"),
+                &partial_item_job(job_id),
+                &NeverCancel,
+                &mut NoProgress,
+                &SyncedDataCollisionOnce {
+                    injected: AtomicBool::new(false),
+                },
+            )
+            .unwrap();
+        let job_dir = temp.path().join(summary.job_directory_name());
+
+        assert_eq!(
+            std::fs::read(job_dir.join("partial.bin")).unwrap(),
+            b"existing data sentinel"
+        );
+        assert_eq!(
+            std::fs::read(job_dir.join("partial (recovered 1).bin")).unwrap(),
+            b"read\0\0\0\0"
+        );
+        assert!(
+            !job_dir.join("partial.bin.um-partial.json").exists(),
+            "the losing data collision retained a misbound partial sidecar"
+        );
+        assert!(job_dir
+            .join(".um-partial-000000-0000000000000034.json")
+            .exists());
+        assert!(
+            std::fs::read_dir(&job_dir).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".umrecovering")),
+            "protected temp links are retained because path cleanup cannot be identity-atomic"
+        );
+        assert_eq!(
+            summary.items()[0].temporary_disposition(),
+            TemporaryFileDisposition::RetainedBySafeCleanupPolicy
+        );
     }
 
     #[test]
@@ -1755,7 +2242,7 @@ mod tests {
                 &NeverCancel,
                 &mut NoProgress,
                 &NamespaceFault {
-                    boundary: NamespaceBoundary::DataPublished,
+                    boundary: NamespaceBoundary::Data,
                 },
             )
             .unwrap();
@@ -1818,7 +2305,14 @@ mod tests {
             .expect("hard-link rejection has a complete failure journal");
         assert_eq!(
             audit.kinds(),
-            ["jobStarted", "itemPrepared", "itemFailed", "jobFailed"]
+            [
+                "jobStarted",
+                "itemPrepared",
+                "itemFailed",
+                "manifestPrepared",
+                "manifestPublished",
+                "jobFailed"
+            ]
         );
     }
 
@@ -2048,7 +2542,13 @@ mod tests {
         .expect("cancellation journal is complete");
         assert_eq!(
             audit.kinds(),
-            ["jobStarted", "itemCancelled", "jobCancelled"]
+            [
+                "jobStarted",
+                "itemCancelled",
+                "manifestPrepared",
+                "manifestPublished",
+                "jobCancelled"
+            ]
         );
     }
 
@@ -2061,7 +2561,10 @@ mod tests {
         let destination = DestinationRoot::from_retained_file(retained).unwrap();
         let bytes = b"hash mismatch fixture";
         let mut job = one_item_job("hash-mismatch", bytes);
-        job.items[0].content.expected_sha256 = Some([0; 32]);
+        match &mut job.items[0].item {
+            RestorePlanItem::File(content) => content.expected_sha256 = Some([0; 32]),
+            RestorePlanItem::Directory { .. } => unreachable!("fixture is a file"),
+        }
 
         let error = destination
             .restore_job_with_runtime(
@@ -2078,11 +2581,20 @@ mod tests {
         assert!(!job_dir.join("published.bin").exists());
         let audit = crate::audit_journal(&std::fs::read(job_dir.join(JOURNAL_NAME)).unwrap())
             .expect("hash mismatch journal is complete");
-        assert_eq!(audit.kinds(), ["jobStarted", "itemFailed", "jobFailed"]);
+        assert_eq!(
+            audit.kinds(),
+            [
+                "jobStarted",
+                "itemFailed",
+                "manifestPrepared",
+                "manifestPublished",
+                "jobFailed"
+            ]
+        );
     }
 
     #[test]
-    fn transaction_sidecar_collision_is_resolved_before_any_data_name_is_linked() {
+    fn transaction_independent_sidecar_and_data_collisions_do_not_retract_the_sidecar() {
         let temp = tempfile::tempdir().unwrap();
         let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
             .unwrap()
@@ -2111,25 +2623,105 @@ mod tests {
                 LinkBoundary::PartialSidecar,
                 LinkBoundary::PartialSidecar,
                 LinkBoundary::Data,
+                LinkBoundary::Data,
                 LinkBoundary::Manifest,
             ]
         );
         let job_dir = temp.path().join(job_directory_component("sidecar-first"));
         assert_eq!(
-            std::fs::read(job_dir.join("partial.bin.um-partial.json")).unwrap(),
+            std::fs::read(job_dir.join(".um-partial-000000-0000000000000034.json")).unwrap(),
             b"existing sidecar sentinel"
         );
         assert!(
-            !job_dir.join("partial.bin").exists(),
-            "data must not be linked after its sidecar name loses the race"
+            job_dir.join("partial.bin").exists(),
+            "the data racer must retain the first data collision name"
         );
         assert_eq!(
             std::fs::read(job_dir.join("partial (recovered 1).bin")).unwrap(),
             b"read\0\0\0\0"
         );
         assert!(job_dir
+            .join(".um-partial-000000-0000000000000034 (recovered 1).json")
+            .exists());
+        assert!(!job_dir.join("partial.bin.um-partial.json").exists());
+        assert!(!job_dir
             .join("partial (recovered 1).bin.um-partial.json")
             .exists());
+    }
+
+    #[test]
+    fn transaction_failed_data_publication_manifest_binds_the_published_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "sidecar-before-data-failure";
+
+        let error = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b"read"),
+                &partial_item_job(job_id),
+                &NeverCancel,
+                &mut NoProgress,
+                &UnsupportedDataAfterSidecar,
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, RestoreError::HardLinkPublication { .. }));
+        let job_dir = temp.path().join(job_directory_component(job_id));
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(job_dir.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let item = &manifest["items"][0];
+        assert_eq!(item["disposition"], "failed");
+        assert_eq!(item["itemKey"], "000000-0000000000000034");
+        let sidecar_name = item["partialSidecar"].as_str().unwrap();
+        let sidecar = std::fs::read(job_dir.join(sidecar_name)).unwrap();
+        assert_eq!(
+            item["partialSidecarSha256"],
+            hex_lower(&Sha256::digest(&sidecar))
+        );
+        let sidecar_json: serde_json::Value = serde_json::from_slice(&sidecar).unwrap();
+        assert_eq!(sidecar_json["itemKey"], item["itemKey"]);
+        assert_eq!(sidecar_json["candidateId"], item["candidateId"]);
+        assert_eq!(
+            sidecar_json["outputSha256"],
+            "abf55adc5afcfa05c3c6f2d044c07faaf1d7da502801d43afcbdbb3a07bdb2c0"
+        );
+    }
+
+    #[test]
+    fn transaction_sidecar_journal_fault_stops_before_data_and_keeps_reconciliation_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "sidecar-journal-fault";
+
+        let error = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b"read"),
+                &partial_item_job(job_id),
+                &NeverCancel,
+                &mut NoProgress,
+                &JournalFault {
+                    record: 2,
+                    stage: JournalFaultStage::Write,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, RestoreError::NeedsReconciliation { .. }));
+        let job_dir = temp.path().join(job_directory_component(job_id));
+        assert!(job_dir
+            .join(".um-partial-000000-0000000000000034.json")
+            .exists());
+        assert!(!job_dir.join("partial.bin").exists());
+        assert!(!job_dir.join(MANIFEST_NAME).exists());
+        let audit = crate::audit_journal(&std::fs::read(job_dir.join(JOURNAL_NAME)).unwrap())
+            .expect("the durable prefix remains auditable");
+        assert_eq!(audit.kinds(), ["jobStarted", "itemPrepared"]);
     }
 
     #[test]
@@ -2195,7 +2787,7 @@ mod tests {
                 &NeverCancel,
                 &mut NoProgress,
                 &NamespaceFault {
-                    boundary: NamespaceBoundary::ManifestPublished,
+                    boundary: NamespaceBoundary::Manifest,
                 },
             )
             .unwrap();
@@ -2216,14 +2808,14 @@ mod tests {
     }
 
     #[test]
-    fn transaction_cleanup_failure_keeps_only_job_temp_and_records_warning() {
+    fn transaction_protected_temps_are_retained_without_path_based_cleanup() {
         let temp = tempfile::tempdir().unwrap();
         let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
             .unwrap()
             .into_std_file();
         let destination = DestinationRoot::from_retained_file(retained).unwrap();
-        let bytes = b"published output survives cleanup failure";
-        let job = one_item_job("cleanup-failure", bytes);
+        let bytes = b"published output keeps protected temp evidence";
+        let job = one_item_job("safe-cleanup-policy", bytes);
 
         let summary = destination
             .restore_job_with_runtime(
@@ -2231,52 +2823,25 @@ mod tests {
                 &job,
                 &NeverCancel,
                 &mut NoProgress,
-                &CleanupFailure,
+                &AlwaysSynced,
             )
             .unwrap();
 
         let item = &summary.items()[0];
         assert_eq!(
             item.temporary_disposition(),
-            TemporaryFileDisposition::RetainedAfterCleanupFailure
+            TemporaryFileDisposition::RetainedBySafeCleanupPolicy
         );
-        assert_eq!(
-            item.warnings,
-            ["published output is durable; temporary-link cleanup failed"]
-        );
-        let job_dir = temp.path().join(job_directory_component("cleanup-failure"));
+        assert!(item.warnings.is_empty());
+        let job_dir = temp
+            .path()
+            .join(job_directory_component("safe-cleanup-policy"));
         assert_eq!(std::fs::read(job_dir.join("published.bin")).unwrap(), bytes);
         assert!(std::fs::read_dir(&job_dir).unwrap().any(|entry| entry
             .unwrap()
             .file_name()
             .to_string_lossy()
             .contains("-data-")));
-        let audit = crate::audit_journal(&std::fs::read(job_dir.join(JOURNAL_NAME)).unwrap())
-            .expect("cleanup warning journal is complete");
-        assert!(audit.kinds().contains(&"itemCleanupWarning"));
-    }
-
-    #[test]
-    fn transaction_manifest_cleanup_failure_is_recorded_before_job_terminal() {
-        let temp = tempfile::tempdir().unwrap();
-        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
-            .unwrap()
-            .into_std_file();
-        let destination = DestinationRoot::from_retained_file(retained).unwrap();
-        let bytes = b"manifest cleanup evidence";
-        let job = one_item_job("manifest-cleanup-failure", bytes);
-
-        let summary = destination
-            .restore_job_with_runtime(
-                &MemoryReader::new(bytes),
-                &job,
-                &NeverCancel,
-                &mut NoProgress,
-                &ManifestCleanupFailure,
-            )
-            .unwrap();
-
-        let job_dir = temp.path().join(summary.job_directory_name());
         assert!(job_dir.join(MANIFEST_NAME).exists());
         assert!(std::fs::read_dir(&job_dir).unwrap().any(|entry| entry
             .unwrap()
@@ -2284,11 +2849,9 @@ mod tests {
             .to_string_lossy()
             .contains("-manifest-")));
         let audit = crate::audit_journal(&std::fs::read(job_dir.join(JOURNAL_NAME)).unwrap())
-            .expect("manifest cleanup warning journal is complete");
-        assert_eq!(
-            &audit.kinds()[audit.record_count() - 2..],
-            ["manifestCleanupWarning", "jobCompleted"]
-        );
+            .expect("safe-retention journal is complete");
+        assert!(!audit.kinds().iter().any(|kind| kind.contains("Cleanup")));
+        assert_eq!(audit.kinds().last(), Some(&"jobCompleted"));
     }
 
     #[test]

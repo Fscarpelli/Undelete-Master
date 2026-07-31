@@ -180,6 +180,13 @@ impl JournalAudit {
 }
 
 pub fn audit_journal(bytes: &[u8]) -> Result<JournalAudit, RestoreError> {
+    audit_journal_with_record_limit(bytes, MAX_JOURNAL_RECORDS)
+}
+
+fn audit_journal_with_record_limit(
+    bytes: &[u8],
+    maximum_records: u64,
+) -> Result<JournalAudit, RestoreError> {
     let text = std::str::from_utf8(bytes).map_err(|error| RestoreError::JournalAudit {
         message: error.to_string(),
     })?;
@@ -193,29 +200,43 @@ pub fn audit_journal(bytes: &[u8]) -> Result<JournalAudit, RestoreError> {
     let mut expected_sequence = 0u64;
     let mut expected_previous = ZERO_HASH.to_owned();
     let mut expected_job_id_sha256 = None;
-    for line in text.lines() {
-        let record_len = line
-            .len()
-            .checked_add(1)
-            .ok_or(RestoreError::JournalRecordTooLarge {
-                actual: usize::MAX,
-                maximum: MAX_JOURNAL_RECORD_BYTES,
-            })?;
+    for terminated_line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if expected_sequence >= maximum_records {
+            return Err(RestoreError::JournalRecordLimit {
+                maximum: maximum_records,
+            });
+        }
+        let record_len = terminated_line.len();
         if record_len > MAX_JOURNAL_RECORD_BYTES {
             return Err(RestoreError::JournalRecordTooLarge {
                 actual: record_len,
                 maximum: MAX_JOURNAL_RECORD_BYTES,
             });
         }
+        let line =
+            terminated_line
+                .strip_suffix(b"\n")
+                .ok_or_else(|| RestoreError::JournalAudit {
+                    message: "journal does not end at a complete JSONL record".into(),
+                })?;
         if line.is_empty() {
             return Err(RestoreError::JournalAudit {
                 message: "journal contains an empty JSONL record".into(),
             });
         }
         let record: JournalRecord =
-            serde_json::from_str(line).map_err(|error| RestoreError::JournalAudit {
+            serde_json::from_slice(line).map_err(|error| RestoreError::JournalAudit {
                 message: error.to_string(),
             })?;
+        let canonical =
+            serde_json::to_vec(&record).map_err(|error| RestoreError::JournalAudit {
+                message: error.to_string(),
+            })?;
+        if canonical != line {
+            return Err(RestoreError::JournalAudit {
+                message: "journal record bytes are not canonical".into(),
+            });
+        }
         if record.version != JOURNAL_VERSION
             || record.sequence != expected_sequence
             || record.previous_hash != expected_previous
@@ -521,6 +542,110 @@ mod tests {
             audit_journal(&bytes),
             Err(RestoreError::JournalAudit { message })
                 if message.contains("job identity")
+        ));
+    }
+
+    #[test]
+    fn journal_audit_rejects_noncanonical_and_unknown_envelope_bytes() {
+        let job_id_sha256 = [6u8; 32];
+        let payload = serde_json::json!({"alpha": 1, "beta": 2});
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let hash = record_hash(&job_id_sha256, 0, ZERO_HASH, "jobStarted", &payload_bytes).unwrap();
+        let record = JournalRecord {
+            version: JOURNAL_VERSION,
+            job_id_sha256: hex_lower(&job_id_sha256),
+            sequence: 0,
+            previous_hash: ZERO_HASH.into(),
+            kind: "jobStarted".into(),
+            payload_length: payload_bytes.len(),
+            payload,
+            record_hash: hash,
+        };
+        let canonical = serde_json::to_vec(&record).unwrap();
+
+        let mut leading_whitespace = vec![b' '];
+        leading_whitespace.extend_from_slice(&canonical);
+        leading_whitespace.push(b'\n');
+        assert!(matches!(
+            audit_journal(&leading_whitespace),
+            Err(RestoreError::JournalAudit { message })
+                if message.contains("canonical")
+        ));
+
+        let mut crlf = canonical.clone();
+        crlf.extend_from_slice(b"\r\n");
+        assert!(matches!(
+            audit_journal(&crlf),
+            Err(RestoreError::JournalAudit { message })
+                if message.contains("canonical")
+        ));
+
+        let mut reordered: Value = serde_json::from_slice(&canonical).unwrap();
+        let map = reordered.as_object_mut().unwrap();
+        let version = map.remove("version").unwrap();
+        map.insert("version".into(), version);
+        let mut reordered_bytes = serde_json::to_vec(&reordered).unwrap();
+        reordered_bytes.push(b'\n');
+        assert_ne!(&reordered_bytes[..reordered_bytes.len() - 1], canonical);
+        assert!(matches!(
+            audit_journal(&reordered_bytes),
+            Err(RestoreError::JournalAudit { message })
+                if message.contains("canonical")
+        ));
+
+        let mut unknown: Value = serde_json::from_slice(&canonical).unwrap();
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("unknownEnvelope".into(), Value::Bool(true));
+        let mut unknown_bytes = serde_json::to_vec(&unknown).unwrap();
+        unknown_bytes.push(b'\n');
+        assert!(matches!(
+            audit_journal(&unknown_bytes),
+            Err(RestoreError::JournalAudit { message })
+                if message.contains("canonical")
+        ));
+    }
+
+    #[test]
+    fn journal_audit_enforces_the_record_count_bound_before_retention() {
+        let job = [8u8; 32];
+        let payload = serde_json::json!({});
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let first_hash = record_hash(&job, 0, ZERO_HASH, "jobStarted", &payload_bytes).unwrap();
+        let first = JournalRecord {
+            version: JOURNAL_VERSION,
+            job_id_sha256: hex_lower(&job),
+            sequence: 0,
+            previous_hash: ZERO_HASH.into(),
+            kind: "jobStarted".into(),
+            payload_length: payload_bytes.len(),
+            payload: payload.clone(),
+            record_hash: first_hash.clone(),
+        };
+        let second_hash =
+            record_hash(&job, 1, &first_hash, "jobCompleted", &payload_bytes).unwrap();
+        let second = JournalRecord {
+            version: JOURNAL_VERSION,
+            job_id_sha256: hex_lower(&job),
+            sequence: 1,
+            previous_hash: first_hash,
+            kind: "jobCompleted".into(),
+            payload_length: payload_bytes.len(),
+            payload,
+            record_hash: second_hash,
+        };
+        let bytes = [
+            serde_json::to_vec(&first).unwrap(),
+            b"\n".to_vec(),
+            serde_json::to_vec(&second).unwrap(),
+            b"\n".to_vec(),
+        ]
+        .concat();
+
+        assert!(matches!(
+            audit_journal_with_record_limit(&bytes, 1),
+            Err(RestoreError::JournalRecordLimit { maximum: 1 })
         ));
     }
 

@@ -123,34 +123,62 @@ SHA-256 validation, the still-open handle identity must match a new
 capability-relative no-follow name lookup.
 
 Publication uses only a capability-relative hard link. Partial sidecars are
-prepared and linked before their data name. A final-name race fails atomically;
-the deterministic `name (recovered N).ext` policy retries at most 10,000
-times. Unsupported hard links fail the item. There is no rename, overwrite,
-copy-to-final, or ambient fallback. The final manifest uses the same
-temporary-file and hard-link protocol and never replaces an existing entry.
+keyed by immutable plan index plus candidate ID, prepared and linked once, and
+durably journaled before any data-name attempt. Data collisions never retract
+or republish that sidecar. A final-name race fails atomically; the deterministic
+`name (recovered N).ext` policy retries at most 10,000 times. Unsupported hard
+links fail the item. There is no rename, overwrite, copy-to-final, or ambient
+fallback. The final manifest uses the same temporary-file and hard-link
+protocol and never replaces an existing entry.
 
 Directory `sync_all` evidence is reported as `Synced`, `Unsupported`, or
-`Failed`; unsupported or failed namespace durability retains temporary links
-and marks the result `NeedsReconciliation`. Cleanup starts only after
-`ItemPublished` is durable. Cleanup failures preserve the final link and are
-journaled; manifest cleanup warnings are recorded before the terminal job
-record.
+`Failed`. On Windows, only access-denied on the expected read/query directory
+handle and the two documented unsupported-function codes are classified as
+`Unsupported`; invalid handle, I/O/device, parameter, disk-full, and other
+errors are `Failed`. Unsupported or failed namespace durability retains
+temporary links and marks the result `NeedsReconciliation`.
+
+Protected temporary links are also retained after a synchronized publication
+and reported as `RetainedBySafeCleanupPolicy`. Closing the no-delete-share
+handle and then deleting by path would introduce a substitution race, while
+the current safe capability API has no identity-atomic unlink operation.
+Consequently Task 4 performs no production path-based temporary cleanup. A
+later cleanup design must supply and audit an identity-atomic primitive before
+this retention policy may change.
 
 The version-1 append-only journal has bounded canonical JSON payloads,
-monotonic sequence numbers, one fixed hashed job identity, previous-record and
-record SHA-256 values, and complete-record audit checks. Its chain advances
-only after write, flush, and `sync_all`. Any durability failure poisons the
-journal. `ItemPrepared` must be durable before linking; a journal failure
-before that point prevents publication. The link-through-`ItemPublished`
-section is non-cancellable. A journal failure after a link preserves final and
-temporary evidence and returns an explicit reconciliation-needed result.
+bounded record count, monotonic sequence numbers, one fixed hashed job
+identity, previous-record and record SHA-256 values, and exact canonical-byte
+audit checks. Audit rejects alternate whitespace/key ordering, unknown
+envelope fields, torn tails, and oversized or cross-job records. Its chain
+advances only after write, flush, and `sync_all`. Any durability failure
+poisons the journal. `ItemPrepared` must be durable before linking; a journal
+failure before that point prevents publication. The sidecar/data link through
+its durable publication record is non-cancellable. A journal failure after a
+link preserves final and temporary evidence and returns an explicit
+reconciliation-needed result.
 
 The manifest is prepared from a frozen journal outcomes-prefix hash, written
-last, and returned with its literal SHA-256. It records published disposition,
-requested/safe paths, output and expected hashes, readable and zero-filled
-ranges with reasons, conflicts, read failures, warnings, sidecar identity,
-temporary disposition, namespace durability, completion status, and path
-substitution evidence.
+last, and returned with its literal SHA-256. With a healthy journal, ordinary
+item completion, failure, or cancellation proceeds to manifest publication;
+every successfully published final manifest contains exactly the immutable
+plan item count, using `Published`, `Failed`, `Cancelled`, `NotAttempted`, or
+`DirectoryCreated` dispositions. Manifest preparation or no-clobber
+publication may itself fail explicitly and never replaces an existing
+manifest. A poisoned journal suppresses the manifest rather than inventing
+outcomes beyond the durable prefix. The manifest records requested/safe paths,
+output and expected hashes, readable and zero-filled ranges with reasons,
+conflicts, read failures, warnings, sidecar item key/path and SHA-256,
+temporary disposition, namespace durability, completion status, and
+path-substitution evidence.
+
+Original untrusted path evidence is bounded before cloning or serialization:
+256 KiB per item and 8 MiB in aggregate per restore job. The immutable job
+constructor also enforces one million sanitized path components using checked
+addition. A directory-only plan item carries no content plan; it creates and
+immediately no-follow rebinds only the selected sanitized directory, performs
+no source read or data temporary publication, and is represented explicitly in
+the manifest.
 
 Cross-platform scripted transition injection replaces every newly created
 component between create and rebind. Windows acceptance also races real
@@ -237,6 +265,9 @@ they do not open, write, or destructively query a real volume.
   required and such environments are not claimed safe by Task 3;
 - the retained no-delete-share handle may block legitimate rename/delete until
   authority release;
+- synchronized jobs retain protected `.umrecovering` links until an audited
+  identity-atomic cleanup primitive exists, consuming destination space but
+  avoiding path-substitution deletion;
 - Storage Spaces/dynamic/composite mappings are rejected even when a user might
   consider them acceptable; and
 - no product restore exists until Tasks 5–6 integrate the Task 4 transaction

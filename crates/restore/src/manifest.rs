@@ -4,7 +4,6 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const MANIFEST_VERSION: u32 = 1;
 pub(crate) const MANIFEST_NAME: &str = "recovery-manifest.json";
-pub(crate) const PARTIAL_SIDECAR_SUFFIX: &str = ".um-partial.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -33,11 +32,34 @@ pub enum TemporaryFileDisposition {
     Removed,
     RetainedForReconciliation,
     RetainedAfterCleanupFailure,
+    RetainedBySafeCleanupPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManifestItemDisposition {
+    Published,
+    Failed,
+    Cancelled,
+    NotAttempted,
+    DirectoryCreated,
+}
+
+impl ManifestItemDisposition {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::NotAttempted => "notAttempted",
+            Self::DirectoryCreated => "directoryCreated",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreItemResult {
     pub(crate) candidate_id: u64,
+    pub(crate) item_key: String,
     pub(crate) requested_path: String,
     pub(crate) published_path: String,
     pub(crate) published_name: String,
@@ -46,6 +68,7 @@ pub struct RestoreItemResult {
     pub(crate) expected_sha256: Option<[u8; 32]>,
     pub(crate) zero_filled_ranges: Vec<ZeroFilledRange>,
     pub(crate) sidecar_name: Option<String>,
+    pub(crate) sidecar_sha256: Option<[u8; 32]>,
     pub(crate) temporary_disposition: TemporaryFileDisposition,
     pub(crate) path_evidence: serde_json::Value,
     pub(crate) warnings: Vec<String>,
@@ -97,6 +120,28 @@ pub struct RestoreSummary {
     pub(crate) completion_status: RestoreCompletionStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManifestItemOutcome {
+    pub(crate) candidate_id: u64,
+    pub(crate) item_key: String,
+    pub(crate) item_kind: &'static str,
+    pub(crate) disposition: ManifestItemDisposition,
+    pub(crate) requested_path: String,
+    pub(crate) expected_sha256: Option<[u8; 32]>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) path_evidence: serde_json::Value,
+    pub(crate) failure_kind: Option<&'static str>,
+    pub(crate) published_sidecar: Option<PublishedSidecarEvidence>,
+    pub(crate) published: Option<RestoreItemResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PublishedSidecarEvidence {
+    pub(crate) item_key: String,
+    pub(crate) name: String,
+    pub(crate) sha256: [u8; 32],
+}
+
 impl RestoreSummary {
     pub fn job_directory_name(&self) -> &str {
         &self.job_directory_name
@@ -136,11 +181,13 @@ struct RecoveryManifest<'a> {
 #[serde(rename_all = "camelCase")]
 struct ManifestItem<'a> {
     candidate_id: u64,
+    item_key: &'a str,
+    item_kind: &'static str,
     disposition: &'static str,
     requested_path: &'a str,
-    published_path: &'a str,
-    output_length: u64,
-    output_sha256: String,
+    published_path: Option<&'a str>,
+    output_length: Option<u64>,
+    output_sha256: Option<String>,
     expected_sha256: Option<String>,
     readable_ranges: Vec<ManifestRange>,
     zero_filled_ranges: Vec<ManifestZeroRange>,
@@ -148,9 +195,11 @@ struct ManifestItem<'a> {
     read_errors: Vec<ManifestRange>,
     warnings: &'a [String],
     partial_sidecar: Option<&'a str>,
-    temporary_file_disposition: TemporaryFileDisposition,
-    namespace_durability: &'a NamespaceDurability,
-    completion_status: RestoreCompletionStatus,
+    partial_sidecar_sha256: Option<String>,
+    temporary_file_disposition: Option<TemporaryFileDisposition>,
+    namespace_durability: Option<&'a NamespaceDurability>,
+    completion_status: Option<RestoreCompletionStatus>,
+    failure_kind: Option<&'static str>,
     path_evidence: &'a serde_json::Value,
 }
 
@@ -173,15 +222,31 @@ struct ManifestZeroRange {
 #[serde(rename_all = "camelCase")]
 struct PartialSidecar {
     version: u32,
+    item_key: String,
+    candidate_id: u64,
     logical_size: u64,
     readable_ranges: Vec<ManifestRange>,
     zero_filled_ranges: Vec<ManifestZeroRange>,
+    zero_filled_missing_ranges: Vec<ManifestZeroRange>,
+    conflict_ranges: Vec<ManifestRange>,
+    source_read_errors: Vec<ManifestRange>,
+    output_sha256: String,
+    expected_content_sha256: Option<String>,
+    validation: SidecarValidation,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidecarValidation {
+    expected_sha256_present: bool,
+    expected_sha256_matched: bool,
 }
 
 pub(crate) fn build_manifest(
     job_id: &str,
     journal_head: &str,
-    items: &[RestoreItemResult],
+    items: &[ManifestItemOutcome],
 ) -> Result<(Vec<u8>, [u8; 32]), serde_json::Error> {
     let entries = items.iter().map(manifest_item).collect::<Vec<_>>();
     let bytes = serde_json::to_vec(&RecoveryManifest {
@@ -195,14 +260,31 @@ pub(crate) fn build_manifest(
 }
 
 pub(crate) fn build_partial_sidecar(
+    item_key: &str,
+    candidate_id: u64,
     logical_size: u64,
     outcome: &StreamOutcome,
+    expected_sha256: Option<[u8; 32]>,
+    warnings: &[String],
 ) -> Result<Option<Vec<u8>>, serde_json::Error> {
     if !outcome.requires_best_effort {
         return Ok(None);
     }
+    let zero_filled_missing_ranges = outcome
+        .zero_filled_ranges
+        .iter()
+        .filter(|range| {
+            !matches!(
+                range.reason,
+                ZeroFillReason::CurrentlyAllocated | ZeroFillReason::PreviouslyReadFailed
+            )
+        })
+        .map(manifest_zero_range)
+        .collect();
     let bytes = serde_json::to_vec(&PartialSidecar {
         version: MANIFEST_VERSION,
+        item_key: item_key.to_owned(),
+        candidate_id,
         logical_size,
         readable_ranges: readable_ranges(logical_size, &outcome.zero_filled_ranges),
         zero_filled_ranges: outcome
@@ -210,41 +292,67 @@ pub(crate) fn build_partial_sidecar(
             .iter()
             .map(manifest_zero_range)
             .collect(),
+        zero_filled_missing_ranges,
+        conflict_ranges: filtered_ranges(
+            &outcome.zero_filled_ranges,
+            ZeroFillReason::CurrentlyAllocated,
+        ),
+        source_read_errors: filtered_ranges(
+            &outcome.zero_filled_ranges,
+            ZeroFillReason::PreviouslyReadFailed,
+        ),
+        output_sha256: hex_lower(&outcome.sha256),
+        expected_content_sha256: expected_sha256.map(|hash| hex_lower(&hash)),
+        validation: SidecarValidation {
+            expected_sha256_present: expected_sha256.is_some(),
+            expected_sha256_matched: expected_sha256.is_some_and(|hash| hash == outcome.sha256),
+        },
+        warnings: warnings.to_vec(),
     })?;
     Ok(Some(bytes))
 }
 
-fn manifest_item(result: &RestoreItemResult) -> ManifestItem<'_> {
-    let conflicts = filtered_ranges(
-        &result.zero_filled_ranges,
-        ZeroFillReason::CurrentlyAllocated,
-    );
-    let read_errors = filtered_ranges(
-        &result.zero_filled_ranges,
-        ZeroFillReason::PreviouslyReadFailed,
-    );
+fn manifest_item(outcome: &ManifestItemOutcome) -> ManifestItem<'_> {
+    let published = outcome.published.as_ref();
+    let file_published = (outcome.disposition == ManifestItemDisposition::Published)
+        .then_some(published)
+        .flatten();
+    let zero_filled_ranges = file_published
+        .map(|result| result.zero_filled_ranges.as_slice())
+        .unwrap_or_default();
+    let output_len = file_published.map(|result| result.output_len);
+    let conflicts = filtered_ranges(zero_filled_ranges, ZeroFillReason::CurrentlyAllocated);
+    let read_errors = filtered_ranges(zero_filled_ranges, ZeroFillReason::PreviouslyReadFailed);
     ManifestItem {
-        candidate_id: result.candidate_id,
-        disposition: "published",
-        requested_path: &result.requested_path,
-        published_path: &result.published_path,
-        output_length: result.output_len,
-        output_sha256: hex_lower(&result.output_sha256),
-        expected_sha256: result.expected_sha256.map(|hash| hex_lower(&hash)),
-        readable_ranges: readable_ranges(result.output_len, &result.zero_filled_ranges),
-        zero_filled_ranges: result
-            .zero_filled_ranges
-            .iter()
-            .map(manifest_zero_range)
-            .collect(),
+        candidate_id: outcome.candidate_id,
+        item_key: &outcome.item_key,
+        item_kind: outcome.item_kind,
+        disposition: outcome.disposition.as_str(),
+        requested_path: &outcome.requested_path,
+        published_path: published.map(|result| result.published_path.as_str()),
+        output_length: output_len,
+        output_sha256: file_published.map(|result| hex_lower(&result.output_sha256)),
+        expected_sha256: outcome.expected_sha256.map(|hash| hex_lower(&hash)),
+        readable_ranges: output_len
+            .map(|len| readable_ranges(len, zero_filled_ranges))
+            .unwrap_or_default(),
+        zero_filled_ranges: zero_filled_ranges.iter().map(manifest_zero_range).collect(),
         conflicts,
         read_errors,
-        warnings: &result.warnings,
-        partial_sidecar: result.sidecar_name.as_deref(),
-        temporary_file_disposition: result.temporary_disposition,
-        namespace_durability: &result.namespace_durability,
-        completion_status: result.completion_status,
-        path_evidence: &result.path_evidence,
+        warnings: &outcome.warnings,
+        partial_sidecar: outcome
+            .published_sidecar
+            .as_ref()
+            .map(|sidecar| sidecar.name.as_str()),
+        partial_sidecar_sha256: outcome
+            .published_sidecar
+            .as_ref()
+            .map(|sidecar| hex_lower(&sidecar.sha256)),
+        temporary_file_disposition: file_published.map(|result| result.temporary_disposition),
+        namespace_durability: published.map(|result| &result.namespace_durability),
+        completion_status: published.map(|result| result.completion_status),
+        failure_kind: outcome.failure_kind,
+        path_evidence: &outcome.path_evidence,
     }
 }
 
@@ -312,6 +420,7 @@ mod tests {
     fn manifest_records_expected_hash_conflicts_read_errors_and_temp_disposition() {
         let result = RestoreItemResult {
             candidate_id: 73,
+            item_key: "000000-0000000000000049".into(),
             requested_path: "unsafe-source-name".into(),
             published_path: "safe/output.bin".into(),
             published_name: "output.bin".into(),
@@ -331,6 +440,7 @@ mod tests {
                 },
             ],
             sidecar_name: Some("output.bin.um-partial.json".into()),
+            sidecar_sha256: Some([0x33; 32]),
             temporary_disposition: TemporaryFileDisposition::RetainedForReconciliation,
             path_evidence: serde_json::json!({
                 "version": 1,
@@ -344,8 +454,28 @@ mod tests {
             completion_status: RestoreCompletionStatus::NeedsReconciliation,
         };
 
+        let outcome = ManifestItemOutcome {
+            candidate_id: 73,
+            item_key: "000000-0000000000000049".into(),
+            item_kind: "file",
+            disposition: ManifestItemDisposition::Published,
+            requested_path: "unsafe-source-name".into(),
+            expected_sha256: Some([0x22; 32]),
+            warnings: vec!["review required".into()],
+            path_evidence: serde_json::json!({
+                "version": 1,
+                "substitutions": [{"original": "unsafe-source-name"}]
+            }),
+            failure_kind: None,
+            published_sidecar: Some(PublishedSidecarEvidence {
+                item_key: "000000-0000000000000049".into(),
+                name: "output.bin.um-partial.json".into(),
+                sha256: [0x33; 32],
+            }),
+            published: Some(result),
+        };
         let (bytes, sha256) =
-            build_manifest("manifest-evidence", &"ab".repeat(32), &[result]).unwrap();
+            build_manifest("manifest-evidence", &"ab".repeat(32), &[outcome]).unwrap();
         assert_eq!(<[u8; 32]>::from(Sha256::digest(&bytes)), sha256);
         let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let item = &manifest["items"][0];

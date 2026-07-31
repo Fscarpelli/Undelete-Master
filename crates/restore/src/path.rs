@@ -6,6 +6,7 @@ use thiserror::Error;
 pub const MAX_SAFE_COMPONENT_UTF16: usize = 255;
 pub const MAX_SAFE_PATH_COMPONENTS: usize = 256;
 pub const MAX_SAFE_PATH_UTF16: usize = 32_000;
+pub const MAX_PATH_EVIDENCE_BYTES_PER_ITEM: usize = 256 * 1024;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +37,8 @@ pub enum PathSafetyError {
         actual: usize,
         maximum: usize,
     },
+    #[error("path evidence is {actual} bytes; the maximum is {maximum}")]
+    EvidenceBudgetExceeded { actual: usize, maximum: usize },
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -102,6 +105,7 @@ impl SafeRelativePath {
         let mut safe_components = Vec::with_capacity(component_count);
         let mut substitutions = Vec::new();
         let mut total_utf16 = 0usize;
+        let mut preserved_original_bytes = 0usize;
 
         for (index, original) in recovered_parents
             .iter()
@@ -112,6 +116,18 @@ impl SafeRelativePath {
             let (component, reason) = match SafeComponent::parse(original, index) {
                 Ok(component) => (component, None),
                 Err(error) => {
+                    preserved_original_bytes = preserved_original_bytes
+                        .checked_add(original.len())
+                        .ok_or(PathSafetyError::EvidenceBudgetExceeded {
+                            actual: usize::MAX,
+                            maximum: MAX_PATH_EVIDENCE_BYTES_PER_ITEM,
+                        })?;
+                    if preserved_original_bytes > MAX_PATH_EVIDENCE_BYTES_PER_ITEM {
+                        return Err(PathSafetyError::EvidenceBudgetExceeded {
+                            actual: preserved_original_bytes,
+                            maximum: MAX_PATH_EVIDENCE_BYTES_PER_ITEM,
+                        });
+                    }
                     let replacement = fallback_component(original);
                     (
                         SafeComponent::parse(&replacement, index)
@@ -141,6 +157,12 @@ impl SafeRelativePath {
             substitutions,
         })
         .expect("bounded path evidence is serializable");
+        if evidence_json.len() > MAX_PATH_EVIDENCE_BYTES_PER_ITEM {
+            return Err(PathSafetyError::EvidenceBudgetExceeded {
+                actual: evidence_json.len(),
+                maximum: MAX_PATH_EVIDENCE_BYTES_PER_ITEM,
+            });
+        }
         Ok(DerivedSafePath {
             path: Self {
                 components: safe_components,

@@ -17,8 +17,8 @@ pub use manifest::{
     TemporaryFileDisposition,
 };
 pub use path::{
-    DerivedSafePath, PathSafetyError, SafeRelativePath, MAX_SAFE_COMPONENT_UTF16,
-    MAX_SAFE_PATH_COMPONENTS, MAX_SAFE_PATH_UTF16,
+    DerivedSafePath, PathSafetyError, SafeRelativePath, MAX_PATH_EVIDENCE_BYTES_PER_ITEM,
+    MAX_SAFE_COMPONENT_UTF16, MAX_SAFE_PATH_COMPONENTS, MAX_SAFE_PATH_UTF16,
 };
 pub use plan::{
     plan_candidate, ContentPlan, ContentSegment, PartialPolicy, PlanLimits, ZeroFillReason,
@@ -30,5 +30,6 @@ pub use stream::{
 };
 pub use transaction::{
     job_directory_component, DestinationRoot, FileRestorePlan, RestoreJobPlan,
-    MAX_COLLISION_ATTEMPTS, MAX_RESTORE_JOB_ITEMS, RESTORE_SCRATCH_BYTES,
+    MAX_COLLISION_ATTEMPTS, MAX_PATH_EVIDENCE_BYTES_PER_JOB, MAX_RESTORE_JOB_ITEMS,
+    MAX_RESTORE_PATH_COMPONENTS_PER_JOB, RESTORE_SCRATCH_BYTES,
 };

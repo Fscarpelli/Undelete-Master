@@ -135,6 +135,51 @@ fn job(job_id: &str, parents: &[String], file_name: &str, len: u64) -> RestoreJo
     RestoreJobPlan::new(job_id, vec![FileRestorePlan::file(path, content).unwrap()]).unwrap()
 }
 
+fn planned_file(
+    candidate_id: u64,
+    file_name: &str,
+    logical_size: u64,
+    physical_offset: u64,
+    readable_len: u64,
+    policy: PartialPolicy,
+) -> FileRestorePlan {
+    let candidate = Candidate {
+        id: candidate_id,
+        kind: CandidateKind::File,
+        method: DiscoveryMethod::NtfsMetadata,
+        state: CandidateState::CompleteUnvalidated,
+        name: file_name.into(),
+        name_certain: true,
+        parent_path: Vec::new(),
+        metadata_confidence: MetadataConfidence::High,
+        size: logical_size,
+        timestamps: Timestamps::default(),
+        extents: vec![ExtentRun {
+            logical_offset: 0,
+            physical_offset: Some(physical_offset),
+            len: readable_len,
+            availability: ExtentAvailability::FreeInSnapshot,
+        }],
+        record_ref: candidate_id,
+        sequence: Some(1),
+        warnings: Vec::new(),
+    };
+    let content = plan_candidate(
+        &candidate,
+        physical_offset + readable_len,
+        None,
+        policy,
+        PlanLimits::default(),
+    )
+    .unwrap()
+    .unwrap();
+    FileRestorePlan::file(
+        SafeRelativePath::derive_for_recovery(&[] as &[&str], file_name).unwrap(),
+        content,
+    )
+    .unwrap()
+}
+
 struct CompetingTempMutation {
     job_dir: PathBuf,
     attempted: bool,
@@ -211,6 +256,39 @@ fn transaction_windows_open_temporary_handle_denies_competing_rename_and_delete(
         bytes
     );
     assert!(!job_dir.join("attacker-moved.tmp").exists());
+}
+
+#[test]
+fn transaction_windows_partial_collision_retries_without_an_orphan_sidecar() {
+    let temp = tempfile::tempdir().unwrap();
+    let job_id = "windows-partial-collision";
+    let source = MemoryReader::new(b"firstread");
+    let plan = RestoreJobPlan::new(
+        job_id,
+        vec![
+            planned_file(1, "same.bin", 5, 0, 5, PartialPolicy::CompleteOnly),
+            planned_file(2, "same.bin", 8, 5, 4, PartialPolicy::ZeroFillAndMap),
+        ],
+    )
+    .unwrap();
+
+    let summary = destination(temp.path())
+        .restore_job(&source, &plan, &NeverCancel, &mut NoProgress)
+        .unwrap();
+    let job_dir = temp.path().join(summary.job_directory_name());
+
+    assert_eq!(fs::read(job_dir.join("same.bin")).unwrap(), b"first");
+    assert_eq!(
+        fs::read(job_dir.join("same (recovered 1).bin")).unwrap(),
+        b"read\0\0\0\0"
+    );
+    assert!(
+        !job_dir.join("same.bin.um-partial.json").exists(),
+        "the losing collision name retained a sidecar for an unrelated file"
+    );
+    assert!(job_dir
+        .join(".um-partial-000001-0000000000000002.json")
+        .exists());
 }
 
 #[test]

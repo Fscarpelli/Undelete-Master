@@ -1,6 +1,6 @@
 use um_restore::{
-    PathSafetyError, SafeRelativePath, MAX_SAFE_COMPONENT_UTF16, MAX_SAFE_PATH_COMPONENTS,
-    MAX_SAFE_PATH_UTF16,
+    PathSafetyError, SafeRelativePath, MAX_PATH_EVIDENCE_BYTES_PER_ITEM, MAX_SAFE_COMPONENT_UTF16,
+    MAX_SAFE_PATH_COMPONENTS, MAX_SAFE_PATH_UTF16,
 };
 
 fn strict(parts: &[&str]) -> Result<SafeRelativePath, PathSafetyError> {
@@ -128,4 +128,17 @@ fn path_file_selection_contains_only_its_sanitized_ancestors() {
         .path()
         .to_slash_string()
         .contains("historical-sibling"));
+}
+
+#[test]
+fn path_rejects_untrusted_original_evidence_over_the_explicit_byte_budget() {
+    let oversized = format!("{}:", "x".repeat(MAX_PATH_EVIDENCE_BYTES_PER_ITEM));
+
+    assert!(matches!(
+        SafeRelativePath::derive_for_recovery(&[] as &[&str], &oversized),
+        Err(PathSafetyError::EvidenceBudgetExceeded {
+            maximum: MAX_PATH_EVIDENCE_BYTES_PER_ITEM,
+            ..
+        })
+    ));
 }

@@ -109,6 +109,12 @@ pub enum RestoreError {
     #[error("restore job has {actual} items; expected 1..={maximum}")]
     InvalidJobItemCount { actual: usize, maximum: usize },
 
+    #[error("restore job has {actual} sanitized path components; maximum is {maximum}")]
+    JobPathComponentLimit { actual: usize, maximum: usize },
+
+    #[error("restore job retains {actual} path-evidence bytes; maximum is {maximum}")]
+    JobPathEvidenceLimit { actual: usize, maximum: usize },
+
     #[error("destination {operation} failed ({kind:?}): {message}")]
     DestinationIo {
         operation: &'static str,

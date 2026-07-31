@@ -283,30 +283,59 @@ For each planned file:
 11. verify length and any expected carving hash;
 12. append and sync an `ItemPrepared` record to the versioned hash-chained job
     journal;
-13. atomically create the final name as a capability-relative hard link to the
-    temporary file; if the name exists, derive a deterministic renamed
-    destination and retry within a bounded limit;
-14. append and sync `ItemPublished`, or an explicit failure/cancellation
+13. for a partial item, prepare and publish one immutable sidecar keyed by the
+    ordered plan index and candidate ID, then durably journal that sidecar
+    before attempting any data name;
+14. atomically create the final data name as a capability-relative hard link to
+    the temporary file; if the name exists, derive a deterministic renamed
+    destination and retry within a bounded limit without retracting or
+    republishing the sidecar;
+15. append and sync `ItemPublished`, or an explicit failure/cancellation
     record, to the journal;
-15. include the journal-backed item result in the final manifest.
+16. include exactly one truthful disposition for every immutable plan item in
+    the final manifest.
 
 An interrupted or failed item never appears under its final name unless the
 publication step completed. Temporary-file disposition is recorded.
 
-The journal is append-only JSON Lines with a monotonic sequence, previous
-record hash, and record hash. Publication never begins unless `ItemPrepared`
-is durable. A journal write/flush/sync failure fails the job and never silently
-continues to another publication. The final manifest is written last from the
-journal-backed outcomes.
+The journal is append-only canonical JSON Lines with a monotonic sequence,
+previous record hash, record hash, and bounded record count. Audit rejects
+noncanonical encodings, unknown envelope fields, oversized records, torn
+tails, and chain or job-identity changes. Publication never begins unless
+`ItemPrepared` is durable. A journal write/flush/sync failure poisons the
+journal, fails the job, forbids further publication, and suppresses a final
+manifest that could otherwise overstate the uncertain journal prefix.
+
+With a healthy journal, ordinary item completion, failure, or cancellation
+proceeds to final-manifest publication. Every final manifest that is
+successfully published contains exactly the immutable plan item count. Each
+item is marked `published`, `failed`, `cancelled`, `notAttempted`, or
+`directoryCreated`; an item failure or cancellation never silently truncates a
+published manifest. Manifest preparation or no-clobber publication can itself
+fail explicitly, in which case no existing manifest is replaced and the job
+must not claim that a final manifest exists.
 
 Hard-link creation is the no-clobber commit primitive: it fails atomically when
-the destination name already exists and never replaces that entry. After
-`ItemPublished` is durable, the job removes only its temporary link. Hard-link
+the destination name already exists and never replaces that entry. Hard-link
 failure is explicit; it never falls back to rename-overwrite or copy-to-final.
 The temporary handle remains open without delete sharing through publication,
 and its file identity must match a capability-relative no-follow lookup
 immediately before linking. Namespace substitution or identity mismatch fails
 closed.
+
+Task 4 deliberately retains the protected temporary link after publication.
+Releasing its no-delete-share handle and then deleting that path would create a
+time-of-check/time-of-use substitution window; the current safe
+capability-relative API has no identity-atomic unlink primitive. The manifest
+therefore reports `retainedBySafeCleanupPolicy` after a synchronized
+publication and `retainedForReconciliation` when namespace durability is not
+proven. A later cleanup implementation may remove the link only through a
+reviewed identity-atomic primitive.
+
+A selected directory follows the same capability-relative no-follow ancestor
+walk, creates and immediately rebinds only that directory, syncs its parent,
+and receives the `directoryCreated` disposition. It has no content plan,
+source read, data temporary file, or partial sidecar.
 
 The implementation must not allocate memory proportional to candidate size.
 
@@ -322,10 +351,14 @@ The UI must distinguish:
 - metadata-only with no extraction plan.
 
 Best-effort recovery requires an explicit confirmation in the restore plan.
-The output sidecar records:
+The output sidecar is keyed by ordered plan index plus candidate ID, is
+published once before data-name retries, and is bound back into the manifest
+by item key, sidecar path, and sidecar SHA-256. It records:
 
+- item key and candidate ID;
 - logical size;
 - readable ranges;
+- all zero-filled ranges;
 - zero-filled missing ranges;
 - conflicting ranges;
 - source read errors;
@@ -421,7 +454,10 @@ Initial hard limits:
 - 32 destination authorities;
 - eight active/planned restore jobs;
 - 1 MiB source read/write buffer;
+- 256 KiB serialized original-path evidence per item;
+- 8 MiB aggregate serialized original-path evidence per restore job;
 - 1,000,000 sanitized path components per job;
+- 1,000,000 journal records per restore job;
 - 10,000 collision-renaming attempts per job;
 - manifest entries equal to the immutable plan item count.
 
