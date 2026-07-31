@@ -1,8 +1,8 @@
 use crate::journal::{hex_lower, JobJournal, JOURNAL_NAME};
 use crate::manifest::{
-    build_manifest, build_partial_sidecar, ManifestItemDisposition, ManifestItemOutcome,
-    NamespaceDurability, PublishedSidecarEvidence, RestoreCompletionStatus, RestoreItemResult,
-    RestoreSummary, TemporaryFileDisposition, MANIFEST_NAME,
+    build_manifest, build_partial_sidecar, DirectoryValidation, ManifestItemDisposition,
+    ManifestItemOutcome, NamespaceDurability, PublishedSidecarEvidence, RestoreCompletionStatus,
+    RestoreItemResult, RestoreSummary, TemporaryFileDisposition, MANIFEST_NAME,
 };
 use crate::{
     stream_candidate, CancellationProbe, ContentPlan, DerivedSafePath, ProgressSink, RestoreError,
@@ -57,11 +57,13 @@ struct TerminalItemOutcome {
     disposition: ManifestItemDisposition,
     failure_kind: &'static str,
     published_sidecar: Option<PublishedSidecarEvidence>,
+    published: Option<RestoreItemResult>,
 }
 
 struct ItemRestoreFailure {
     error: Box<RestoreError>,
     published_sidecar: Option<Box<PublishedSidecarEvidence>>,
+    published: Option<Box<RestoreItemResult>>,
 }
 
 impl ItemRestoreFailure {
@@ -72,6 +74,15 @@ impl ItemRestoreFailure {
         Self {
             error: Box::new(error),
             published_sidecar: published_sidecar.map(Box::new),
+            published: None,
+        }
+    }
+
+    fn with_publication(error: RestoreError, published: RestoreItemResult) -> Self {
+        Self {
+            error: Box::new(error),
+            published_sidecar: None,
+            published: Some(Box::new(published)),
         }
     }
 }
@@ -81,6 +92,7 @@ impl From<RestoreError> for ItemRestoreFailure {
         Self {
             error: Box::new(error),
             published_sidecar: None,
+            published: None,
         }
     }
 }
@@ -340,6 +352,7 @@ impl DestinationRoot {
                         disposition: ManifestItemDisposition::Cancelled,
                         failure_kind: "cancelled",
                         published_sidecar: None,
+                        published: None,
                     }),
                 )?;
                 publish_final_manifest(
@@ -368,25 +381,38 @@ impl DestinationRoot {
             ) {
                 Ok(result) => results.push(result),
                 Err(failure) => {
-                    let error = *failure.error;
+                    let ItemRestoreFailure {
+                        error,
+                        published_sidecar,
+                        published,
+                    } = failure;
+                    let error = *error;
                     if journal.is_poisoned() {
                         return Err(error);
                     }
                     let failure_kind = error_kind(&error);
                     let cancelled = matches!(error, RestoreError::Cancelled { .. });
-                    record_item_failure(&mut journal, item.candidate_id(), &error)?;
+                    let published = published.map(|result| *result);
+                    if published.is_none() {
+                        record_item_failure(&mut journal, item.candidate_id(), &error)?;
+                    }
                     let outcomes = build_manifest_outcomes(
                         plan,
                         &results,
                         Some(TerminalItemOutcome {
                             index: item_index,
-                            disposition: if cancelled {
+                            disposition: if published.is_some()
+                                && matches!(&item.item, RestorePlanItem::Directory { .. })
+                            {
+                                ManifestItemDisposition::DirectoryNeedsReconciliation
+                            } else if cancelled {
                                 ManifestItemDisposition::Cancelled
                             } else {
                                 ManifestItemDisposition::Failed
                             },
                             failure_kind,
-                            published_sidecar: failure.published_sidecar.map(|sidecar| *sidecar),
+                            published_sidecar: published_sidecar.map(|sidecar| *sidecar),
+                            published,
                         }),
                     )?;
                     publish_final_manifest(
@@ -457,23 +483,41 @@ fn build_manifest_outcomes(
                 (
                     match &item.item {
                         RestorePlanItem::File(_) => ManifestItemDisposition::Published,
+                        RestorePlanItem::Directory { .. }
+                            if result.completion_status
+                                == RestoreCompletionStatus::NeedsReconciliation =>
+                        {
+                            ManifestItemDisposition::DirectoryNeedsReconciliation
+                        }
                         RestorePlanItem::Directory { .. } => {
                             ManifestItemDisposition::DirectoryCreated
                         }
                     },
-                    None,
+                    (matches!(&item.item, RestorePlanItem::Directory { .. })
+                        && result.completion_status
+                            == RestoreCompletionStatus::NeedsReconciliation)
+                        .then_some("needsReconciliation"),
                     Some(result.clone()),
                     result.warnings.clone(),
                     result.path_evidence.clone(),
                 )
             } else if let Some(terminal) = terminal_item.as_ref() {
                 if index == terminal.index {
+                    let terminal_published = terminal.published.clone();
+                    let warnings = terminal_published
+                        .as_ref()
+                        .map(|result| result.warnings.clone())
+                        .unwrap_or_else(|| item.warnings.clone());
+                    let evidence = terminal_published
+                        .as_ref()
+                        .map(|result| result.path_evidence.clone())
+                        .unwrap_or(path_evidence);
                     (
                         terminal.disposition,
                         Some(terminal.failure_kind),
-                        None,
-                        item.warnings.clone(),
-                        path_evidence,
+                        terminal_published,
+                        warnings,
+                        evidence,
                     )
                 } else {
                     (
@@ -676,8 +720,7 @@ fn restore_item(
             &item_key,
             context.journal,
             context.runtime,
-        )
-        .map_err(Into::into),
+        ),
     }
 }
 
@@ -812,10 +855,14 @@ fn restore_file_item(
             "itemPublished",
             &ItemPublished {
                 candidate_id: content.candidate_id,
+                item_key,
+                item_kind: "file",
                 published_path: published_path.clone(),
                 sidecar_name: published_sidecar
                     .as_ref()
                     .map(|sidecar| sidecar.name.clone()),
+                no_follow_bind_completed: None,
+                directory_validation: None,
                 namespace_durability: &durability,
                 completion_status,
             },
@@ -844,19 +891,21 @@ fn restore_file_item(
             requested_path: plan.path.to_slash_string(),
             published_path,
             published_name: final_name,
-            output_len: temporary.outcome.bytes_written,
-            output_sha256: temporary.outcome.sha256,
+            output_len: Some(temporary.outcome.bytes_written),
+            output_sha256: Some(temporary.outcome.sha256),
             expected_sha256: content.expected_sha256,
             zero_filled_ranges: temporary.outcome.zero_filled_ranges.clone(),
             sidecar_name: published_sidecar
                 .as_ref()
                 .map(|sidecar| sidecar.name.clone()),
             sidecar_sha256: published_sidecar.as_ref().map(|sidecar| sidecar.sha256),
-            temporary_disposition,
+            temporary_disposition: Some(temporary_disposition),
             path_evidence,
             warnings,
             namespace_durability: durability,
             completion_status,
+            directory_no_follow_bind_completed: None,
+            directory_validation: None,
         });
     }
 
@@ -875,8 +924,14 @@ fn restore_directory_item(
     item_key: &str,
     journal: &mut JobJournal,
     runtime: &dyn TransactionRuntime,
-) -> Result<RestoreItemResult, RestoreError> {
+) -> Result<RestoreItemResult, ItemRestoreFailure> {
     let parent = open_or_create_parents(job_dir, &plan.path, runtime)?;
+    let path_evidence: serde_json::Value =
+        serde_json::from_str(&plan.path_evidence_json).map_err(|error| {
+            RestoreError::ManifestSerialization {
+                message: error.to_string(),
+            }
+        })?;
     journal.append(
         "itemPrepared",
         &DirectoryPrepared {
@@ -890,69 +945,274 @@ fn restore_directory_item(
     let base_name = plan.path.file_name();
     for collision_index in 0..MAX_COLLISION_ATTEMPTS {
         let final_name = collision_name(base_name, collision_index);
+        let published_path = join_published_path(&plan.path, &final_name);
+        journal.append(
+            "directoryPublicationPlanned",
+            &DirectoryPublicationPlanned {
+                candidate_id,
+                item_key,
+                item_kind: "directory",
+                published_path: &published_path,
+                published_name: &final_name,
+                collision_index,
+            },
+        )?;
         match parent.create_dir(&final_name) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(destination_io(
-                    "create selected destination directory",
-                    error,
-                ));
+                return Err(destination_io("create selected destination directory", error).into());
             }
         }
         let final_component_index = plan.path.components().len() - 1;
-        runtime.parent_transition(
+        if let Err(error) = runtime.parent_transition(
             final_component_index,
             &final_name,
             ParentTransition::CreatedBeforeBind,
-        )?;
-        let bound = parent
-            .open_dir_nofollow(&final_name)
-            .map_err(|error| destination_io("bind selected destination directory", error))?;
-        runtime.parent_transition(final_component_index, &final_name, ParentTransition::Bound)?;
-        drop(bound);
+        ) {
+            return Err(directory_reconciliation_failure(
+                journal,
+                plan,
+                path_evidence.clone(),
+                DirectoryPublicationState::unconfirmed(
+                    candidate_id,
+                    item_key,
+                    published_path,
+                    final_name,
+                    false,
+                    "no-follow bind was not attempted after the post-create transition failed",
+                ),
+                "createdBeforeBind",
+                error,
+            ));
+        }
+        let bound = match parent.open_dir_nofollow(&final_name) {
+            Ok(bound) => bound,
+            Err(error) => {
+                return Err(directory_reconciliation_failure(
+                    journal,
+                    plan,
+                    path_evidence.clone(),
+                    DirectoryPublicationState::unconfirmed(
+                        candidate_id,
+                        item_key,
+                        published_path,
+                        final_name,
+                        false,
+                        "the visible directory name could not be bound with no-follow semantics",
+                    ),
+                    "noFollowBind",
+                    destination_io("bind selected destination directory", error),
+                ));
+            }
+        };
+        if let Err(error) =
+            runtime.parent_transition(final_component_index, &final_name, ParentTransition::Bound)
+        {
+            let failure = directory_reconciliation_failure(
+                journal,
+                plan,
+                path_evidence.clone(),
+                DirectoryPublicationState::unconfirmed(
+                    candidate_id,
+                    item_key,
+                    published_path,
+                    final_name,
+                    true,
+                    "the no-follow handle was bound but post-bind validation did not complete",
+                ),
+                "boundBeforeValidation",
+                error,
+            );
+            drop(bound);
+            return Err(failure);
+        }
+        if let Err(error) = verify_directory_binding(&parent, &final_name, &bound) {
+            let failure = directory_reconciliation_failure(
+                journal,
+                plan,
+                path_evidence.clone(),
+                DirectoryPublicationState::unconfirmed(
+                    candidate_id,
+                    item_key,
+                    published_path,
+                    final_name,
+                    true,
+                    "the no-follow handle and visible directory name did not retain one identity",
+                ),
+                "noFollowIdentityValidation",
+                error,
+            );
+            drop(bound);
+            return Err(failure);
+        }
 
         let durability = runtime.sync_parent(&parent, NamespaceBoundary::Data);
         let completion_status = durability_status(&durability);
-        let published_path = join_published_path(&plan.path, &final_name);
-        journal.append(
+        let state = DirectoryPublicationState {
+            candidate_id,
+            item_key: item_key.to_owned(),
+            published_path,
+            published_name: final_name,
+            no_follow_bind_completed: true,
+            validation: DirectoryValidation::BoundNoFollow,
+            namespace_durability: durability,
+        };
+        let result = state.clone().into_result(plan, path_evidence.clone());
+        if let Err(error) = journal.append(
             "itemPublished",
             &ItemPublished {
                 candidate_id,
-                published_path: published_path.clone(),
+                item_key,
+                item_kind: "directory",
+                published_path: state.published_path.clone(),
                 sidecar_name: None,
-                namespace_durability: &durability,
+                no_follow_bind_completed: Some(true),
+                directory_validation: Some(DirectoryValidation::BoundNoFollow),
+                namespace_durability: &state.namespace_durability,
                 completion_status,
             },
-        )?;
-        let path_evidence = serde_json::from_str(&plan.path_evidence_json).map_err(|error| {
-            RestoreError::ManifestSerialization {
-                message: error.to_string(),
-            }
-        })?;
-        return Ok(RestoreItemResult {
-            candidate_id,
-            item_key: item_key.to_owned(),
-            requested_path: plan.path.to_slash_string(),
-            published_path,
-            published_name: final_name,
-            output_len: 0,
-            output_sha256: Sha256::digest([]).into(),
-            expected_sha256: None,
-            zero_filled_ranges: Vec::new(),
-            sidecar_name: None,
-            sidecar_sha256: None,
-            temporary_disposition: TemporaryFileDisposition::Removed,
-            path_evidence,
-            warnings: plan.warnings.clone(),
-            namespace_durability: durability,
-            completion_status,
-        });
+        ) {
+            let failure = ItemRestoreFailure::with_publication(
+                publication_reconciliation_error("directory item", &state.published_path, error),
+                result,
+            );
+            drop(bound);
+            return Err(failure);
+        }
+        drop(bound);
+        return Ok(result);
     }
 
     Err(RestoreError::CollisionLimitExceeded {
         maximum: MAX_COLLISION_ATTEMPTS,
-    })
+    }
+    .into())
+}
+
+#[derive(Clone)]
+struct DirectoryPublicationState {
+    candidate_id: u64,
+    item_key: String,
+    published_path: String,
+    published_name: String,
+    no_follow_bind_completed: bool,
+    validation: DirectoryValidation,
+    namespace_durability: NamespaceDurability,
+}
+
+impl DirectoryPublicationState {
+    fn unconfirmed(
+        candidate_id: u64,
+        item_key: &str,
+        published_path: String,
+        published_name: String,
+        no_follow_bind_completed: bool,
+        reason: &str,
+    ) -> Self {
+        Self {
+            candidate_id,
+            item_key: item_key.to_owned(),
+            published_path,
+            published_name,
+            no_follow_bind_completed,
+            validation: DirectoryValidation::Unconfirmed,
+            namespace_durability: NamespaceDurability::Unconfirmed {
+                reason: reason.to_owned(),
+            },
+        }
+    }
+
+    fn into_result(
+        self,
+        plan: &FileRestorePlan,
+        path_evidence: serde_json::Value,
+    ) -> RestoreItemResult {
+        let completion_status = durability_status(&self.namespace_durability);
+        RestoreItemResult {
+            candidate_id: self.candidate_id,
+            item_key: self.item_key,
+            requested_path: plan.path.to_slash_string(),
+            published_path: self.published_path,
+            published_name: self.published_name,
+            output_len: None,
+            output_sha256: None,
+            expected_sha256: None,
+            zero_filled_ranges: Vec::new(),
+            sidecar_name: None,
+            sidecar_sha256: None,
+            temporary_disposition: None,
+            path_evidence,
+            warnings: plan.warnings.clone(),
+            namespace_durability: self.namespace_durability,
+            completion_status,
+            directory_no_follow_bind_completed: Some(self.no_follow_bind_completed),
+            directory_validation: Some(self.validation),
+        }
+    }
+}
+
+fn directory_reconciliation_failure(
+    journal: &mut JobJournal,
+    plan: &FileRestorePlan,
+    path_evidence: serde_json::Value,
+    state: DirectoryPublicationState,
+    stage: &'static str,
+    error: RestoreError,
+) -> ItemRestoreFailure {
+    let reconciliation_error = RestoreError::NeedsReconciliation {
+        message: format!(
+            "directory {:?} is visible after {stage} failed and requires reconciliation: {error}",
+            state.published_path
+        ),
+    };
+    let result = state.clone().into_result(plan, path_evidence);
+    if let Err(journal_error) = journal.append(
+        "directoryReconciliationRequired",
+        &DirectoryReconciliationRequired {
+            candidate_id: state.candidate_id,
+            item_key: &state.item_key,
+            item_kind: "directory",
+            published_path: &state.published_path,
+            published_name: &state.published_name,
+            stage,
+            no_follow_bind_completed: state.no_follow_bind_completed,
+            directory_validation: state.validation,
+            namespace_durability: &state.namespace_durability,
+            disposition: "directoryNeedsReconciliation",
+            completion_status: RestoreCompletionStatus::NeedsReconciliation,
+        },
+    ) {
+        return ItemRestoreFailure::with_publication(
+            publication_reconciliation_error(
+                "directory reconciliation record",
+                &state.published_path,
+                journal_error,
+            ),
+            result,
+        );
+    }
+    ItemRestoreFailure::with_publication(reconciliation_error, result)
+}
+
+fn verify_directory_binding(parent: &Dir, name: &str, bound: &Dir) -> Result<(), RestoreError> {
+    let bound_metadata = bound
+        .dir_metadata()
+        .map_err(|error| destination_io("query bound directory identity", error))?;
+    let name_metadata = parent
+        .symlink_metadata(name)
+        .map_err(|error| destination_io("query visible directory identity", error))?;
+    if !bound_metadata.is_dir()
+        || !name_metadata.is_dir()
+        || metadata_identity(&bound_metadata) != metadata_identity(&name_metadata)
+    {
+        return Err(RestoreError::DestinationIo {
+            operation: "validate selected destination directory identity",
+            kind: std::io::ErrorKind::Other,
+            message: "bound capability and visible name do not identify one directory".into(),
+        });
+    }
+    Ok(())
 }
 
 struct PreparedFile {
@@ -1236,6 +1496,8 @@ fn merge_durability(
     match (&first, &second) {
         (NamespaceDurability::Failed { .. }, _) => first,
         (_, NamespaceDurability::Failed { .. }) => second,
+        (NamespaceDurability::Unconfirmed { .. }, _) => first,
+        (_, NamespaceDurability::Unconfirmed { .. }) => second,
         (NamespaceDurability::Unsupported { .. }, _) => first,
         (_, NamespaceDurability::Unsupported { .. }) => second,
         _ => NamespaceDurability::Synced,
@@ -1350,6 +1612,33 @@ struct DirectoryPrepared<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DirectoryPublicationPlanned<'a> {
+    candidate_id: u64,
+    item_key: &'a str,
+    item_kind: &'static str,
+    published_path: &'a str,
+    published_name: &'a str,
+    collision_index: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryReconciliationRequired<'a> {
+    candidate_id: u64,
+    item_key: &'a str,
+    item_kind: &'static str,
+    published_path: &'a str,
+    published_name: &'a str,
+    stage: &'static str,
+    no_follow_bind_completed: bool,
+    directory_validation: DirectoryValidation,
+    namespace_durability: &'a NamespaceDurability,
+    disposition: &'static str,
+    completion_status: RestoreCompletionStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ItemSidecarPublished<'a> {
     candidate_id: u64,
     item_key: &'a str,
@@ -1362,8 +1651,12 @@ struct ItemSidecarPublished<'a> {
 #[serde(rename_all = "camelCase")]
 struct ItemPublished<'a> {
     candidate_id: u64,
+    item_key: &'a str,
+    item_kind: &'static str,
     published_path: String,
     sidecar_name: Option<String>,
+    no_follow_bind_completed: Option<bool>,
+    directory_validation: Option<DirectoryValidation>,
     namespace_durability: &'a NamespaceDurability,
     completion_status: RestoreCompletionStatus,
 }
@@ -1636,6 +1929,50 @@ mod tests {
         }
     }
 
+    struct KindWriteFaultJournalSink {
+        inner: File,
+        kind: &'static str,
+    }
+
+    impl Write for KindWriteFaultJournalSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let needle = format!("\"kind\":\"{}\"", self.kind);
+            if bytes
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+            {
+                return Err(io::Error::other("injected journal kind write failure"));
+            }
+            self.inner.write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    impl crate::journal::DurableJournalSink for KindWriteFaultJournalSink {
+        fn sync_all(&self) -> io::Result<()> {
+            self.inner.sync_all()
+        }
+    }
+
+    struct JournalKindWriteFault {
+        kind: &'static str,
+    }
+
+    impl TransactionRuntime for JournalKindWriteFault {
+        fn create_journal(&self, file: File, job_id: &str) -> JobJournal {
+            JobJournal::with_sink(
+                Box::new(KindWriteFaultJournalSink {
+                    inner: file,
+                    kind: self.kind,
+                }),
+                Sha256::digest(job_id.as_bytes()).into(),
+            )
+        }
+    }
+
     struct NamespaceFault {
         boundary: NamespaceBoundary,
     }
@@ -1769,6 +2106,38 @@ mod tests {
             create_test_directory_redirect(&self.outside, &target)
                 .map_err(|error| destination_io("inject transition redirect", error))?;
             self.replacements.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct FailFinalDirectoryTransitionAfterCollision {
+        job_dir: std::path::PathBuf,
+        parent_name: &'static str,
+        requested_name: &'static str,
+    }
+
+    impl TransactionRuntime for FailFinalDirectoryTransitionAfterCollision {
+        fn parent_transition(
+            &self,
+            component_index: usize,
+            _component: &str,
+            transition: ParentTransition,
+        ) -> Result<(), RestoreError> {
+            if component_index == 0 && transition == ParentTransition::Bound {
+                std::fs::create_dir(
+                    self.job_dir
+                        .join(self.parent_name)
+                        .join(self.requested_name),
+                )
+                .map_err(|error| destination_io("inject final directory collision", error))?;
+            }
+            if component_index == 1 && transition == ParentTransition::CreatedBeforeBind {
+                return Err(RestoreError::DestinationIo {
+                    operation: "injected final directory created-before-bind transition",
+                    kind: io::ErrorKind::Other,
+                    message: "injected post-create transition failure".into(),
+                });
+            }
             Ok(())
         }
     }
@@ -1972,6 +2341,32 @@ mod tests {
         RestoreJobPlan::new(job_id, vec![FileRestorePlan::file(path, content).unwrap()]).unwrap()
     }
 
+    fn directory_item_job(
+        job_id: &str,
+        candidate_id: u64,
+        parents: &[&str],
+        name: &str,
+    ) -> RestoreJobPlan {
+        let path = SafeRelativePath::derive_for_recovery(parents, name).unwrap();
+        RestoreJobPlan::new(
+            job_id,
+            vec![FileRestorePlan::directory(candidate_id, path).unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn read_manifest_value(job_dir: &std::path::Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(job_dir.join(MANIFEST_NAME)).unwrap()).unwrap()
+    }
+
+    fn read_journal_values(job_dir: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(job_dir.join(JOURNAL_NAME))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     #[test]
     fn restore_job_plan_rejects_more_than_one_million_sanitized_components() {
         let parents = (0..(crate::MAX_SAFE_PATH_COMPONENTS - 1))
@@ -2100,8 +2495,224 @@ mod tests {
         );
         assert_eq!(
             summary.items()[0].temporary_disposition(),
-            TemporaryFileDisposition::RetainedBySafeCleanupPolicy
+            Some(TemporaryFileDisposition::RetainedBySafeCleanupPolicy)
         );
+    }
+
+    #[test]
+    fn transaction_directory_created_before_bind_failure_is_manifested_for_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "directory-created-before-bind-fault";
+        let job = directory_item_job(job_id, 91, &["selected"], "only-directory");
+        let job_dir = temp.path().join(job_directory_component(job_id));
+
+        let error = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b""),
+                &job,
+                &NeverCancel,
+                &mut NoProgress,
+                &FailFinalDirectoryTransitionAfterCollision {
+                    job_dir: job_dir.clone(),
+                    parent_name: "selected",
+                    requested_name: "only-directory",
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, RestoreError::NeedsReconciliation { .. }));
+        assert!(
+            job_dir
+                .join("selected")
+                .join("only-directory (recovered 1)")
+                .is_dir(),
+            "the collision-resolved directory is already visible and must be reconciled"
+        );
+        assert!(
+            job_dir.join("selected").join("only-directory").is_dir(),
+            "the injected collision sentinel must never be removed"
+        );
+        let manifest = read_manifest_value(&job_dir);
+        let item = &manifest["items"][0];
+        assert_eq!(item["itemKey"], "000000-000000000000005b");
+        assert_eq!(item["itemKind"], "directory");
+        assert_eq!(item["disposition"], "directoryNeedsReconciliation");
+        assert_eq!(
+            item["publishedPath"],
+            "selected/only-directory (recovered 1)"
+        );
+        assert_eq!(item["directoryNoFollowBindCompleted"], false);
+        assert_eq!(item["directoryValidation"], "unconfirmed");
+        assert_eq!(item["namespaceDurability"]["state"], "unconfirmed");
+        assert_eq!(item["completionStatus"], "needsReconciliation");
+        assert_eq!(item["failureKind"], "needsReconciliation");
+
+        let records = read_journal_values(&job_dir);
+        let planned = records
+            .iter()
+            .filter(|record| record["kind"] == "directoryPublicationPlanned")
+            .collect::<Vec<_>>();
+        assert_eq!(planned.len(), 2);
+        assert_eq!(
+            planned[1]["payload"]["publishedPath"],
+            "selected/only-directory (recovered 1)"
+        );
+        assert_eq!(
+            planned[1]["payload"]["publishedName"],
+            "only-directory (recovered 1)"
+        );
+        assert!(records
+            .iter()
+            .any(|record| record["kind"] == "directoryReconciliationRequired"));
+    }
+
+    #[test]
+    fn transaction_directory_nofollow_bind_substitution_is_contained_and_manifested() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel");
+        std::fs::write(&sentinel, b"outside remains unchanged").unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "directory-bind-substitution";
+        let job = directory_item_job(job_id, 92, &[], "substituted-directory");
+        let job_dir = temp.path().join(job_directory_component(job_id));
+        let runtime = ReplaceCreatedComponent {
+            job_dir: job_dir.clone(),
+            parents: vec!["substituted-directory".into()],
+            outside: outside.path().to_owned(),
+            target_index: 0,
+            replacements: AtomicUsize::new(0),
+        };
+
+        let error = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b""),
+                &job,
+                &NeverCancel,
+                &mut NoProgress,
+                &runtime,
+            )
+            .unwrap_err();
+
+        let manifest = read_manifest_value(&job_dir);
+        let item = manifest["items"][0].clone();
+        let redirect_was_retained = runtime.target_path().is_dir();
+        let created_directory_was_retained =
+            runtime.target_path().with_extension("held-0").is_dir();
+        let outside_bytes = std::fs::read(&sentinel).unwrap();
+        let outside_entries = std::fs::read_dir(outside.path()).unwrap().count();
+        remove_test_directory_redirect(&runtime.target_path()).unwrap();
+
+        assert!(matches!(error, RestoreError::NeedsReconciliation { .. }));
+        assert!(
+            redirect_was_retained,
+            "production removed a substituted name"
+        );
+        assert!(
+            created_directory_was_retained,
+            "production removed the created directory after substitution"
+        );
+        assert_eq!(outside_bytes, b"outside remains unchanged");
+        assert_eq!(outside_entries, 1, "recovery wrote outside its capability");
+        assert_eq!(item["itemKey"], "000000-000000000000005c");
+        assert_eq!(item["itemKind"], "directory");
+        assert_eq!(item["disposition"], "directoryNeedsReconciliation");
+        assert_eq!(item["publishedPath"], "substituted-directory");
+        assert_eq!(item["directoryNoFollowBindCompleted"], false);
+        assert_eq!(item["directoryValidation"], "unconfirmed");
+        assert_eq!(item["namespaceDurability"]["state"], "unconfirmed");
+        assert_eq!(item["completionStatus"], "needsReconciliation");
+    }
+
+    #[test]
+    fn transaction_directory_namespace_sync_failure_is_manifested_for_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "directory-namespace-fault";
+        let job = directory_item_job(job_id, 93, &[], "directory");
+
+        let summary = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b""),
+                &job,
+                &NeverCancel,
+                &mut NoProgress,
+                &NamespaceFault {
+                    boundary: NamespaceBoundary::Data,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            summary.completion_status(),
+            RestoreCompletionStatus::NeedsReconciliation
+        );
+        let job_dir = temp.path().join(summary.job_directory_name());
+        let manifest = read_manifest_value(&job_dir);
+        let item = &manifest["items"][0];
+        assert_eq!(item["itemKey"], "000000-000000000000005d");
+        assert_eq!(item["itemKind"], "directory");
+        assert_eq!(item["disposition"], "directoryNeedsReconciliation");
+        assert_eq!(item["publishedPath"], "directory");
+        assert_eq!(item["directoryNoFollowBindCompleted"], true);
+        assert_eq!(item["directoryValidation"], "boundNoFollow");
+        assert_eq!(item["namespaceDurability"]["state"], "failed");
+        assert_eq!(item["completionStatus"], "needsReconciliation");
+        assert_eq!(item["failureKind"], "needsReconciliation");
+    }
+
+    #[test]
+    fn transaction_directory_item_published_journal_failure_stops_with_durable_candidate_evidence()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let job_id = "directory-item-published-fault";
+        let job = directory_item_job(job_id, 94, &[], "directory");
+
+        let error = destination
+            .restore_job_with_runtime(
+                &MemoryReader::new(b""),
+                &job,
+                &NeverCancel,
+                &mut NoProgress,
+                &JournalKindWriteFault {
+                    kind: "itemPublished",
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, RestoreError::NeedsReconciliation { .. }));
+        let job_dir = temp.path().join(job_directory_component(job_id));
+        assert!(job_dir.join("directory").is_dir());
+        assert!(
+            !job_dir.join(MANIFEST_NAME).exists(),
+            "a poisoned journal must suppress the final manifest"
+        );
+        let audit = crate::audit_journal(&std::fs::read(job_dir.join(JOURNAL_NAME)).unwrap())
+            .expect("the durable prefix before itemPublished remains auditable");
+        assert_eq!(
+            audit.kinds(),
+            ["jobStarted", "itemPrepared", "directoryPublicationPlanned"]
+        );
+        let records = read_journal_values(&job_dir);
+        let planned = &records[2]["payload"];
+        assert_eq!(planned["itemKey"], "000000-000000000000005e");
+        assert_eq!(planned["itemKind"], "directory");
+        assert_eq!(planned["publishedPath"], "directory");
+        assert_eq!(planned["publishedName"], "directory");
     }
 
     #[test]
@@ -2257,7 +2868,7 @@ mod tests {
         ));
         assert_eq!(
             summary.items()[0].temporary_disposition(),
-            TemporaryFileDisposition::RetainedForReconciliation
+            Some(TemporaryFileDisposition::RetainedForReconciliation)
         );
         let job_dir = temp
             .path()
@@ -2830,7 +3441,7 @@ mod tests {
         let item = &summary.items()[0];
         assert_eq!(
             item.temporary_disposition(),
-            TemporaryFileDisposition::RetainedBySafeCleanupPolicy
+            Some(TemporaryFileDisposition::RetainedBySafeCleanupPolicy)
         );
         assert!(item.warnings.is_empty());
         let job_dir = temp

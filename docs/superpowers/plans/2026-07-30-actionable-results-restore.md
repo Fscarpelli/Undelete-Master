@@ -668,6 +668,22 @@ retained and truthfully manifested because the current safe capability API has
 no identity-atomic unlink primitive. There is no close-then-delete-by-path
 fallback, which would introduce a substitution race.
 
+Selected directories are the explicit exception to file hard-link
+publication because the platform has no safe directory hard-link primitive.
+Validate path evidence and durably append a
+`directoryPublicationPlanned` record containing the item key/kind and exact
+collision-resolved candidate path/name before each direct no-clobber
+`create_dir`. Direct create is the directory publication boundary. Retain the
+no-follow bound directory capability through identity validation, parent sync,
+and `ItemPublished`. Every post-create bind/validation failure, and every
+`Unsupported`/`Failed` namespace sync, is
+`directoryNeedsReconciliation` with the actual path/name and validation
+evidence; it is never a plain unpublished failure. A poisoned post-create
+journal suppresses the manifest and stops the job, while the durable
+pre-create candidate record remains. Never roll back or delete a directory by
+path after create, and never attach file length/hash/temporary semantics to a
+directory outcome.
+
 Keep the capability-created temporary file handle open through publication.
 The pinned capability implementation opens Windows path components without
 delete sharing to prevent namespace substitution; the Windows regression above

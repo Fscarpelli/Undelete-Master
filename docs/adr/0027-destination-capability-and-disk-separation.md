@@ -132,11 +132,12 @@ fallback. The final manifest uses the same temporary-file and hard-link
 protocol and never replaces an existing entry.
 
 Directory `sync_all` evidence is reported as `Synced`, `Unsupported`, or
-`Failed`. On Windows, only access-denied on the expected read/query directory
-handle and the two documented unsupported-function codes are classified as
-`Unsupported`; invalid handle, I/O/device, parameter, disk-full, and other
-errors are `Failed`. Unsupported or failed namespace durability retains
-temporary links and marks the result `NeedsReconciliation`.
+`Failed`; `Unconfirmed` is used only when a visible directory has not reached
+that sync boundary. On Windows, only access-denied on the expected read/query
+directory handle and the two documented unsupported-function codes are
+classified as `Unsupported`; invalid handle, I/O/device, parameter, disk-full,
+and other errors are `Failed`. Unsupported or failed namespace durability
+retains temporary links and marks the result `NeedsReconciliation`.
 
 Protected temporary links are also retained after a synchronized publication
 and reported as `RetainedBySafeCleanupPolicy`. Closing the no-delete-share
@@ -162,11 +163,11 @@ The manifest is prepared from a frozen journal outcomes-prefix hash, written
 last, and returned with its literal SHA-256. With a healthy journal, ordinary
 item completion, failure, or cancellation proceeds to manifest publication;
 every successfully published final manifest contains exactly the immutable
-plan item count, using `Published`, `Failed`, `Cancelled`, `NotAttempted`, or
-`DirectoryCreated` dispositions. Manifest preparation or no-clobber
-publication may itself fail explicitly and never replaces an existing
-manifest. A poisoned journal suppresses the manifest rather than inventing
-outcomes beyond the durable prefix. The manifest records requested/safe paths,
+plan item count, using `Published`, `Failed`, `Cancelled`, `NotAttempted`,
+`DirectoryCreated`, or `DirectoryNeedsReconciliation` dispositions. Manifest
+preparation or no-clobber publication may itself fail explicitly and never
+replaces an existing manifest. A poisoned journal suppresses the manifest
+rather than inventing outcomes beyond the durable prefix. The manifest records requested/safe paths,
 output and expected hashes, readable and zero-filled ranges with reasons,
 conflicts, read failures, warnings, sidecar item key/path and SHA-256,
 temporary disposition, namespace durability, completion status, and
@@ -175,10 +176,37 @@ path-substitution evidence.
 Original untrusted path evidence is bounded before cloning or serialization:
 256 KiB per item and 8 MiB in aggregate per restore job. The immutable job
 constructor also enforces one million sanitized path components using checked
-addition. A directory-only plan item carries no content plan; it creates and
-immediately no-follow rebinds only the selected sanitized directory, performs
-no source read or data temporary publication, and is represented explicitly in
-the manifest.
+addition.
+
+A directory-only plan item carries no content plan and validates its path
+evidence before any create. Because directories have no safe no-clobber
+hard-link publication primitive, direct `create_dir` is their publication
+boundary. Before each collision candidate the journal durably records
+`directoryPublicationPlanned`, binding the item key/kind and exact
+collision-resolved path/name. This record precedes the direct create, so a
+poisoned post-create journal still leaves a deterministic reconciliation
+candidate without claiming the create completed.
+
+After create, Task 4 immediately no-follow binds the visible name, compares
+the bound handle identity with a capability-relative no-follow name lookup,
+and keeps that bound capability alive through parent sync and durable
+`ItemPublished`. Any transition, bind, or identity failure after create
+preserves the namespace entry and, while the journal remains healthy, records
+`directoryReconciliationRequired`. Its manifest outcome is
+`DirectoryNeedsReconciliation`, not plain `Failed`, and binds the actual path
+and name, item key/kind, no-follow-bind flag, validation state, namespace
+durability, and terminal reconciliation status. A bound directory with
+`Unsupported` or `Failed` namespace sync has the same reconciliation
+disposition. Only a bound, identity-validated, synchronized directory is
+`DirectoryCreated`.
+
+There is no directory path rollback or cleanup after direct create because a
+substituted entry could otherwise be deleted. A poisoned reconciliation or
+publication record stops the job, suppresses the final manifest, and preserves
+the durable pre-create candidate prefix. Directory manifest/result evidence
+omits file-only length, SHA-256, and temporary-file disposition fields. The
+operation creates no historical child/sibling and performs no source read,
+data temporary publication, or sidecar creation.
 
 Cross-platform scripted transition injection replaces every newly created
 component between create and rebind. Windows acceptance also races real
@@ -268,6 +296,9 @@ they do not open, write, or destructively query a real volume.
 - synchronized jobs retain protected `.umrecovering` links until an audited
   identity-atomic cleanup primitive exists, consuming destination space but
   avoiding path-substitution deletion;
+- a directory becomes visible at its direct no-clobber create boundary; any
+  later bind, validation, sync, or journal failure requires reconciliation and
+  intentionally preserves that entry rather than attempting path rollback;
 - Storage Spaces/dynamic/composite mappings are rejected even when a user might
   consider them acceptable; and
 - no product restore exists until Tasks 5–6 integrate the Task 4 transaction

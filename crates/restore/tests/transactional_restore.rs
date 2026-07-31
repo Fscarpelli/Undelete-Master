@@ -498,6 +498,9 @@ fn transaction_directory_only_creates_exactly_the_selected_sanitized_directory()
         .exists());
     assert!(!job_dir.join("historical-sibling").exists());
     assert_eq!(source.max_read.load(Ordering::SeqCst), 0);
+    assert_eq!(summary.items()[0].output_len(), None);
+    assert_eq!(summary.items()[0].output_sha256(), None);
+    assert_eq!(summary.items()[0].temporary_disposition(), None);
     assert!(!walk_files(&job_dir).iter().any(|path| {
         let name = path.file_name().unwrap().to_string_lossy();
         name.contains("-data-") || name.contains("-partial-") || name.ends_with(".um-partial.json")
@@ -509,11 +512,30 @@ fn transaction_directory_only_creates_exactly_the_selected_sanitized_directory()
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["candidateId"], 91);
     assert_eq!(items[0]["itemKind"], "directory");
-    assert_eq!(items[0]["disposition"], "directoryCreated");
     assert_eq!(items[0]["requestedPath"], "selected/only-directory");
     assert_eq!(items[0]["publishedPath"], "selected/only-directory");
     assert_eq!(items[0]["outputLength"], serde_json::Value::Null);
+    assert_eq!(items[0]["outputSha256"], serde_json::Value::Null);
+    assert_eq!(
+        items[0]["temporaryFileDisposition"],
+        serde_json::Value::Null
+    );
     assert_eq!(items[0]["partialSidecar"], serde_json::Value::Null);
+    assert_eq!(items[0]["directoryNoFollowBindCompleted"], true);
+    assert_eq!(items[0]["directoryValidation"], "boundNoFollow");
+    match items[0]["namespaceDurability"]["state"].as_str().unwrap() {
+        "synced" => {
+            assert_eq!(items[0]["disposition"], "directoryCreated");
+            assert_eq!(items[0]["completionStatus"], "completedDurable");
+            assert_eq!(items[0]["failureKind"], serde_json::Value::Null);
+        }
+        "unconfirmed" | "unsupported" | "failed" => {
+            assert_eq!(items[0]["disposition"], "directoryNeedsReconciliation");
+            assert_eq!(items[0]["completionStatus"], "needsReconciliation");
+            assert_eq!(items[0]["failureKind"], "needsReconciliation");
+        }
+        state => panic!("unexpected namespace durability state {state:?}"),
+    }
 }
 
 #[cfg(unix)]

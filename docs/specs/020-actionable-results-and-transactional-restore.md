@@ -295,8 +295,12 @@ For each planned file:
 16. include exactly one truthful disposition for every immutable plan item in
     the final manifest.
 
-An interrupted or failed item never appears under its final name unless the
-publication step completed. Temporary-file disposition is recorded.
+An interrupted or failed file never appears under its final name unless the
+hard-link publication step completed. A directory has no hard-link primitive:
+its no-clobber `create_dir` is the publication step. Once that direct create
+succeeds, no later failure may be represented as an unpublished/plain failed
+item or rolled back by path; it is a visible directory that requires explicit
+reconciliation evidence.
 
 The journal is append-only canonical JSON Lines with a monotonic sequence,
 previous record hash, record hash, and bounded record count. Audit rejects
@@ -310,7 +314,9 @@ With a healthy journal, ordinary item completion, failure, or cancellation
 proceeds to final-manifest publication. Every final manifest that is
 successfully published contains exactly the immutable plan item count. Each
 item is marked `published`, `failed`, `cancelled`, `notAttempted`, or
-`directoryCreated`; an item failure or cancellation never silently truncates a
+`directoryCreated`, with `directoryNeedsReconciliation` used for a visible
+directory whose bind/identity validation or namespace durability is
+unconfirmed. An item failure or cancellation never silently truncates a
 published manifest. Manifest preparation or no-clobber publication can itself
 fail explicitly, in which case no existing manifest is replaced and the job
 must not claim that a final manifest exists.
@@ -333,9 +339,29 @@ proven. A later cleanup implementation may remove the link only through a
 reviewed identity-atomic primitive.
 
 A selected directory follows the same capability-relative no-follow ancestor
-walk, creates and immediately rebinds only that directory, syncs its parent,
-and receives the `directoryCreated` disposition. It has no content plan,
-source read, data temporary file, or partial sidecar.
+walk and validates its bounded path evidence before publication. Before every
+collision candidate, the journal durably records
+`directoryPublicationPlanned` with item key, directory kind, exact
+collision-resolved name/path, and collision index. Only then may `create_dir`
+publish that candidate.
+
+After a successful create, the implementation immediately opens the exact name
+with no-follow semantics, compares the bound capability identity with a
+capability-relative no-follow name lookup, and retains the bound directory
+through parent sync and durable `ItemPublished`. A synchronized, validated
+directory receives `directoryCreated`. A visible directory with an incomplete
+bind/identity check or `Unconfirmed`, `Unsupported`, or `Failed` namespace
+durability receives `directoryNeedsReconciliation`; the healthy journal and
+manifest record the exact path/name, item key/kind, bind-completed flag,
+validation state, durability, and reconciliation status. No post-create path
+delete or rollback is permitted.
+
+If the post-create reconciliation or `ItemPublished` journal boundary poisons,
+the job stops without a manifest or later item. The durable pre-create record
+still identifies every attempted candidate, including the actual candidate
+that may now be visible. A directory item has no content plan, source read,
+data temporary file, partial sidecar, output length/hash, or temporary-file
+disposition.
 
 The implementation must not allocate memory proportional to candidate size.
 

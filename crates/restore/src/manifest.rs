@@ -9,6 +9,7 @@ pub(crate) const MANIFEST_NAME: &str = "recovery-manifest.json";
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum NamespaceDurability {
     Synced,
+    Unconfirmed { reason: String },
     Unsupported { kind: String, message: String },
     Failed { kind: String, message: String },
 }
@@ -28,6 +29,13 @@ pub enum RestoreCompletionStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub enum DirectoryValidation {
+    BoundNoFollow,
+    Unconfirmed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TemporaryFileDisposition {
     Removed,
     RetainedForReconciliation,
@@ -42,6 +50,7 @@ pub(crate) enum ManifestItemDisposition {
     Cancelled,
     NotAttempted,
     DirectoryCreated,
+    DirectoryNeedsReconciliation,
 }
 
 impl ManifestItemDisposition {
@@ -52,6 +61,7 @@ impl ManifestItemDisposition {
             Self::Cancelled => "cancelled",
             Self::NotAttempted => "notAttempted",
             Self::DirectoryCreated => "directoryCreated",
+            Self::DirectoryNeedsReconciliation => "directoryNeedsReconciliation",
         }
     }
 }
@@ -63,17 +73,19 @@ pub struct RestoreItemResult {
     pub(crate) requested_path: String,
     pub(crate) published_path: String,
     pub(crate) published_name: String,
-    pub(crate) output_len: u64,
-    pub(crate) output_sha256: [u8; 32],
+    pub(crate) output_len: Option<u64>,
+    pub(crate) output_sha256: Option<[u8; 32]>,
     pub(crate) expected_sha256: Option<[u8; 32]>,
     pub(crate) zero_filled_ranges: Vec<ZeroFilledRange>,
     pub(crate) sidecar_name: Option<String>,
     pub(crate) sidecar_sha256: Option<[u8; 32]>,
-    pub(crate) temporary_disposition: TemporaryFileDisposition,
+    pub(crate) temporary_disposition: Option<TemporaryFileDisposition>,
     pub(crate) path_evidence: serde_json::Value,
     pub(crate) warnings: Vec<String>,
     pub(crate) namespace_durability: NamespaceDurability,
     pub(crate) completion_status: RestoreCompletionStatus,
+    pub(crate) directory_no_follow_bind_completed: Option<bool>,
+    pub(crate) directory_validation: Option<DirectoryValidation>,
 }
 
 impl RestoreItemResult {
@@ -89,15 +101,15 @@ impl RestoreItemResult {
         &self.published_name
     }
 
-    pub fn output_len(&self) -> u64 {
+    pub fn output_len(&self) -> Option<u64> {
         self.output_len
     }
 
-    pub fn output_sha256(&self) -> [u8; 32] {
+    pub fn output_sha256(&self) -> Option<[u8; 32]> {
         self.output_sha256
     }
 
-    pub fn temporary_disposition(&self) -> TemporaryFileDisposition {
+    pub fn temporary_disposition(&self) -> Option<TemporaryFileDisposition> {
         self.temporary_disposition
     }
 
@@ -199,6 +211,8 @@ struct ManifestItem<'a> {
     temporary_file_disposition: Option<TemporaryFileDisposition>,
     namespace_durability: Option<&'a NamespaceDurability>,
     completion_status: Option<RestoreCompletionStatus>,
+    directory_no_follow_bind_completed: Option<bool>,
+    directory_validation: Option<DirectoryValidation>,
     failure_kind: Option<&'static str>,
     path_evidence: &'a serde_json::Value,
 }
@@ -320,7 +334,7 @@ fn manifest_item(outcome: &ManifestItemOutcome) -> ManifestItem<'_> {
     let zero_filled_ranges = file_published
         .map(|result| result.zero_filled_ranges.as_slice())
         .unwrap_or_default();
-    let output_len = file_published.map(|result| result.output_len);
+    let output_len = file_published.and_then(|result| result.output_len);
     let conflicts = filtered_ranges(zero_filled_ranges, ZeroFillReason::CurrentlyAllocated);
     let read_errors = filtered_ranges(zero_filled_ranges, ZeroFillReason::PreviouslyReadFailed);
     ManifestItem {
@@ -331,7 +345,9 @@ fn manifest_item(outcome: &ManifestItemOutcome) -> ManifestItem<'_> {
         requested_path: &outcome.requested_path,
         published_path: published.map(|result| result.published_path.as_str()),
         output_length: output_len,
-        output_sha256: file_published.map(|result| hex_lower(&result.output_sha256)),
+        output_sha256: file_published
+            .and_then(|result| result.output_sha256)
+            .map(|hash| hex_lower(&hash)),
         expected_sha256: outcome.expected_sha256.map(|hash| hex_lower(&hash)),
         readable_ranges: output_len
             .map(|len| readable_ranges(len, zero_filled_ranges))
@@ -348,9 +364,12 @@ fn manifest_item(outcome: &ManifestItemOutcome) -> ManifestItem<'_> {
             .published_sidecar
             .as_ref()
             .map(|sidecar| hex_lower(&sidecar.sha256)),
-        temporary_file_disposition: file_published.map(|result| result.temporary_disposition),
+        temporary_file_disposition: file_published.and_then(|result| result.temporary_disposition),
         namespace_durability: published.map(|result| &result.namespace_durability),
         completion_status: published.map(|result| result.completion_status),
+        directory_no_follow_bind_completed: published
+            .and_then(|result| result.directory_no_follow_bind_completed),
+        directory_validation: published.and_then(|result| result.directory_validation),
         failure_kind: outcome.failure_kind,
         path_evidence: &outcome.path_evidence,
     }
@@ -424,8 +443,8 @@ mod tests {
             requested_path: "unsafe-source-name".into(),
             published_path: "safe/output.bin".into(),
             published_name: "output.bin".into(),
-            output_len: 12,
-            output_sha256: [0x11; 32],
+            output_len: Some(12),
+            output_sha256: Some([0x11; 32]),
             expected_sha256: Some([0x22; 32]),
             zero_filled_ranges: vec![
                 ZeroFilledRange {
@@ -441,7 +460,7 @@ mod tests {
             ],
             sidecar_name: Some("output.bin.um-partial.json".into()),
             sidecar_sha256: Some([0x33; 32]),
-            temporary_disposition: TemporaryFileDisposition::RetainedForReconciliation,
+            temporary_disposition: Some(TemporaryFileDisposition::RetainedForReconciliation),
             path_evidence: serde_json::json!({
                 "version": 1,
                 "substitutions": [{"original": "unsafe-source-name"}]
@@ -452,6 +471,8 @@ mod tests {
                 message: "directory sync unavailable".into(),
             },
             completion_status: RestoreCompletionStatus::NeedsReconciliation,
+            directory_no_follow_bind_completed: None,
+            directory_validation: None,
         };
 
         let outcome = ManifestItemOutcome {
