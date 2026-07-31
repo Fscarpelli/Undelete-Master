@@ -178,10 +178,15 @@ replaced by linked executable evidence before the requirement can become
 
 - **Requirements:** FR-080, FR-081, FR-082, FR-083, FR-084, FR-085, FR-086,
   FR-087, FR-088.
-- **Formal rationale:** the restore engine, containment boundary, journal, and
-  manifest are absent.
-- **Exit criterion:** pass path sanitation, physical destination, transactional
-  restore, partial-file, metadata, manifest, and resume tests.
+- **Formal rationale:** the native path containment, different-disk authority,
+  bounded streaming, transactional no-clobber publication, journal, partial
+  sidecars, JSON manifest, coordinator, and deterministic vertical fixture are
+  implemented. The actionable UI, packaged real-device acceptance, optional
+  destination metadata/CSV, alternate layouts, and restart-safe resume are not
+  all complete, so the requirement group is not fully verified.
+- **Exit criterion:** pass the actionable consent/progress workflow, packaged
+  different-disk restore, path/reparse/no-clobber fault suite, metadata policy,
+  manifest presentation, alternate-layout decisions, and durable resume tests.
 
 ## JUST-FR-090-092-SESSIONS
 

@@ -117,14 +117,14 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-080 | Destinations | Recommend another physical disk and offer preserve-tree, flatten, or by-type layouts. | Not started |
-| FR-081 | Minimal ancestors | Create only ancestors required by explicitly selected items. | Not started |
-| FR-082 | Folder alone | Selecting only a folder restores an empty folder and no historical content. | Not started |
-| FR-083 | Name collisions | Default to rename; never silently replace an active destination file. | Not started |
-| FR-084 | Transactional operation | Use `.umrecovering`, stream/hash, flush/verify, atomic rename, and journal. | Not started |
-| FR-085 | Partial files | Require consent and record zero-fill/truncate/segment policy and missing ranges. | Not started |
+| FR-080 | Destinations | Recommend another physical disk and offer preserve-tree, flatten, or by-type layouts. | Partial |
+| FR-081 | Minimal ancestors | Create only ancestors required by explicitly selected items. | Implemented-unverified |
+| FR-082 | Folder alone | Selecting only a folder restores an empty folder and no historical content. | Implemented-unverified |
+| FR-083 | Name collisions | Default to rename; never silently replace an active destination file. | Implemented-unverified |
+| FR-084 | Transactional operation | Use `.umrecovering`, stream/hash, flush/verify, atomic no-clobber publication, and journal. | Implemented-unverified |
+| FR-085 | Partial files | Require consent and record zero-fill/truncate/segment policy and missing ranges. | Partial |
 | FR-086 | Destination metadata | Preserve safe supported metadata; ACL/EFS/ADS are opt-in. | Not started |
-| FR-087 | Recovery manifest | Emit versioned JSON and optional CSV with source, evidence, ranges, hashes, errors, and provenance. | Not started |
+| FR-087 | Recovery manifest | Emit versioned JSON and optional CSV with source, evidence, ranges, hashes, errors, and provenance. | Partial |
 | FR-088 | Restore resume | Resume large restores after size/hash verification without duplicating completed files. | Not started |
 
 ## Sessions and reports
