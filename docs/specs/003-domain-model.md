@@ -13,7 +13,7 @@ Status: Normative
 | `ExtentRun` | Logical-to-physical mapping or sparse/missing/conflicting range. | Partial. |
 | `RecoverabilityScore` | Explainable content assessment, independent of name/path confidence. | Partial. |
 | `Session` | Persisted scan configuration, checkpoints, candidates, selections, and events. | Not started. |
-| `RestorePlan` | Immutable, validated mapping from selected candidates to safe destination paths. | Not started. |
+| `RestorePlan` | Immutable, validated mapping from selected candidates to safe destination paths. | Implemented-unverified: bounded native plans bind the scan, selection revision, destination authority, policies, content plans, and sanitized publication paths; real-media acceptance remains pending. |
 | `ValidationReport` | Bounded structural validation result from an isolated worker. | Not started. |
 
 ## Invariants

@@ -1,6 +1,8 @@
 # SDD-020 — Actionable Results and Transactional Restore
 
-Status: Approved design; implementation in progress
+Status: `Implemented-unverified` — the real native/UI workflow, required local
+gates and unsigned release pair are implemented and recorded; governed
+deleted-file recovery on separate physical NTFS media remains unverified
 Decision date: 2026-07-30
 
 This increment turns the connected-volume desktop from a discovery-only report
@@ -13,10 +15,10 @@ The master specification remains authoritative. This increment implements the
 first production slice of FR-060 through FR-067 and FR-080 through FR-088
 without weakening the read-only source invariant.
 
-## 1. Confirmed problem
+## 1. Confirmed baseline problem
 
-The current desktop can discover and display real candidates, but it cannot
-act on them:
+Before this increment, the desktop could discover and display real candidates
+but could not act on them:
 
 - candidate pages accept only `scanId`, cursor, and a fixed limit;
 - the frontend appends every loaded page to one growing array;
@@ -28,8 +30,12 @@ act on them:
   cancellation, or recovery manifest;
 - the production-surface test explicitly rejects restore commands.
 
-This is not a hidden-control defect. Restore and results-workspace behavior are
-absent from the implemented product surface.
+This was not a hidden-control defect. Restore and results-workspace behavior
+were absent from the implemented product surface. Tasks 1 through 6 replaced
+that baseline with backend-owned query/selection, retained destination
+authority, immutable plans, transactional jobs and an actionable desktop
+workspace. Section 12 and the Task 7 evidence distinguish implemented local
+behavior from still-unverified real-media acceptance.
 
 ## 2. Approved outcome
 
@@ -55,7 +61,8 @@ simulated progress, placeholder restore, or browser fallback is permitted.
 
 ### 3.1 In scope
 
-- metadata-backed files of every extension when usable content extents remain;
+- metadata-backed files independent of extension when a bounded usable content
+  plan remains;
 - carved candidates already emitted with bounded physical ranges;
 - NTFS resident, contiguous, fragmented, and sparse streams represented by
   the candidate model;
@@ -125,8 +132,7 @@ resolves and retains a bounded `DestinationAuthority` containing:
 - sanitized label and filesystem;
 - observed free bytes;
 - physical-disk identity set;
-- reparse/symlink safety evidence;
-- creation time and expiry generation.
+- reparse/symlink safety evidence.
 
 The WebView receives only the opaque destination ID and sanitized summary.
 Caller-provided destination paths are forbidden.
@@ -140,10 +146,12 @@ final-volume and disk-identity queries. Production restore code never reopens
 the picker path. On Windows the root is opened without delete sharing, so it
 cannot be renamed or substituted while the authority exists.
 
-The queried destination filesystem must be NTFS. ReFS, FAT, exFAT, unknown, and
-filesystems that reject hard links fail closed with an explicit
-unsupported-destination result. No overwrite-capable or path-based fallback is
-allowed.
+The queried destination filesystem must be NTFS. ReFS, FAT, exFAT, and unknown
+filesystems are rejected during admission. Hard-link support is not probed
+during destination admission; if an otherwise admitted NTFS destination
+refuses a required publication hard link, that item/job fails closed with
+structured `HardLinkPublication` evidence. No overwrite-capable or path-based
+fallback is allowed.
 
 ### 4.3 Destination writes
 
@@ -478,13 +486,15 @@ Initial hard limits:
   budget;
 - four retained scans;
 - 32 destination authorities;
-- eight active/planned restore jobs;
+- eight retained immutable restore plans;
+- eight retained restore jobs;
 - 1 MiB source read/write buffer;
 - 256 KiB serialized original-path evidence per item;
 - 8 MiB aggregate serialized original-path evidence per restore job;
 - 1,000,000 sanitized path components per job;
 - 1,000,000 journal records per restore job;
-- 10,000 collision-renaming attempts per job;
+- 10,000 collision-renaming attempts for each individual partial-sidecar,
+  data-file, or selected-directory publication;
 - manifest entries equal to the immutable plan item count.
 
 All additions and multiplications use checked arithmetic. Bound saturation is a
@@ -546,6 +556,32 @@ work on a real disk.
 
 Expected recovered results are asserted by SHA-256.
 
+### Same-revision Task 7 evidence
+
+At commit `40402fa1ad38529ad9347f89ad839b0f292a72b1`, before the documentation
+reconciliation commit:
+
+- `cargo fmt --all -- --check`, workspace Clippy with warnings denied and all
+  workspace tests passed;
+- the workspace test run produced 51 result groups with 447 passed, zero failed
+  and zero ignored;
+- `um-restore` passed 81 tests and the desktop vertical restore fixture passed
+  51 tests;
+- the frontend passed lint, typecheck, build and 146 tests;
+- documentation, CI-safety and real-only validators and their regression suites
+  passed;
+- `desktop:build` produced exactly the expected sibling desktop and broker
+  executables, whose hashes and extracted elevation manifests are retained in
+  the [Task 7 evidence](../evidence/actionable-restore-2026-07-30.md);
+- the unsigned release desktop opened as a real Tauri window, rendered observed
+  C: and E: mounted-volume inventory without starting the broker, and closed
+  normally.
+
+No scan, destination choice or restore was performed during the bounded
+packaged launch. A governed recovery of known deleted data from one physical
+disk to a separate physical NTFS disk remains unverified and is not replaced
+by a mock, synthetic UI provider or destructive test.
+
 ## 13. Architecture decisions required by implementation
 
 Implementation must add or amend ADRs for:
@@ -578,4 +614,11 @@ file is created. Completion requires:
 - the traceability matrix and known limitations match the implemented
   boundary;
 - a release build, not only a debug build, is produced for user validation.
+
+The implementation and deterministic/local portions of this gate pass. The
+release pair and inventory-only packaged launch also pass. Product acceptance
+does not yet pass because known deleted-file recovery on governed separate
+physical media, assistive-technology review, signing, endpoint-security
+disposition, clean-machine validation and remote CI are still outstanding.
+Accordingly this SDD remains `Implemented-unverified`, not `Verified`.
 

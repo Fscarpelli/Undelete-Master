@@ -8,9 +8,12 @@ transaction observer, immutable plan binding, background job lifecycle, and
 deterministic vertical fixture are implemented. Same-revision local evidence
 is recorded in
 [the Task 5 evidence report](../evidence/actionable-restore-coordinator-2026-07-30.md).
-Packaged-host, physical-device, accessibility, external-corpus, performance,
-signing, and release evidence remain outside this decision and must not be
-inferred from the deterministic fixture.
+The actionable results workspace and real native-snapshot UI were subsequently
+implemented under [SDD-020](../specs/020-actionable-results-and-transactional-restore.md)
+and [the traceability matrix](../traceability-matrix.md). Packaged-host,
+physical-device, accessibility, external-corpus, performance, signing, and
+release evidence remain outside this decision and must not be inferred from
+the deterministic fixture or local component tests.
 
 ## Context
 
@@ -247,8 +250,9 @@ forbidden.
 - a live mounted source is not a snapshot and may change during work;
 - recovery cannot reconstruct bytes already overwritten, trimmed, encrypted
   without keys, or physically unreadable; and
-- the user workflow and packaged-host acceptance remain separate Task 6/7
-  evidence.
+- the local user workflow and unsigned release pair are recorded in the
+  [Task 7 evidence](../evidence/actionable-restore-2026-07-30.md), while
+  governed physical real-device recovery remains unverified.
 
 ## Rejected alternatives
 

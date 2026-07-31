@@ -117,6 +117,278 @@ REQUIREMENT_FIELDS = {
 TEST_ID_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\d{3}\b")
 JUST_ID_PATTERN = re.compile(r"\bJUST-[A-Z0-9-]+\b")
 PLACEHOLDER_PATTERN = re.compile(r"\b(?:TBD|TODO|STUBS?)\b", re.IGNORECASE)
+CURRENT_PRODUCT_DOCUMENTS = (
+    "README.md",
+    "README.pt-BR.md",
+    "apps/desktop/README.md",
+    "docs/specs/001-functional-requirements.md",
+    "docs/specs/003-domain-model.md",
+    "docs/specs/004-architecture.md",
+    "docs/specs/009-restore-semantics.md",
+    "docs/specs/010-ux-ui-and-accessibility.md",
+    "docs/specs/011-security-and-privacy.md",
+    "docs/specs/012-test-and-validation-plan.md",
+    "docs/specs/015-known-limitations.md",
+    "docs/specs/018-windows-volume-and-folder-scan.md",
+    "docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md",
+    "docs/specs/020-actionable-results-and-transactional-restore.md",
+    "docs/adr/0028-restore-plan-job-and-manifest-lifecycle.md",
+    "docs/risk-register.md",
+    "docs/traceability-matrix.md",
+    "docs/threat-model/THREAT_MODEL.md",
+)
+NUMBER_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "um": 1,
+    "uma": 1,
+    "two": 2,
+    "dois": 2,
+    "duas": 2,
+    "three": 3,
+    "três": 3,
+    "tres": 3,
+    "four": 4,
+    "quatro": 4,
+    "five": 5,
+    "cinco": 5,
+    "six": 6,
+    "seis": 6,
+    "seven": 7,
+    "sete": 7,
+    "eight": 8,
+    "oito": 8,
+    "nine": 9,
+    "nove": 9,
+    "ten": 10,
+    "dez": 10,
+    "eleven": 11,
+    "onze": 11,
+    "twelve": 12,
+    "doze": 12,
+    "thirteen": 13,
+    "treze": 13,
+    "fourteen": 14,
+    "catorze": 14,
+    "quatorze": 14,
+    "fifteen": 15,
+    "quinze": 15,
+    "sixteen": 16,
+    "dezesseis": 16,
+    "seventeen": 17,
+    "dezessete": 17,
+    "eighteen": 18,
+    "dezoito": 18,
+    "nineteen": 19,
+    "dezenove": 19,
+    "twenty": 20,
+    "vinte": 20,
+}
+NUMBER_TOKEN = (
+    r"(?:\d+|"
+    + "|".join(
+        sorted((re.escape(word) for word in NUMBER_WORDS), key=len, reverse=True)
+    )
+    + r")"
+)
+DOCUMENTED_COMMAND_COUNT_PATTERNS = (
+    re.compile(
+        rf"\b(?:exact(?:ly)?|exatamente)?\s*(?P<count>{NUMBER_TOKEN})\s+"
+        rf"(?:(?:[\w/-]+\s+){{0,3}}Tauri|"
+        rf"(?:desktop|native)(?:\s+(?:desktop|native))?)\s+commands?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:exatamente\s+)?(?P<count>{NUMBER_TOKEN})\s+comandos?\s+"
+        rf"(?:Tauri|nativ[oa]s?|do\s+desktop)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:exact(?:ly)?\s+)?(?P<count>{NUMBER_TOKEN})\s+commands?\s+"
+        rf"(?:Tauri|native|desktop)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:Tauri|desktop(?:\s+native)?|native(?:\s+desktop)?)\s+"
+        rf"commands?\s*(?:[:=]|(?:number|count|total)\s+(?:is|of)?\s*)"
+        rf"\s*(?P<count>{NUMBER_TOKEN})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:comandos?\s+(?:Tauri|nativ[oa]s?|do\s+desktop)|"
+        rf"(?:Tauri|nativ[oa]s?|desktop)\s+comandos?)\s*"
+        rf"(?:[:=]|(?:somam|total(?:izam)?|total\s+(?:de|é))\s*)"
+        rf"\s*(?P<count>{NUMBER_TOKEN})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:inventory|registry|surface|contract|invent[aá]rio|registro|"
+        rf"superf[ií]cie|contrato)\b[^.\n]{{0,60}}?\b"
+        rf"(?:exact(?:ly)?|exatamente)?\s*(?P<count>{NUMBER_TOKEN})\s+"
+        rf"(?:Tauri\s+)?(?:commands?|comandos?)(?:\s+Tauri)?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<count>{NUMBER_TOKEN})-(?:commands?|comandos?)\b"
+        rf"(?=[^.\n]{{0,80}}\b(?:Tauri|desktop|native|nativ[oa]s?|scan|"
+        rf"inventory|registry|surface|contract|invent[aá]rio|registro|"
+        rf"superf[ií]cie|contrato)\b)",
+        re.IGNORECASE,
+    ),
+)
+AGGREGATED_COMMAND_COUNT_PATTERNS = (
+    re.compile(
+        rf"\b(?:the\s+)?(?:existing\s+)?(?P<first>{NUMBER_TOKEN})\s+"
+        rf"(?:[\w/-]+\s+){{0,3}}commands?\s+(?:and|plus)\s+"
+        rf"(?:these\s+|existing\s+)?(?P<second>{NUMBER_TOKEN})\s+"
+        rf"(?:[\w/-]+\s+){{0,3}}commands?\s+"
+        rf"(?:are|form|make|constitute|comprise)\s+(?:the\s+)?"
+        rf"(?:complete|full|total)\s+(?:desktop\s+)?(?:command\s+)?inventory\b",
+        re.IGNORECASE,
+    ),
+)
+HISTORICAL_CONTEXT_PATTERN = re.compile(
+    r"\b(?:historical|historic|hist[oó]ric[oa]s?|baseline|linha\s+de\s+base|"
+    r"original(?:ly|mente)?\s+(?:contract|inventory|surface|state|status|"
+    r"implementation|behavior|behaviour|design|architecture|problem|scope|"
+    r"increment|release|contrato|invent[aá]rio|superf[ií]cie|estado|"
+    r"implementa[cç][aã]o|comportamento|desenho|arquitetura|problema|escopo|"
+    r"incremento|vers[aã]o)|(?:contrato|invent[aá]rio|superf[ií]cie|estado|"
+    r"implementa[cç][aã]o|comportamento|desenho|arquitetura|problema|escopo|"
+    r"incremento|vers[aã]o)\s+original)\b",
+    re.IGNORECASE,
+)
+HISTORICAL_QUALIFIED_CONTEXT_PATTERN = re.compile(
+    r"\b(?:(?:previous|prior|former|earlier)\s+"
+    r"(?:[\w/-]+\s+){0,3}(?:contract|inventory|surface|state|status|"
+    r"implementation|behavior|behaviour|design|architecture|problem|scope|"
+    r"increment|release|version|baseline)|"
+    r"(?:contract|inventory|surface|state|status|implementation|behavior|"
+    r"behaviour|design|architecture|problem|scope|increment|release|version|"
+    r"baseline)\s+(?:previous|prior|former|earlier)|"
+    r"(?:anterior(?:es)?|pr[eé]vi[oa]s?|antig[oa]s?)\s+(?:contrato|"
+    r"invent[aá]rio|superf[ií]cie|estado|implementa[cç][aã]o|comportamento|"
+    r"desenho|arquitetura|problema|escopo|incremento|vers[aã]o|linha\s+de\s+"
+    r"base)|(?:contrato|invent[aá]rio|superf[ií]cie|estado|"
+    r"implementa[cç][aã]o|comportamento|desenho|arquitetura|problema|escopo|"
+    r"incremento|vers[aã]o|linha\s+de\s+base)\s+(?:anterior(?:es)?|"
+    r"pr[eé]vi[oa]s?|antig[oa]s?)|previously|formerly|anteriormente|"
+    r"previamente)\b",
+    re.IGNORECASE,
+)
+HISTORICAL_COMPARISON_PATTERN = re.compile(
+    r"\b(?:compared\s+(?:with|to)|in\s+comparison\s+(?:with|to)|unlike|"
+    r"versus|vs\.?|comparad[oa]\s+com|em\s+compara[cç][aã]o\s+com|"
+    r"ao\s+contr[aá]rio\s+de)\b",
+    re.IGNORECASE,
+)
+INLINE_HISTORICAL_TRANSITION_PATTERN = re.compile(
+    r";|,\s*(?:but|however|while|whereas|yet|mas|por[eé]m|enquanto)\b|"
+    r"\b(?:became|becomes|has\s+become|now|current(?:ly)?|today|agora|"
+    r"atualmente|passou\s+a\s+ser|tornou-se)\b",
+    re.IGNORECASE,
+)
+CURRENT_CONTEXT_PATTERN = re.compile(
+    r"\b(?:current|currently|present|now|atual|atualmente|agora)\b",
+    re.IGNORECASE,
+)
+MARKDOWN_HEADING_PATTERN = re.compile(r"^(?P<marks>#{1,6})\s+(?P<title>.+?)\s*$")
+MARKDOWN_FENCE_PATTERN = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})")
+EXPECTED_TAURI_REGISTRATIONS = {
+    "storage::list_storage_sources",
+    "storage::select_scan_folder",
+    "storage::scan_storage_volume",
+    "storage::get_candidate_page",
+    "storage::query_candidate_page",
+    "storage::update_candidate_selection",
+    "restore::select_restore_destination",
+    "restore::create_restore_plan",
+    "restore::start_restore",
+    "restore::get_restore_job",
+    "restore::cancel_restore",
+    "restore::open_restore_destination",
+}
+OBSOLETE_CAPABILITY_CELL_PATTERN = re.compile(
+    r"(?:file\s+)?(?:restore|restoration|recovery)|"
+    r"restaura[cç][aã]o|recupera[cç][aã]o",
+    re.IGNORECASE,
+)
+OBSOLETE_CAPABILITY_STATUS_CELL_PATTERN = re.compile(
+    r"(?:absent|unavailable|unsupported|not\s+(?:available|implemented|"
+    r"supported|started)|ausente|indispon[ií]vel|n[aã]o\s+(?:implementad[oa]|"
+    r"suportad[oa]|iniciad[oa]))",
+    re.IGNORECASE,
+)
+OBSOLETE_CURRENT_STATUS_PATTERNS = (
+    (
+        "restore execution",
+        re.compile(
+            r"\bNeither\s+(?:the\s+)?desktop\s+nor\s+(?:the\s+)?CLI\s+"
+            r"(?:can\s+)?restor(?:e|es)\s+(?:any\s+)?data\b"
+            r"|\b(?:the\s+)?desktop\s+(?:cannot|can['’]t|does\s+not|"
+            r"doesn['’]t)\s+restore\s+(?:any\s+)?data\b"
+            r"|\brestore(?:\s+(?:execution|engine|boundary|boundaries))?\s+"
+            r"(?:is|remains?|stays?)\s+(?:absent|unavailable|unsupported|"
+            r"not\s+(?:available|implemented|supported))\b"
+            r"|\bNem\s+(?:o\s+)?desktop\s+nem\s+(?:a\s+)?CLI\s+"
+            r"(?:pode\s+)?restaur(?:a|am|ar)\s+(?:quaisquer\s+)?dados\b"
+            r"|\b(?:o\s+)?desktop\s+n[aã]o\s+(?:pode|consegue)\s+"
+            r"restaurar\s+(?:quaisquer\s+)?dados\b"
+            r"|\bn[aã]o\s+(?:é|e)\s+poss[ií]vel\s+restaurar\s+"
+            r"(?:quaisquer\s+)?dados\b"
+            r"|\b(?:a\s+)?restaura[cç][aã]o\s+(?:ainda\s+)?n[aã]o\s+"
+            r"(?:est[aá]\s+)?(?:implementada|dispon[ií]vel|suportada)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "restore progress",
+        re.compile(
+            r"\b(?:native\s+)?restore\s+progress\s+"
+            r"(?:is|remains?|stays?)\s+(?:absent|unavailable|unsupported|"
+            r"not\s+(?:available|implemented|supported))\b"
+            r"|\bno\s+(?:native\s+)?restore\s+progress\s+"
+            r"(?:is\s+)?(?:available|implemented|supported)\b"
+            r"|\b(?:o\s+)?progresso\s+da\s+restaura[cç][aã]o\s+"
+            r"(?:est[aá]\s+)?(?:ausente|indispon[ií]vel|n[aã]o\s+"
+            r"(?:est[aá]\s+)?(?:dispon[ií]vel|implementado|suportado))\b"
+            r"|\bn[aã]o\s+existe\s+progresso\s+da\s+restaura[cç][aã]o\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "restore cancellation",
+        re.compile(
+            r"\brestore\s+cancellation\s+"
+            r"(?:is|remains?|stays?)\s+(?:absent|unavailable|unsupported|"
+            r"not\s+(?:available|implemented|supported))\b"
+            r"|\b(?:cannot|can['’]t)\s+cancel\s+(?:a\s+)?restore\b"
+            r"|\b(?:o\s+)?cancelamento\s+da\s+restaura[cç][aã]o\s+"
+            r"(?:est[aá]\s+)?(?:ausente|indispon[ií]vel|n[aã]o\s+"
+            r"(?:est[aá]\s+)?(?:dispon[ií]vel|implementado|suportado))\b"
+            r"|\bn[aã]o\s+(?:é|e)\s+poss[ií]vel\s+cancelar\s+"
+            r"(?:a\s+)?restaura[cç][aã]o\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "opening the restore destination",
+        re.compile(
+            r"\bopening\s+the\s+(?:recovery|restore)\s+destination\s+"
+            r"(?:is|remains?|stays?)\s+(?:absent|unavailable|unsupported|"
+            r"not\s+(?:available|implemented|supported))\b"
+            r"|\b(?:cannot|can['’]t)\s+open\s+the\s+(?:recovery|restore)\s+"
+            r"destination\b"
+            r"|\babrir\s+o\s+destino\s+da\s+"
+            r"(?:recupera[cç][aã]o|restaura[cç][aã]o)\s+"
+            r"(?:est[aá]\s+)?(?:ausente|indispon[ií]vel|n[aã]o\s+"
+            r"(?:est[aá]\s+)?(?:dispon[ií]vel|implementado|suportado))\b"
+            r"|\bn[aã]o\s+(?:é|e)\s+poss[ií]vel\s+abrir\s+o\s+destino\s+da\s+"
+            r"(?:recupera[cç][aã]o|restaura[cç][aã]o)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -232,6 +504,490 @@ def validate_required_files(root: Path, errors: list[str]) -> None:
     for relative in REQUIRED:
         if not (root / relative).is_file():
             errors.append(f"missing required document: {relative}")
+
+
+def command_count_value(raw_count: str) -> int:
+    normalized = raw_count.casefold()
+    return int(normalized) if normalized.isdigit() else NUMBER_WORDS[normalized]
+
+
+def aggregated_command_count_matches(
+    text: str,
+) -> tuple[tuple[tuple[int, int], int], ...]:
+    matches: list[tuple[tuple[int, int], int]] = []
+    for pattern in AGGREGATED_COMMAND_COUNT_PATTERNS:
+        for match in pattern.finditer(text):
+            matches.append(
+                (
+                    match.span(),
+                    command_count_value(match.group("first"))
+                    + command_count_value(match.group("second")),
+                )
+            )
+    return tuple(matches)
+
+
+def documented_command_count_matches(
+    line: str,
+) -> tuple[tuple[tuple[int, int], int], ...]:
+    matches: dict[tuple[int, int], int] = {}
+    aggregate_matches = aggregated_command_count_matches(line)
+    aggregate_spans = [span for span, _count in aggregate_matches]
+    matches.update(aggregate_matches)
+    for pattern in DOCUMENTED_COMMAND_COUNT_PATTERNS:
+        for match in pattern.finditer(line):
+            if any(
+                aggregate_start <= match.start()
+                and match.end() <= aggregate_end
+                for aggregate_start, aggregate_end in aggregate_spans
+            ):
+                continue
+            matches[(match.start("count"), match.end("count"))] = command_count_value(
+                match.group("count")
+            )
+    return tuple(sorted(matches.items()))
+
+
+def documented_command_counts(line: str) -> tuple[int, ...]:
+    return tuple(count for _span, count in documented_command_count_matches(line))
+
+
+def cross_line_aggregated_command_counts(
+    line: str,
+    next_line: str,
+) -> tuple[int, ...]:
+    if (
+        not line.strip()
+        or not next_line.strip()
+        or line.rstrip().endswith((".", "!", "?", ":", ";"))
+        or MARKDOWN_HEADING_PATTERN.match(next_line)
+        or MARKDOWN_FENCE_PATTERN.match(next_line)
+    ):
+        return ()
+    combined = f"{line} {next_line.lstrip()}"
+    boundary = len(line)
+    return tuple(
+        count
+        for (start, end), count in aggregated_command_count_matches(combined)
+        if start < boundary < end
+    )
+
+
+def obsolete_restore_capability_row(line: str) -> bool:
+    if not line.lstrip().startswith("|"):
+        return False
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return any(OBSOLETE_CAPABILITY_CELL_PATTERN.fullmatch(cell) for cell in cells) and any(
+        OBSOLETE_CAPABILITY_STATUS_CELL_PATTERN.fullmatch(cell) for cell in cells
+    )
+
+
+def line_has_explicit_historical_context(line: str) -> bool:
+    has_historical_marker = bool(
+        HISTORICAL_CONTEXT_PATTERN.search(line)
+        or HISTORICAL_QUALIFIED_CONTEXT_PATTERN.search(line)
+    )
+    return (
+        has_historical_marker
+        and not CURRENT_CONTEXT_PATTERN.search(line)
+        and not HISTORICAL_COMPARISON_PATTERN.search(line)
+    )
+
+
+def explicit_historical_marker_spans(line: str) -> tuple[tuple[int, int], ...]:
+    spans = {
+        match.span()
+        for pattern in (
+            HISTORICAL_CONTEXT_PATTERN,
+            HISTORICAL_QUALIFIED_CONTEXT_PATTERN,
+        )
+        for match in pattern.finditer(line)
+    }
+    return tuple(sorted(spans))
+
+
+def inline_historical_count_ranges(line: str) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    comparison = HISTORICAL_COMPARISON_PATTERN.search(line)
+    for marker_start, marker_end in explicit_historical_marker_spans(line):
+        clause_start = max(
+            line.rfind(";", 0, marker_start),
+            line.rfind(".", 0, marker_start),
+            line.rfind("!", 0, marker_start),
+            line.rfind("?", 0, marker_start),
+        ) + 1
+        if CURRENT_CONTEXT_PATTERN.search(line[clause_start:marker_start]):
+            continue
+
+        range_end = len(line)
+        transition = INLINE_HISTORICAL_TRANSITION_PATTERN.search(line, marker_end)
+        if transition is not None:
+            range_end = transition.start()
+        if comparison is not None and comparison.start() <= marker_start:
+            comma = line.find(",", marker_end)
+            if comma >= 0:
+                range_end = min(range_end, comma)
+        ranges.append((clause_start, range_end))
+    return tuple(ranges)
+
+
+def blank_rust_region(characters: list[str], start: int, end: int) -> None:
+    for index in range(start, end):
+        if characters[index] not in "\r\n":
+            characters[index] = " "
+
+
+def rust_char_literal_end(text: str, start: int) -> int | None:
+    index = start + 1
+    if index >= len(text) or text[index] in "\r\n":
+        return None
+    if text[index] == "\\":
+        index += 1
+        if index >= len(text):
+            return None
+        if text[index] == "u" and index + 1 < len(text) and text[index + 1] == "{":
+            closing_brace = text.find("}", index + 2)
+            if closing_brace < 0:
+                return None
+            index = closing_brace + 1
+        elif text[index] == "x":
+            index += 3
+        else:
+            index += 1
+    else:
+        index += 1
+    if index < len(text) and text[index] == "'":
+        return index + 1
+    return None
+
+
+def rust_code_without_comments_and_literals(text: str) -> str:
+    characters = list(text)
+    index = 0
+    while index < len(text):
+        if text.startswith("//", index):
+            end = text.find("\n", index + 2)
+            if end < 0:
+                end = len(text)
+            blank_rust_region(characters, index, end)
+            index = end
+            continue
+        if text.startswith("/*", index):
+            depth = 1
+            end = index + 2
+            while end < len(text) and depth:
+                if text.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif text.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            if depth:
+                raise ValueError("unclosed Rust block comment")
+            blank_rust_region(characters, index, end)
+            index = end
+            continue
+
+        raw_end: int | None = None
+        if index == 0 or not (text[index - 1].isalnum() or text[index - 1] == "_"):
+            for prefix in ("br", "cr", "r"):
+                if not text.startswith(prefix, index):
+                    continue
+                opening = index + len(prefix)
+                hash_end = opening
+                while hash_end < len(text) and text[hash_end] == "#":
+                    hash_end += 1
+                if hash_end >= len(text) or text[hash_end] != '"':
+                    continue
+                terminator = '"' + text[opening:hash_end]
+                closing = text.find(terminator, hash_end + 1)
+                if closing < 0:
+                    raise ValueError("unclosed Rust raw string literal")
+                raw_end = closing + len(terminator)
+                break
+        if raw_end is not None:
+            blank_rust_region(characters, index, raw_end)
+            index = raw_end
+            continue
+
+        if text[index] == '"':
+            end = index + 1
+            escaped = False
+            while end < len(text):
+                character = text[end]
+                if character == '"' and not escaped:
+                    end += 1
+                    break
+                if character == "\\" and not escaped:
+                    escaped = True
+                else:
+                    escaped = False
+                end += 1
+            else:
+                raise ValueError("unclosed Rust string literal")
+            blank_rust_region(characters, index, end)
+            index = end
+            continue
+
+        if text[index] == "'":
+            end = rust_char_literal_end(text, index)
+            if end is not None:
+                blank_rust_region(characters, index, end)
+                index = end
+                continue
+        index += 1
+    return "".join(characters)
+
+
+def authoritative_tauri_commands(
+    root: Path,
+    errors: list[str],
+) -> set[str] | None:
+    relative = Path(".github/scripts/validate_real_only_desktop.py")
+    path = root / relative
+    if not path.is_file():
+        errors.append(f"{relative.as_posix()}: missing desktop command authority")
+        return None
+
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError) as error:
+        errors.append(
+            f"{relative.as_posix()}: cannot parse desktop command authority: {error}"
+        )
+        return None
+
+    assignments: list[ast.expr] = []
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "ALLOWED_COMMANDS"
+            for target in statement.targets
+        ):
+            assignments.append(statement.value)
+        elif (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == "ALLOWED_COMMANDS"
+            and statement.value is not None
+        ):
+            assignments.append(statement.value)
+
+    if len(assignments) != 1:
+        errors.append(
+            f"{relative.as_posix()}: expected exactly one literal ALLOWED_COMMANDS "
+            f"assignment, found {len(assignments)}"
+        )
+        return None
+
+    try:
+        value = ast.literal_eval(assignments[0])
+    except (ValueError, TypeError, SyntaxError) as error:
+        errors.append(
+            f"{relative.as_posix()}: ALLOWED_COMMANDS must be a literal set: {error}"
+        )
+        return None
+    if (
+        not isinstance(value, set)
+        or not value
+        or any(not isinstance(command, str) or not command for command in value)
+    ):
+        errors.append(
+            f"{relative.as_posix()}: ALLOWED_COMMANDS must be a non-empty set "
+            "of non-empty strings"
+        )
+        return None
+    return value
+
+
+def registered_tauri_commands(
+    root: Path,
+    errors: list[str],
+) -> set[str] | None:
+    relative = Path("apps/desktop/src-tauri/src/lib.rs")
+    path = root / relative
+    if not path.is_file():
+        errors.append(f"{relative.as_posix()}: missing Tauri command registration")
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        errors.append(
+            f"{relative.as_posix()}: cannot read Tauri command registration: {error}"
+        )
+        return None
+
+    try:
+        code = rust_code_without_comments_and_literals(text)
+    except ValueError as error:
+        errors.append(
+            f"{relative.as_posix()}: cannot lex Tauri command registration: {error}"
+        )
+        return None
+
+    starts = list(re.finditer(r"\bgenerate_handler\s*!\s*\[", code))
+    if len(starts) != 1:
+        errors.append(
+            f"{relative.as_posix()}: expected exactly one generate_handler! "
+            f"registration, found {len(starts)}"
+        )
+        return None
+
+    opening = code.find("[", starts[0].start(), starts[0].end())
+    depth = 0
+    closing: int | None = None
+    for index in range(opening, len(code)):
+        character = code[index]
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                closing = index
+                break
+    if closing is None:
+        errors.append(
+            f"{relative.as_posix()}: unclosed generate_handler! registration"
+        )
+        return None
+
+    raw_entries = code[opening + 1 : closing].split(",")
+    if raw_entries and not raw_entries[-1].strip():
+        raw_entries.pop()
+    if not raw_entries or any(not entry.strip() for entry in raw_entries):
+        errors.append(
+            f"{relative.as_posix()}: malformed generate_handler! command list"
+        )
+        return None
+
+    commands: list[str] = []
+    command_path = re.compile(
+        r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+"
+    )
+    for entry in raw_entries:
+        match = command_path.fullmatch(entry.strip())
+        if match is None:
+            errors.append(
+                f"{relative.as_posix()}: invalid generate_handler! entry "
+                f"{entry.strip()!r}"
+            )
+            return None
+        commands.append(match.group(0))
+    if len(commands) != len(set(commands)):
+        errors.append(
+            f"{relative.as_posix()}: duplicate command in generate_handler! registration"
+        )
+        return None
+    return set(commands)
+
+
+def validate_current_product_contract(root: Path, errors: list[str]) -> None:
+    authoritative = authoritative_tauri_commands(root, errors)
+    registered = registered_tauri_commands(root, errors)
+    expected_names = {
+        registration.rsplit("::", 1)[1]
+        for registration in EXPECTED_TAURI_REGISTRATIONS
+    }
+    if authoritative is not None and authoritative != expected_names:
+        errors.append(
+            ".github/scripts/validate_real_only_desktop.py: authoritative desktop "
+            "command names differ from the expected module-bound registration "
+            f"inventory; missing={sorted(expected_names - authoritative)!r}; "
+            f"unexpected={sorted(authoritative - expected_names)!r}"
+        )
+    if registered is not None:
+        if registered != EXPECTED_TAURI_REGISTRATIONS:
+            errors.append(
+                "apps/desktop/src-tauri/src/lib.rs: registered desktop command "
+                "inventory differs from authoritative inventory; "
+                f"missing={sorted(EXPECTED_TAURI_REGISTRATIONS - registered)!r}; "
+                f"unexpected={sorted(registered - EXPECTED_TAURI_REGISTRATIONS)!r}"
+            )
+
+    if authoritative is None:
+        return
+    expected_count = len(authoritative)
+    for relative_text in CURRENT_PRODUCT_DOCUMENTS:
+        relative = Path(relative_text)
+        path = root / relative
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            errors.append(
+                f"{relative.as_posix()}: cannot inspect current product claims: {error}"
+            )
+            continue
+        historical_heading_level: int | None = None
+        fence_marker: str | None = None
+        historical_fence = False
+        for line_number, line in enumerate(lines, start=1):
+            fence = MARKDOWN_FENCE_PATTERN.match(line)
+            if fence is not None:
+                marker = fence.group("marker")
+                if fence_marker is None:
+                    fence_marker = marker
+                    historical_fence = line_has_explicit_historical_context(line)
+                elif marker[0] == fence_marker[0] and len(marker) >= len(fence_marker):
+                    fence_marker = None
+                    historical_fence = False
+                continue
+
+            heading = MARKDOWN_HEADING_PATTERN.match(line)
+            if heading is not None:
+                heading_level = len(heading.group("marks"))
+                if (
+                    historical_heading_level is not None
+                    and heading_level <= historical_heading_level
+                ):
+                    historical_heading_level = None
+                if line_has_explicit_historical_context(heading.group("title")):
+                    historical_heading_level = heading_level
+
+            if fence_marker is not None and line_has_explicit_historical_context(line):
+                historical_fence = True
+            if historical_heading_level is not None or historical_fence:
+                continue
+
+            historical_count_ranges = inline_historical_count_ranges(line)
+            documented_counts = [
+                count
+                for (count_start, count_end), count in documented_command_count_matches(
+                    line
+                )
+                if not any(
+                    range_start <= count_start and count_end <= range_end
+                    for range_start, range_end in historical_count_ranges
+                )
+            ]
+            if line_number < len(lines):
+                documented_counts.extend(
+                    cross_line_aggregated_command_counts(
+                        line,
+                        lines[line_number],
+                    )
+                )
+            for documented_count in documented_counts:
+                if documented_count != expected_count:
+                    errors.append(
+                        f"{relative.as_posix()}:{line_number}: documents "
+                        f"{documented_count} desktop/Tauri commands, but authoritative "
+                        f"inventory has {expected_count}"
+                    )
+            obsolete_capabilities = {
+                capability
+                for capability, pattern in OBSOLETE_CURRENT_STATUS_PATTERNS
+                if pattern.search(line)
+            }
+            if obsolete_restore_capability_row(line):
+                obsolete_capabilities.add("restore execution")
+            for capability in sorted(obsolete_capabilities):
+                errors.append(
+                    f"{relative.as_posix()}:{line_number}: obsolete current-status "
+                    f"claim about {capability}"
+                )
 
 
 def validate_links_and_placeholders(root: Path, errors: list[str]) -> None:
@@ -1133,6 +1889,7 @@ def validate_adrs(root: Path, errors: list[str]) -> None:
 def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
     errors: list[str] = []
     validate_required_files(root, errors)
+    validate_current_product_contract(root, errors)
 
     master = root / "UNDELETE_MASTER_CODEX_MASTER_SPEC.md"
     if not master.is_file():

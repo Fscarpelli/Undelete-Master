@@ -1077,13 +1077,24 @@ git commit -m "feat: add actionable recovery workspace"
 **Files:**
 
 - Modify: `docs/specs/020-actionable-results-and-transactional-restore.md`
+- Modify: `docs/specs/001-functional-requirements.md`
+- Modify: `docs/specs/004-architecture.md`
 - Modify: `docs/specs/009-restore-semantics.md`
 - Modify: `docs/specs/010-ux-ui-and-accessibility.md`
+- Modify: `docs/specs/011-security-and-privacy.md`
 - Modify: `docs/specs/012-test-and-validation-plan.md`
 - Modify: `docs/specs/015-known-limitations.md`
+- Modify: `docs/specs/016-foundation-hardening-and-safe-image-cli.md`
+- Modify: `docs/adr/0028-restore-plan-job-and-manifest-lifecycle.md`
+- Modify: `docs/threat-model/THREAT_MODEL.md`
+- Modify: `docs/risk-register.md`
 - Modify: `docs/traceability-matrix.md`
 - Create: `docs/evidence/actionable-restore-2026-07-30.md`
 - Modify: `README.md`
+- Modify: `README.pt-BR.md`
+- Modify: `apps/desktop/README.md`
+- Modify: `.github/scripts/validate_docs.py`
+- Modify: `.github/scripts/tests/test_validate_docs.py`
 
 ### Step 1: Run focused regression gates
 
@@ -1105,6 +1116,12 @@ cargo test --workspace
 pnpm --dir apps/desktop lint
 pnpm --dir apps/desktop typecheck
 pnpm --dir apps/desktop test
+python .github/scripts/tests/test_validate_docs.py
+python .github/scripts/validate_docs.py
+python .github/scripts/tests/test_validate_ci_safety.py
+python .github/scripts/validate_ci_safety.py
+python .github/scripts/tests/test_validate_real_only_desktop.py
+python .github/scripts/validate_real_only_desktop.py
 ```
 
 Expected: PASS with no skipped critical tests.
@@ -1171,7 +1188,9 @@ agnostic while deep carving remains format-plugin based.
 ### Step 6: Commit
 
 ```powershell
-git add README.md docs
+git add .github/scripts/validate_docs.py `
+  .github/scripts/tests/test_validate_docs.py `
+  README.md README.pt-BR.md apps/desktop/README.md docs
 git commit -m "docs: record actionable restore evidence"
 ```
 
@@ -1182,3 +1201,14 @@ all findings with focused regression tests and rerun the full gate. Then use
 the repository's configured GitHub remote to push
 `codex/actionable-restore`. Do not force-push. Create or update a pull request
 only after the push succeeds.
+
+### Task 7 execution record
+
+The local implementation/build portion passed from product-code commit
+`40402fa1ad38529ad9347f89ad839b0f292a72b1`. The exact required gate counts,
+unsigned sibling executable hashes, embedded execution levels, bounded
+inventory-only launch and deliberately unperformed real-media operations are
+retained in
+[`docs/evidence/actionable-restore-2026-07-30.md`](../../evidence/actionable-restore-2026-07-30.md).
+The separate governed deleted-file/different-disk acceptance remains
+unverified; no mock or destructive real-source test replaced it.

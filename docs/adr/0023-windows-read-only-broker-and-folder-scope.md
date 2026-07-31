@@ -123,16 +123,18 @@ Adopt the exact mounted-volume architecture in
     sibling; saturation marks ancestry incomplete/partial rather than claiming
     unvisited paths.
 16. FAT supports a whole-mounted-volume scan only. Folder scope is NTFS-only.
-17. JavaScript sees exactly four commands and only opaque IDs, sanitized display
-    data, decimal-string `u64` values and pages of at most 100 candidates.
+17. The original SDD-018 slice exposed exactly four commands. SDD-020 expands
+    the current closed inventory to exactly 12 commands while retaining only
+    opaque IDs, sanitized display data, decimal-string `u64` values and pages
+    of at most 100 candidates in JavaScript.
 18. The original SDD-018 desktop slice did not implement cancellation, hotplug
     subscription, destination writes, restore publication, preview, exFAT,
     session persistence or a snapshot guarantee. ADR-0027 adds query-only
     destination authority and disk-separation evidence without adding a write
-    capability. SDD-020 Task 5 additionally permits native restore
-    coordination to duplicate and revalidate only an already-retained
-    destination handle and to ask the shell to explore only an already-retained
-    completed-job directory. Those operations do not add a source write,
+    capability. SDD-020 additionally permits native restore coordination to
+    duplicate and revalidate only an already-retained destination handle and
+    to ask the shell to explore only an already-retained completed-job
+    directory. Those operations do not add a source write,
     caller-selected path, executable, verb or argument. The shell request runs
     on one dedicated joined thread whose COM apartment is initialized with
     `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`. It uses

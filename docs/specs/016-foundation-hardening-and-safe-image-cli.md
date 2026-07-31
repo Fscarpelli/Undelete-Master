@@ -210,10 +210,13 @@ by SDD-017 and ADR-0021.
 
 The rejected prototype plan would have added keyboard handling, progress
 semantics, contrast changes, and layout corrections to its fabricated results,
-scan, and restore screens. Those screens are absent from the current product.
-Current accessibility behavior and acceptance are governed exclusively by
-[SDD-010](010-ux-ui-and-accessibility.md) and SDD-017; this historical list is
-not a claim of implemented desktop functionality.
+scan, and restore screens. Those fabricated screens remain absent; the current
+product instead has real native scan/results authority and the actionable
+restore workflow governed by [SDD-010](010-ux-ui-and-accessibility.md),
+SDD-017, [SDD-018](018-windows-volume-and-folder-scan.md), and
+[SDD-020](020-actionable-results-and-transactional-restore.md). This historical
+list is not evidence for the implemented desktop or its still-unverified
+packaged real-device acceptance.
 
 ### 4.5 Quality gates
 
@@ -446,22 +449,26 @@ CI uses only repository fixtures, memory images, and temporary regular files.
 
 ### SDD-UI-002 — Historical session-fallback proposal (superseded)
 
-- **Rationale:** the rejected prototype could fabricate a completed session;
-  current production omits Results, Restore, and sessions entirely.
+- **Rationale:** the rejected prototype could fabricate a completed session.
+  Current production implements a separate real native results/restore
+  workflow under SDD-020 but still has no fabricated or persistent session
+  fallback.
 - **Priority:** Must.
 - **Source:** Historical draft only; superseded by SDD-017's unsupported-flow
   requirement.
 - **Preconditions:** none in the current product; no active-session contract is
   exposed.
 - **Behavior:** this historical empty-state/provider proposal must not be
-  implemented. Current production has no session, results, or restore route,
-  command, provider method, or fallback identifier.
+  implemented. Current production has no session provider or fallback
+  identifier. Its results and restore commands operate only on retained native
+  scan/selection/destination/plan/job authority defined by SDD-020.
 - **Error behavior:** unsupported routes/commands remain absent and cannot
   synthesize a session.
 - **Security implications:** omission prevents synthetic evidence from
   appearing real.
 - **Observability:** current route and command inventories prove the historical
-  surfaces absent.
+  session/demo surfaces absent while separately enumerating the real SDD-020
+  surface.
 - **Acceptance criteria:** SDD-017 `REAL-AC-006` replaces this discarded
   prototype acceptance.
 - **Test IDs or formal justification:** `JUST-SDD-UI-002-UNVERSIONED`.
@@ -475,19 +482,20 @@ CI uses only repository fixtures, memory images, and temporary regular files.
   and status semantics.
 - **Priority:** High.
 - **Source:** Historical draft only; current accessibility is governed by
-  SDD-010 and SDD-017.
-- **Preconditions:** none in the current product; the referenced historical
-  screens are absent.
+  SDD-010, SDD-018 and SDD-020.
+- **Preconditions:** none in the current product; the referenced fabricated
+  prototype screens are absent.
 - **Behavior:** this requirement does not authorize restoring prototype
-  results, progress, or restore screens. Current real-only accessibility must
-  be specified and tested against the actual image workflow.
+  results, progress, or restore screens. Current real-only accessibility is
+  specified and tested against the actual mounted-volume, actionable-results
+  and transactional-restore workflows.
 - **Error behavior:** no historical keyboard behavior is claimed.
 - **Security implications:** prevents an accessibility statement from implying
   that unsupported workflows exist.
 - **Observability:** only current real-only controls and statuses count as
   evidence.
-- **Acceptance criteria:** current SDD-017 acceptance replaces the discarded
-  prototype cases.
+- **Acceptance criteria:** current SDD-010/018/020 acceptance replaces the
+  discarded prototype cases.
 - **Test IDs or formal justification:** `JUST-SDD-UI-003-UNVERSIONED`.
 - **Implementation links:** none; this superseded requirement has no permitted
   implementation.

@@ -54,10 +54,10 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-020 | Select disk/volume | Require a source and permit bounded recognized partition selection. | Not started |
+| FR-020 | Select disk/volume | Require a source and permit bounded recognized partition selection. Mounted-volume selection is implemented; recognized partition selection inside a volume remains absent. | Partial |
 | FR-021 | Working folder | Select a working location for DB, checkpoints, thumbnails, temporary files, and reports. | Not started |
-| FR-022 | Physical destination mapping | Resolve working/restore paths to physical disks, not drive letters alone. | Not started |
-| FR-023 | Overwrite prevention | Block same-physical-disk work by default and apply the post-scan advanced override policy. | Not started |
+| FR-022 | Physical destination mapping | Resolve working/restore paths to physical disks, not drive letters alone. Restore destinations are mapped from retained native authority; working-folder mapping remains absent. | Partial |
+| FR-023 | Overwrite prevention | Block same-physical-disk work by default and apply the post-scan advanced override policy. Restore is blocked on the same or unproven physical disk with no override; the broader working-folder and post-scan override policy remains absent. | Partial |
 | FR-024 | System disk | Detect the active Windows disk, explain inconsistency risk, and require another destination. | Not started |
 
 ## Scan modes
@@ -94,13 +94,13 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-060 | Scale | Virtualize and query backend pages; never send millions of rows to the UI. | Not started |
-| FR-061 | Columns | Provide configurable evidence, path, size, dates, method, score, validation, and conflict columns. | Not started |
-| FR-062 | Extension filter | Build multi-select extension facets dynamically with counts. | Not started |
-| FR-063 | Other filters | Combine category, quality, method, size/date/path, validation, partial, preview, and selection filters. | Not started |
-| FR-064 | Search | Search name, path, extension, type, record ID, and available hashes. | Not started |
-| FR-065 | Persistent selection | Preserve selection across pages, sorting, filters, and session resume. | Not started |
-| FR-066 | Selection bar | Show exact count, estimated/readable size, space, partial count, and conflicts. | Not started |
+| FR-060 | Scale | Virtualize and query backend pages; never send millions of rows to the UI. Native queries return at most 100 rows and the UI retains at most three pages; row virtualization and million-row performance evidence remain absent. | Partial |
+| FR-061 | Columns | Provide configurable evidence, path, size, dates, method, score, validation, and conflict columns. The bounded table exposes fixed path, type, method, size, state, confidence, score and evidence columns; column configuration and dates remain absent. | Partial |
+| FR-062 | Extension filter | Build multi-select extension facets dynamically with counts. Native dynamic extension facets and multi-select filtering are implemented; packaged deleted-file acceptance remains pending. | Implemented-unverified |
+| FR-063 | Other filters | Combine category, quality, method, size/date/path, validation, partial, preview, and selection filters. Kind, confidence, method, state, score range, eligibility and selected-only filters compose natively; date, size and preview filters remain absent. | Partial |
+| FR-064 | Search | Search name, path, extension, type, record ID, and available hashes. Case-insensitive path/name search is native; dedicated type, record-ID and hash search remain absent. | Partial |
+| FR-065 | Persistent selection | Preserve selection across pages, sorting, filters, and session resume. Native selection persists across pages, sorting and filters for one process; durable session resume is absent. | Partial |
+| FR-066 | Selection bar | Show exact count, estimated/readable size, space, partial count, and conflicts. The native summary supplies selected counts, logical bytes, best-effort and conflict counts; readable-byte and destination-space comparison are incomplete. | Partial |
 | FR-067 | Tree and list | Offer coherent tree/list navigation without fabricating parent relationships. | Not started |
 
 ## Details, validation, and preview

@@ -17,6 +17,57 @@ SPEC.loader.exec_module(validator)
 
 ROOT = Path(__file__).resolve().parents[3]
 
+TAURI_AUTHORITY_SOURCE = """\
+ALLOWED_COMMANDS = {
+    "list_storage_sources",
+    "select_scan_folder",
+    "scan_storage_volume",
+    "get_candidate_page",
+    "query_candidate_page",
+    "update_candidate_selection",
+    "select_restore_destination",
+    "create_restore_plan",
+    "start_restore",
+    "get_restore_job",
+    "cancel_restore",
+    "open_restore_destination",
+}
+"""
+
+VALID_TAURI_REGISTRATION = """\
+pub fn run() {
+    tauri::Builder::default().invoke_handler(tauri::generate_handler![
+        storage::list_storage_sources,
+        storage::select_scan_folder,
+        storage::scan_storage_volume,
+        storage::get_candidate_page,
+        storage::query_candidate_page,
+        storage::update_candidate_selection,
+        restore::select_restore_destination,
+        restore::create_restore_plan,
+        restore::start_restore,
+        restore::get_restore_job,
+        restore::cancel_restore,
+        restore::open_restore_destination
+    ]);
+}
+"""
+
+VALID_TAURI_REGISTRATIONS = {
+    "storage::list_storage_sources",
+    "storage::select_scan_folder",
+    "storage::scan_storage_volume",
+    "storage::get_candidate_page",
+    "storage::query_candidate_page",
+    "storage::update_candidate_selection",
+    "restore::select_restore_destination",
+    "restore::create_restore_plan",
+    "restore::start_restore",
+    "restore::get_restore_job",
+    "restore::cancel_restore",
+    "restore::open_restore_destination",
+}
+
 
 class DocumentationValidatorTests(unittest.TestCase):
     def copy_repository_fixture(self, directory: str) -> Path:
@@ -35,6 +86,26 @@ class DocumentationValidatorTests(unittest.TestCase):
                 ),
             )
         )
+
+    def current_product_fixture(
+        self,
+        directory: str,
+        *,
+        documents: dict[str, str] | None = None,
+        registration: str = VALID_TAURI_REGISTRATION,
+    ) -> Path:
+        root = Path(directory) / "repository"
+        authority = root / ".github/scripts/validate_real_only_desktop.py"
+        authority.parent.mkdir(parents=True)
+        authority.write_text(TAURI_AUTHORITY_SOURCE, encoding="utf-8")
+        lib_rs = root / "apps/desktop/src-tauri/src/lib.rs"
+        lib_rs.parent.mkdir(parents=True)
+        lib_rs.write_text(registration, encoding="utf-8")
+        for relative, text in (documents or {}).items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return root
 
     def test_docs_catalog_001_exact_fr_sets(self) -> None:
         text = (
@@ -496,6 +567,397 @@ class DocumentationValidatorTests(unittest.TestCase):
             16,
         )
         self.assertIsNone(validator.adr_master_topic("# ADR without topic\n"))
+
+    def test_docs_current_product_001_rejects_natural_restore_status_claims(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                documents={
+                    "README.md": "The desktop cannot restore data.\n",
+                    "README.pt-BR.md": (
+                        "Nem o desktop nem a CLI restauram dados.\n"
+                    ),
+                    "docs/specs/001-functional-requirements.md": (
+                        "A restauração não está implementada.\n"
+                    ),
+                    "docs/specs/003-domain-model.md": (
+                        "Não é possível abrir o destino da restauração.\n"
+                    ),
+                    "docs/specs/004-architecture.md": (
+                        "Restore progress remains unsupported.\n"
+                    ),
+                    "docs/specs/011-security-and-privacy.md": (
+                        "Restore cancellation remains unsupported.\n"
+                    ),
+                    "docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md": (
+                        "Opening the restore destination remains unsupported.\n"
+                    ),
+                    "docs/risk-register.md": "| Restore | Not available |\n",
+                },
+            )
+            errors: list[str] = []
+            validator.validate_current_product_contract(root, errors)
+
+        for capability in (
+            "restore execution",
+            "restore progress",
+            "restore cancellation",
+            "opening the restore destination",
+        ):
+            self.assertTrue(
+                any(
+                    f"obsolete current-status claim about {capability}" in error
+                    for error in errors
+                ),
+                errors,
+            )
+        for relative in (
+            "docs/specs/001-functional-requirements.md",
+            "docs/specs/003-domain-model.md",
+            "docs/specs/004-architecture.md",
+            "docs/specs/011-security-and-privacy.md",
+            "docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md",
+            "docs/risk-register.md",
+        ):
+            self.assertTrue(
+                any(error.startswith(f"{relative}:") for error in errors),
+                errors,
+            )
+
+    def test_docs_current_product_002_binds_only_contextual_command_counts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                documents={
+                    "README.md": "\n".join(
+                        (
+                            "Run these 6 commands to verify the local gates.",
+                            "The desktop inventory has 6 Tauri commands.",
+                            "Tauri commands: 7.",
+                            "O inventário possui 6 comandos Tauri.",
+                            "Comandos Tauri: sete.",
+                            "The baseline exposed four scan/inventory Tauri commands.",
+                            "The current four-command Tauri surface is closed.",
+                            "Historical baseline: six Tauri commands.",
+                            "The scanner exposes four scan/inventory Tauri commands.",
+                            "",
+                        )
+                    )
+                },
+            )
+            errors: list[str] = []
+            validator.validate_current_product_contract(root, errors)
+
+        count_errors = [
+            error
+            for error in errors
+            if "desktop/Tauri commands, but authoritative inventory has 12" in error
+        ]
+        self.assertEqual(
+            {int(error.split(":", 2)[1]) for error in count_errors},
+            {2, 3, 4, 5, 7, 9},
+            count_errors,
+        )
+
+    def test_docs_current_product_003_allows_explicit_historical_sections(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                documents={
+                    "docs/specs/018-windows-volume-and-folder-scan.md": (
+                        "## Historical baseline\n"
+                        "The inventory had six Tauri commands.\n"
+                        "Restore cancellation is not available.\n"
+                        "| Restore | Not available |\n"
+                        "## Current state\n"
+                        "The current inventory has 12 Tauri commands.\n"
+                        "```text\n"
+                        "SDD-018 baseline WebView\n"
+                        "  -> four scan/inventory Tauri commands\n"
+                        "```\n"
+                        "## Original behavior\n"
+                        "Restore progress is unavailable.\n"
+                        "The inventory had five Tauri commands.\n"
+                    )
+                },
+            )
+            errors: list[str] = []
+            validator.validate_current_product_contract(root, errors)
+
+        self.assertEqual(errors, [])
+
+    def test_docs_current_product_004_does_not_hide_current_comparison_claim(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                documents={
+                    "README.md": (
+                        "Compared with the historical baseline, restore "
+                        "cancellation remains unsupported.\n"
+                    )
+                },
+            )
+            errors: list[str] = []
+
+            validator.validate_current_product_contract(root, errors)
+
+        self.assertTrue(
+            any(
+                error.startswith("README.md:1:")
+                and "obsolete current-status claim about restore cancellation"
+                in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_docs_current_product_005_allows_prior_context_synonyms(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                documents={
+                    "README.md": (
+                        "Prior contract: seven Tauri commands.\n"
+                        "Former implementation: eight Tauri commands.\n"
+                        "Earlier inventory: nine Tauri commands.\n"
+                    ),
+                    "README.pt-BR.md": (
+                        "Inventário anterior: seis comandos Tauri.\n"
+                        "Contrato prévio: sete comandos Tauri.\n"
+                        "Implementação anterior: oito comandos Tauri.\n"
+                    ),
+                    "docs/specs/018-windows-volume-and-folder-scan.md": (
+                        "## Previous behavior\n"
+                        "Restore progress is unavailable.\n"
+                        "## Comportamento anterior\n"
+                        "O cancelamento da restauração está indisponível.\n"
+                    ),
+                },
+            )
+            errors: list[str] = []
+
+            validator.validate_current_product_contract(root, errors)
+
+        self.assertEqual(errors, [])
+
+    def test_docs_current_product_006_inline_history_only_exempts_old_counts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                documents={
+                    "README.md": (
+                        "The former implementation had eight Tauri commands; "
+                        "restore cancellation remains unsupported.\n"
+                    )
+                },
+            )
+            errors: list[str] = []
+
+            validator.validate_current_product_contract(root, errors)
+
+        self.assertFalse(
+            any("documents 8 desktop/Tauri commands" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any(
+                "obsolete current-status claim about restore cancellation" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_docs_current_product_007_qualified_previous_only_exempts_old_count(
+        self,
+    ) -> None:
+        cases = {
+            "exact current inventory": (
+                "The previous six-command scan surface became the 12-command "
+                "Tauri surface.\n",
+                None,
+            ),
+            "wrong current inventory": (
+                "The previous six-command scan surface became the 11-command "
+                "Tauri surface.\n",
+                11,
+            ),
+        }
+        for label, (claim, wrong_count) in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = self.current_product_fixture(
+                    directory,
+                    documents={"README.md": claim},
+                )
+                errors: list[str] = []
+
+                validator.validate_current_product_contract(root, errors)
+
+            count_errors = [
+                error
+                for error in errors
+                if "desktop/Tauri commands, but authoritative inventory has 12"
+                in error
+            ]
+            self.assertFalse(
+                any("documents 6 desktop/Tauri commands" in error for error in errors),
+                errors,
+            )
+            if wrong_count is None:
+                self.assertEqual(count_errors, [])
+            else:
+                self.assertTrue(
+                    any(
+                        f"documents {wrong_count} desktop/Tauri commands" in error
+                        for error in count_errors
+                    ),
+                    count_errors,
+                )
+
+    def test_docs_current_product_008_validates_aggregate_command_inventory(
+        self,
+    ) -> None:
+        cases = {
+            "current ADR wording": (
+                "The existing six result/selection commands and these six restore "
+                "commands are\n"
+                "the complete desktop command inventory.\n",
+                None,
+            ),
+            "wrong current ADR wording": (
+                "The existing five result/selection commands and these six restore "
+                "commands are\n"
+                "the complete desktop command inventory.\n",
+                11,
+            ),
+            "wrong number-first wording": (
+                "Five existing commands plus six restore commands form the complete "
+                "inventory.\n",
+                11,
+            ),
+        }
+        for label, (claim, wrong_count) in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = self.current_product_fixture(
+                    directory,
+                    documents={
+                        "docs/adr/0028-restore-plan-job-and-manifest-lifecycle.md": claim
+                    },
+                )
+                errors: list[str] = []
+
+                validator.validate_current_product_contract(root, errors)
+
+            count_errors = [
+                error
+                for error in errors
+                if "desktop/Tauri commands, but authoritative inventory has 12"
+                in error
+            ]
+            if wrong_count is None:
+                self.assertEqual(count_errors, [])
+            else:
+                self.assertTrue(
+                    any(
+                        f"documents {wrong_count} desktop/Tauri commands" in error
+                        for error in count_errors
+                    ),
+                    count_errors,
+                )
+
+    def test_docs_current_product_009_ignores_rust_comment_and_string_decoys(
+        self,
+    ) -> None:
+        registration = (
+            'const DECOY: &str = r#"generate_handler![evil::string_decoy]"#;\n'
+            "// generate_handler![evil::line_comment_decoy]\n"
+            "/* generate_handler![evil::block_comment_decoy] */\n"
+            + VALID_TAURI_REGISTRATION.replace(
+                "        storage::select_scan_folder,",
+                "        storage::select_scan_folder, /* ], fake::entry, */",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                registration=registration,
+            )
+            errors: list[str] = []
+
+            commands = validator.registered_tauri_commands(root, errors)
+
+        self.assertEqual(commands, VALID_TAURI_REGISTRATIONS)
+        self.assertEqual(errors, [])
+
+    def test_docs_current_product_010_rejects_tauri_module_path_substitution(
+        self,
+    ) -> None:
+        registration = VALID_TAURI_REGISTRATION.replace(
+            "storage::list_storage_sources",
+            "evil::list_storage_sources",
+            1,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.current_product_fixture(
+                directory,
+                registration=registration,
+            )
+            errors: list[str] = []
+
+            validator.validate_current_product_contract(root, errors)
+
+        self.assertTrue(
+            any(
+                "registered desktop command inventory differs from authoritative inventory"
+                in error
+                and "evil::list_storage_sources" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_docs_current_product_011_rejects_malformed_tauri_registrations(
+        self,
+    ) -> None:
+        registrations = {
+            "duplicate": """\
+tauri::generate_handler![
+    storage::list_storage_sources,
+    storage::list_storage_sources
+]
+""",
+            "second macro": """\
+tauri::generate_handler![storage::list_storage_sources]
+tauri::generate_handler![restore::start_restore]
+""",
+            "malformed": """\
+tauri::generate_handler![
+    storage::list_storage_sources,,
+    restore::start_restore
+]
+""",
+        }
+        for label, registration in registrations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = self.current_product_fixture(
+                    directory,
+                    registration=registration,
+                )
+                errors: list[str] = []
+
+                commands = validator.registered_tauri_commands(root, errors)
+
+            self.assertIsNone(commands)
+            self.assertNotEqual(errors, [])
 
     def test_docs_current_tree_001_repository_contract_passes(self) -> None:
         errors, stats = validator.validate_repository(ROOT)

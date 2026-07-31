@@ -86,10 +86,13 @@ replaced by linked executable evidence before the requirement can become
 ## JUST-FR-020-024-SCAN-PREPARATION
 
 - **Requirements:** FR-020, FR-021, FR-022, FR-023, FR-024.
-- **Formal rationale:** the versioned product has no working-folder selection or
-  physical-disk mapping boundary.
-- **Exit criterion:** pass source selection, physical mapping, same-disk block,
-  and system-disk end-to-end tests.
+- **Formal rationale:** mounted-volume selection and fail-closed physical
+  mapping/same-disk rejection now exist for restore, but recognized partition
+  selection, a governed working-folder authority, the post-scan override
+  policy, and complete system-disk explanation/acceptance remain absent.
+- **Exit criterion:** retain the implemented source selection and restore
+  separation evidence, then pass recognized partition, working-folder,
+  post-scan override and system-disk end-to-end tests.
 
 ## JUST-FR-030-COMPONENT-SCANNERS
 

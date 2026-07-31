@@ -3,7 +3,9 @@
 Status: `Partial` — the native transactional engine, destination authority,
 plans, jobs, cancellation, manifest publication, and safe open-destination
 operation are implemented and locally verified. The actionable desktop
-workflow and packaged real-device acceptance remain Tasks 6 and 7.
+workflow is implemented. Packaged-host discovery was observed from the release
+binary, while a governed deleted-file recovery to a separate physical NTFS
+disk remains unverified.
 
 Restore is a destination write operation, never a source mutation.
 
@@ -32,12 +34,15 @@ Restore is a destination write operation, never a source mutation.
 | FR-082 selected folder alone | Implemented-unverified | A selected directory publishes only that empty directory. Historical descendants are never implicit. |
 | FR-083 collisions | Implemented-unverified | Deterministic rename variants and capability-relative no-clobber publication preserve existing files. |
 | FR-084 transaction | Implemented-unverified | Bounded streaming, hash verification, durability journal, protected temporary links, atomic no-clobber publication, and terminal manifest are implemented. Packaged-host acceptance is pending. |
-| FR-085 partial files | Partial | Exact zero-filled ranges, sidecars, policy binding, and manifests are implemented. Explicit desktop consent is Task 6. |
+| FR-085 partial files | Partial | Exact zero-filled ranges, sidecars, policy binding, manifests, and explicit desktop consent are implemented. Truncate/separate-segment policies and validator-based policy advice are absent. |
 | FR-086 destination metadata | Not started | ACL, EFS, ADS, and optional metadata preservation are not implemented or claimed. |
 | FR-087 manifest | Partial | Versioned JSON manifest with hashes, ranges, errors, warnings, and reconciliation status is implemented. Optional CSV is absent and unclaimed. |
 | FR-088 resume | Not started | Jobs are bounded and observable during one process lifetime; durable resume after restart is not implemented. |
 
-The six native restore commands are implemented without exposing paths,
-extents, offsets, handles, disk identities, executables, or recovered bytes to
-the WebView. Task 6 supplies the real desktop controls and native-snapshot-only
-progress. Task 7 supplies packaged-host and safe real-device evidence.
+The six native restore commands, together with six storage/query commands, are
+registered without exposing paths, extents, offsets, handles, disk identities,
+executables, or recovered bytes to the WebView. The desktop controls render
+only native snapshots for selection, planning, progress, cancellation,
+completion and destination opening. The release pair, embedded elevation
+levels and hashes are recorded in the Task 7 evidence; safe real-device
+deleted-file recovery remains a separate acceptance gate.

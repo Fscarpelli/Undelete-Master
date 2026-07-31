@@ -1,6 +1,7 @@
 # SDD-011 — Security and Privacy
 
-Status: Normative; connected-volume controls `Implemented-unverified`
+Status: Normative; connected-volume and transactional-restore controls
+`Implemented-unverified`
 
 ## Protected assets
 
@@ -9,6 +10,8 @@ Status: Normative; connected-volume controls `Implemented-unverified`
 - local paths, device names, pipe names and raw source bytes;
 - administrative privilege and broker process identity;
 - credibility of candidate and folder-membership claims;
+- destination authority, no-clobber publication and recovery-manifest truth;
+- isolation from untrusted recovered content;
 - availability under malformed frames and hostile filesystem metadata;
 - the unelevated desktop and user environment.
 
@@ -83,10 +86,14 @@ path-prefix text is never containment authority.
 
 ### WebView and data minimization
 
-The command registry contains exactly inventory, native-folder selection,
-volume scan and candidate-page operations. Commands accept bounded request IDs
-and opaque IDs only. Tauri capabilities grant no plugin permission; the browser
-runtime fails closed.
+The command registry contains exactly 12 operations: four inventory/folder/
+scan/page commands, two native query/selection commands and six restore
+lifecycle commands. Source, folder, cursor, destination, plan and job
+authority is represented only by opaque IDs. Other inputs are bounded request
+IDs, decimal strings, closed enums and bounded query/selection objects. No
+command accepts a caller path, extent, offset, handle, disk identity,
+executable or recovered bytes. Tauri capabilities grant no broad plugin
+permission; the browser runtime fails closed.
 
 All exposed `u64` values are canonical decimal strings. Native inventory,
 folder authorities, scan sessions, warnings, text and pages are bounded.
@@ -112,10 +119,11 @@ exhaustive when coverage is partial.
 ## Explicitly absent security claims
 
 - no snapshot or chain-of-custody guarantee;
-- no cancellation or hotplug-subscription guarantee;
-- no restore destination containment or preview sandbox;
+- no scan cancellation, scan heartbeat/ETA or hotplug-subscription guarantee;
+- no recovered-content preview sandbox or execution safety guarantee;
 - no whole-physical-disk, unmounted, composite or remote scan authority;
-- no exFAT, carving or recovered-content execution;
+- no production exFAT or multi-format/fragmented carving; the current deep
+  slice is bounded contiguous JPEG only;
 - no proof from unit tests that a hostile real disk is safe;
 - no signed installer, clean-machine or endpoint-vendor approval.
 
@@ -126,10 +134,12 @@ sequence replay, broker lifecycle, read bounds/chunking, source change, mounted
 volume policy, folder identity, namespace ancestry, DTO bounds, pagination,
 privacy and browser fail-closed behavior.
 
-Final same-revision Rust/frontend/static gates, native build and manifest
-inspection, actual Tauri UX/accessibility, remote CI, signing, clean-machine and
-endpoint-security evidence remain pending. No real source scan has been
-executed as validation.
+Same-revision Rust/frontend/static gates, the unsigned native sibling pair,
+extracted execution levels and bounded inventory/Settings Tauri interaction
+are recorded in the Task 7 evidence. No real source scan or deleted-file
+restore has been executed as validation. Broader accessibility, remote CI,
+signing, protected installation, clean-machine and endpoint-security evidence
+remain pending.
 
 Norton deleted one unsigned development executable on 2026-07-29. Its
 classification remains inconclusive and must not be dismissed as a confirmed

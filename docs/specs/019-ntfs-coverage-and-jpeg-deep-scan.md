@@ -551,7 +551,8 @@ generalized evidence merging.
 | Deep-scan progress/cancellation/checkpointing | Not started | UI is honestly indeterminate and states that percentage, ETA and cancellation are absent; required before production readiness. |
 | Fragmented JPEG reconstruction | Not started | Contiguous carving only. |
 | Exact-range metadata corroboration and carving deduplication | Implemented-unverified | Unique exact range may retain metadata identity; ambiguous ownership preserves a separate carving; generalized merge remains absent. |
-| Extraction/restore/preview/repair | Not started | Discovery only; no write or preview surface. |
+| Extraction/restore | Implemented-unverified | SDD-020 adds real native extraction and transactional publication for candidates with usable content plans; governed real-media acceptance remains pending. |
+| Preview/repair | Not started | No recovered-content preview, execution, or repair surface is exposed. |
 | External-corpus and arbitrary real-volume compatibility | Not started | Synthetic component evidence must not be generalized. |
 
 ## 8. Clean-room reference note

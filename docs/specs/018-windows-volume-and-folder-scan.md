@@ -1,7 +1,9 @@
 # SDD-018 — Real Windows Mounted-volume and NTFS Folder-scoped Scan
 
-Status: `Implemented-unverified`; final local, native, package, signing and
-remote gates remain pending.
+Status: `Implemented-unverified`; this is the mounted-volume scan baseline.
+SDD-019 and SDD-020 extend the current product with bounded JPEG carving and
+transactional restore. Local gates and the unsigned release pair are recorded;
+governed real scanning/recovery, signing and remote gates remain pending.
 
 Decision date: 2026-07-29
 Related decision:
@@ -54,26 +56,32 @@ to accept regular image files under ADR-0003.
 - browser fail-closed behavior;
 - English and Brazilian Portuguese presentation.
 
-### Excluded
+### Excluded from the SDD-018 scan increment
 
 - whole-physical-disk or unmounted-partition scans;
 - direct `PhysicalDriveN` open;
 - remote, mapped, redirected, CD-ROM, RAM-disk or composite-volume scans;
 - hotplug subscription or a guarantee that a mutable mounted volume is a
   snapshot;
-- pause, resume, progress percentage, ETA or cooperative cancellation;
-- restore, preview, content execution, session persistence or Explorer launch;
-- carving, repair, exFAT, ReFS, locked-BitLocker key handling or image creation;
+- scan pause, resume, progress percentage, ETA or cooperative cancellation;
+- preview, content execution or session persistence;
+- repair, exFAT, ReFS, locked-BitLocker key handling or image creation;
 - arbitrary paths, device paths, pipe names, offsets or access masks supplied
   by JavaScript;
 - a persistent service or an elevated WebView;
 - signed installer or production-release claim.
 
+Restore and carving were outside SDD-018 itself. They are not absent from the
+current product: SDD-019 adds bounded contiguous-JPEG carving for eligible
+whole-volume NTFS scans, and SDD-020 adds native query/selection and
+transactional restore plus terminal destination-folder opening. Neither
+extension changes the scan-source read-only boundary.
+
 ## 3. Architecture and trust boundaries
 
 ```text
-React WebView (opaque IDs and sanitized display data)
-  -> four allowlisted Tauri commands (asInvoker)
+SDD-018 baseline React WebView (opaque IDs and sanitized display data)
+  -> four scan/inventory Tauri commands (asInvoker)
   -> native inventory / folder authority / scan coordinator
   -> broker client and local current-user named pipe
      (PID/liveness + fixed sibling desktop image)
@@ -86,6 +94,12 @@ broker bytes
   -> namespace classification + candidate adaptation
   -> bounded summary and 100-row pages
 ```
+
+The current registry is the exact 12-command closed surface documented by
+SDD-020: the four SDD-018 baseline operations, two native result
+query/selection operations and six restore operations. This diagram preserves
+the scan/broker branch; restore destination writes stay unelevated and never
+enter the broker.
 
 The broker does not parse partition tables, filesystem metadata, recovered
 names or candidate content. Recovered metadata remains in the unelevated
@@ -260,16 +274,23 @@ calls while retaining the 256-path cap.
 
 ## 8. WebView contract
 
-The Tauri command registry contains exactly:
+The SDD-018 baseline registry contained exactly:
 
 - `list_storage_sources(requestId)`;
 - `select_scan_folder(requestId, volumeId)`;
 - `scan_storage_volume(requestId, volumeId, scopeId?)`;
 - `get_candidate_page(requestId, scanId, cursor?, limit)`.
 
-The production WebView supplies only bounded request IDs and opaque IDs. It
-never supplies or receives a native path, volume GUID, device name, pipe name,
-raw offset or source handle.
+The current registry additionally contains `query_candidate_page`,
+`update_candidate_selection` and the six opaque restore lifecycle commands
+defined by SDD-020, for exactly 12 commands overall. All remain covered by the
+same closed-inventory validators; none accepts source/destination paths,
+extents, offsets, handles, executables or recovered bytes from the WebView.
+
+The production WebView represents every native authority with an opaque ID.
+Its remaining inputs are bounded request IDs, decimal strings, closed enums
+and bounded query/selection objects. It never supplies or receives a native
+path, volume GUID, device name, pipe name, raw offset or source handle.
 
 Contract schema version 1 uses decimal strings for disk/volume sizes, free
 space and candidate counts. Candidate pages require `limit = 100`, use
@@ -496,21 +517,24 @@ unavailable desktop runtime and invokes no native command.
   `apps/desktop/src-tauri/src/storage.rs`.
 - **Status:** `Implemented-unverified`.
 
-### SDD-WIN-009 — Exact four-command UI contract
+### SDD-WIN-009 — Historical four-command scan contract
 
 - **Rationale:** a small typed facade prevents unsupported authority from
   entering the WebView.
 - **Priority:** Must.
 - **Source:** FR-100 through FR-103.
 - **Preconditions:** the Tauri runtime is available.
-- **Behavior:** expose exactly inventory, native-folder selection, volume scan
-  and candidate-page commands; validate schema version 1 and decimal strings.
+- **Behavior:** this increment exposed exactly inventory, native-folder
+  selection, volume scan and candidate-page commands, with schema version 1 and
+  decimal-string validation. SDD-020 subsequently extends the current closed
+  inventory to exactly 12 commands for native query, selection and restore.
 - **Error behavior:** unknown fields, native paths, duplicate IDs, malformed
   decimals or incompatible enums fail closed.
-- **Security implications:** commands accept only bounded request IDs and
-  opaque IDs.
-- **Observability:** Rust registration and TypeScript contract tests enumerate
-  the surface.
+- **Security implications:** native authority is represented only by opaque
+  IDs; remaining inputs are bounded text/decimal values, closed enums and
+  bounded query/selection objects.
+- **Observability:** Rust registration, TypeScript contract tests and the
+  real-only validator enumerate the current closed surface.
 - **Acceptance criteria:** pages contain at most 100 real rows and cursors are
   bound to their scan.
 - **Test IDs:** `DESKTOP-COMMAND-INVENTORY-001`,
@@ -632,10 +656,10 @@ frozen revision:
 
 | Gate | Required evidence | Current disposition |
 | --- | --- | --- |
-| Deterministic Rust/frontend | Required commands and focused broker, folder, namespace and DTO tests | Pending final same-revision run |
-| Static safety | Exact command/opcode/import/access-mask allowlists and CI real-device prohibition | Pending final same-revision run |
-| Native build | Main and broker binaries, hashes, sibling layout and extracted manifests | Pending |
-| Native UX | Actual Tauri window at required sizes; no simulated screen | 150% DPI native/UIA bounds verified; broader matrix pending |
+| Deterministic Rust/frontend | Required commands and focused broker, folder, namespace and DTO tests | Same-revision local gates passed; Task 7 records exact counts |
+| Static safety | Exact command/opcode/import/access-mask allowlists and CI real-device prohibition | Static validators and regression suites passed |
+| Native build | Main and broker binaries, hashes, sibling layout and extracted manifests | Unsigned sibling release pair and embedded execution levels recorded in Task 7 evidence |
+| Native UX | Actual Tauri window at required sizes; no simulated screen | Inventory and Settings keyboard navigation observed; 150% DPI native/UIA bounds previously verified; broader accessibility matrix pending |
 | Real storage inventory | Read-only inventory only; observed source labels must be sanitized | Two supported local NTFS volumes observed; no scan activated |
 | Real source scan | Not required and not executed as part of this increment | No claim |
 | Remote CI | Workflow URL and successful conclusions for pushed revision | Pending |
@@ -662,8 +686,9 @@ A new accepted SDD/ADR is required before adding:
 
 - whole-disk, unmounted-volume, VHD/VHDX or composite-volume authority;
 - folder scope for FAT or another filesystem;
-- cancellation, progress, snapshotting or hotplug guarantees;
+- scan cancellation, scan progress, snapshotting or hotplug guarantees;
 - another protocol opcode, generic device-control or persistent service;
-- restore, preview, carving, exFAT, session persistence or content execution;
+- preview, broader/fragmented carving, exFAT, session persistence or content
+  execution;
 - a path-bearing WebView contract;
 - public distribution without the signing and clean-machine gates.

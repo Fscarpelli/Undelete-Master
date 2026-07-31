@@ -8,8 +8,11 @@ evidências.
 > conectados, analisa um volume montado escolhido pelo usuário e, em NTFS, pode
 > limitar os resultados a uma pasta selecionada. Um modo explícito para o
 > volume NTFS inteiro também executa carving limitado de JPEGs contíguos no
-> espaço comprovadamente livre. A restauração ainda não está implementada. Não
-> use esta pré-versão como único meio para recuperar dados importantes.
+> espaço comprovadamente livre. O workspace de resultados acionáveis e o fluxo
+> transacional de restauração estão implementados e verificados localmente com
+> fixtures, mas a aceitação empacotada em dispositivo real ainda não foi
+> comprovada. Não use esta pré-versão como único meio para recuperar dados
+> importantes.
 
 [English](README.md)
 
@@ -38,6 +41,21 @@ evidências.
   e registra faixa física, SHA-256, versão do validador, cobertura e limites de
   trabalho. O modo nunca se expande silenciosamente para espaço alocado ou
   desconhecido.
+- Workspace de resultados sob autoridade do backend, com busca explícita,
+  facets dinâmicas de extensão, filtros de evidência, ordenação estável, páginas
+  limitadas por cursor e seleção nativa preservada entre páginas, consultas,
+  filtros e ordenações durante o processo atual.
+- Fluxo transacional nativo para restaurar somente candidatos selecionados. Ele
+  exige uma pasta NTFS autorizada em um único disco físico diferente e
+  comprovado, preserva a árvore recuperada, renomeia colisões sem substituir
+  arquivos existentes, lê em blocos limitados e publica um manifesto JSON
+  versionado. A restauração baseada em metadados não depende da extensão do
+  nome quando existe um plano de conteúdo utilizável; isso não torna qualquer
+  candidato recuperável nem amplia o carving além do plugin JPEG implementado.
+- Consentimento explícito para melhor esforço e sidecars com as faixas exatas
+  preenchidas com zeros. Progresso por itens/bytes, cancelamento, contagens
+  terminais e identidade do manifesto vêm do trabalho nativo. A ação final abre
+  somente a pasta do trabalho concluído e nunca executa arquivo recuperado.
 - CLI separada `undelete-master scan-image` para arquivos-imagem locais comuns,
   com JSON sanitizado.
 - Testes determinísticos de fixtures e protocolo. Nenhum teste automatizado
@@ -55,9 +73,15 @@ O desktop não analisa o disco físico inteiro, partição desmontada, volume
 multidisco, compartilhamento de rede, unidade óptica ou RAM disk. O filtro por
 pasta exige NTFS. O carving está limitado a JPEGs contíguos no espaço NTFS
 comprovadamente livre; outros formatos, reconstrução fragmentada, análise RAW
-de sistema danificado e carving de pasta ainda não existem. Restauração,
-prévia, sessões persistentes, pausa/retomada, cancelamento e instalador assinado
-também não estão implementados. Consulte as
+de sistema danificado e carving de pasta ainda não existem. A restauração não
+pode usar o disco de origem, o caminho original nem um destino não NTFS ou sem
+identidade comprovada, e não preserva ACLs, EFS, alternate data streams ou
+compressão transparente. Prévia, execução de conteúdo, sessões persistentes,
+retomada após reiniciar, layouts alternativos de destino,
+progresso/ETA/cancelamento da análise e instalador assinado também estão
+ausentes. Trabalhos de restauração possuem progresso nativo e cancelamento
+cooperativo; esses controles não se aplicam à análise de metadados ou profunda.
+Consulte as
 [limitações conhecidas](docs/specs/015-known-limitations.md).
 
 ## Segurança
@@ -71,6 +95,9 @@ também não estão implementados. Consulte as
 - Nunca execute conteúdo recuperado.
 - Mantenha o desktop sem elevação. A elevação fica restrita ao broker somente
   leitura, iniciado quando o usuário solicita expressamente a análise.
+- Restaure somente para a autoridade de destino retida em outro disco físico
+  comprovado; as escritas ficam no componente de restauração sem elevação,
+  nunca no broker da origem.
 
 Consulte [SECURITY.md](SECURITY.md) e [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -128,8 +155,13 @@ volumes montados conectados descrito acima e não oferece seleção de imagem.
 - [Especificação mestre](UNDELETE_MASTER_CODEX_MASTER_SPEC.md)
 - [SDD-018 — volumes e pastas no Windows](docs/specs/018-windows-volume-and-folder-scan.md)
 - [SDD-019 — cobertura NTFS e análise JPEG profunda limitada](docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md)
+- [SDD-020 — resultados acionáveis e restauração transacional](docs/specs/020-actionable-results-and-transactional-restore.md)
 - [ADR-0023 — broker somente leitura e escopo de pasta](docs/adr/0023-windows-read-only-broker-and-folder-scope.md)
 - [ADR-0024 — MFT em streaming e carving limitado](docs/adr/0024-streaming-mft-and-bounded-content-carving.md)
+- [ADR-0025 — consulta nativa e autoridade da seleção](docs/adr/0025-native-result-query-and-selection-authority.md)
+- [ADR-0026 — planos limitados de conteúdo e recuperação parcial](docs/adr/0026-bounded-content-plan-and-partial-recovery.md)
+- [ADR-0027 — capacidade de destino e separação de discos](docs/adr/0027-destination-capability-and-disk-separation.md)
+- [ADR-0028 — ciclo de vida de plano, trabalho e manifesto](docs/adr/0028-restore-plan-job-and-manifest-lifecycle.md)
 - [Requisitos funcionais](docs/specs/001-functional-requirements.md)
 - [Arquitetura](docs/specs/004-architecture.md)
 - [Segurança e privacidade](docs/specs/011-security-and-privacy.md)
