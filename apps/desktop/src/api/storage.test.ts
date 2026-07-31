@@ -145,6 +145,7 @@ const completedRestoreJob = {
       "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
     completionStatus: "completedDurable",
     publishedItems: "3",
+    partialItems: "1",
   },
 };
 
@@ -343,6 +344,41 @@ describe("real storage contracts", () => {
         manifest: {
           ...completedRestoreJob.manifest,
           publishedItems: "2",
+        },
+      }),
+    ).toThrow(StorageContractError);
+  });
+
+  it("requires a bounded actual partial-item count in terminal manifests", () => {
+    expect(parseRestoreJobSnapshot(completedRestoreJob).manifest).toMatchObject({
+      publishedItems: "3",
+      partialItems: "1",
+    });
+
+    const { partialItems, ...manifestWithoutPartialItems } =
+      completedRestoreJob.manifest;
+    expect(partialItems).toBe("1");
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        manifest: manifestWithoutPartialItems,
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        manifest: {
+          ...completedRestoreJob.manifest,
+          partialItems: "not-decimal",
+        },
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        manifest: {
+          ...completedRestoreJob.manifest,
+          partialItems: "4",
         },
       }),
     ).toThrow(StorageContractError);

@@ -498,6 +498,7 @@ function completedRestoreJobResponse(jobId: string) {
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       completionStatus: "completedDurable",
       publishedItems: "3",
+      partialItems: "1",
     },
   };
 }

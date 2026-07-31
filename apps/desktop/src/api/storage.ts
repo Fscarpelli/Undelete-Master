@@ -203,6 +203,7 @@ export interface RestoreManifestSummary {
   manifestSha256: string;
   completionStatus: RestoreCompletionStatus;
   publishedItems: string;
+  partialItems: string;
 }
 
 export interface RestoreJobSnapshot {
@@ -1189,6 +1190,7 @@ function restoreManifestSummary(
     "manifestSha256",
     "completionStatus",
     "publishedItems",
+    "partialItems",
   ]);
   const manifest = {
     manifestSha256: sha256(item.manifestSha256),
@@ -1197,8 +1199,12 @@ function restoreManifestSummary(
       "needsReconciliation",
     ]),
     publishedItems: decimal(item.publishedItems),
+    partialItems: decimal(item.partialItems),
   };
-  if (BigInt(manifest.publishedItems) > itemsCompleted) {
+  if (
+    BigInt(manifest.publishedItems) > itemsCompleted ||
+    BigInt(manifest.partialItems) > BigInt(manifest.publishedItems)
+  ) {
     throw new StorageContractError();
   }
   return manifest;
@@ -1239,7 +1245,8 @@ function sameRestoreManifest(
       right !== null &&
       left.manifestSha256 === right.manifestSha256 &&
       left.completionStatus === right.completionStatus &&
-      left.publishedItems === right.publishedItems)
+      left.publishedItems === right.publishedItems &&
+      left.partialItems === right.partialItems)
   );
 }
 
