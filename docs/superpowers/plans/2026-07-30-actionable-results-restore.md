@@ -27,8 +27,8 @@ NTFS/FAT fixtures, SHA-256 verification.
   in-repository images and temporary destination directories only.
 - Keep the desktop unelevated and all source reads behind `SourceReader`.
 - Destination writes must stay outside the elevated broker.
-- No production mock providers, fake candidates, simulated progress, TODOs,
-  stubs, or placeholder controls.
+- No production mock providers, fake candidates, simulated progress,
+  unfinished implementations, or placeholder controls.
 - All parser, range, count, and byte arithmetic is checked and bounded.
 - Never overwrite an existing destination entry.
 - Recovered files are untrusted. Never preview or execute them.

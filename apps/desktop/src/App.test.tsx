@@ -9,7 +9,8 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type {
-  CandidatePage,
+  CandidateQueryPage,
+  CandidateSelectionSummary,
   FolderSelection,
   ScanSummary,
   StorageInventory,
@@ -115,15 +116,36 @@ const summary: ScanSummary = {
   warnings: ["The active volume changed while it was being read."],
 };
 
-const firstPage: CandidatePage = {
-  schemaVersion: 2,
+const emptySelection: CandidateSelectionSummary = {
+  selectionRevision: "0",
+  selectedCandidates: "0",
+  selectedFiles: "0",
+  selectedDirectories: "0",
+  selectedLogicalBytes: "0",
+  bestEffortCandidates: "0",
+  conflictedCandidates: "0",
+  ineligibleCandidates: "0",
+  matchingSelectedCandidates: "0",
+};
+
+const firstPage: CandidateQueryPage = {
+  schemaVersion: 1,
   scanId: "scan-1",
+  queryId: "query-1",
+  queryRevision: "0",
   cursor: null,
   nextCursor: "cursor-2",
+  filteredTotal: "2",
+  extensionFacets: [
+    { extension: "pdf", count: "1" },
+    { extension: "txt", count: "1" },
+  ],
+  selection: emptySelection,
   candidates: [
     {
-      id: "candidate-1",
+      id: "1",
       displayPath: "Documents/deleted invoice.pdf",
+      extension: "pdf",
       kind: "file",
       state: "likelyComplete",
       sizeBytes: "18446744073709551615",
@@ -131,22 +153,28 @@ const firstPage: CandidatePage = {
       recoverabilityScore: 88,
       pathState: "reconstructed",
       method: "ntfsMetadata",
-      contentSha256: null,
-      validator: null,
+      eligibility: "complete",
+      selected: false,
       warnings: [],
     },
   ],
 };
 
-const secondPage: CandidatePage = {
-  schemaVersion: 2,
+const secondPage: CandidateQueryPage = {
+  schemaVersion: 1,
   scanId: "scan-1",
+  queryId: "query-1",
+  queryRevision: "0",
   cursor: "cursor-2",
   nextCursor: null,
+  filteredTotal: "2",
+  extensionFacets: firstPage.extensionFacets,
+  selection: emptySelection,
   candidates: [
     {
-      id: "candidate-2",
+      id: "2",
       displayPath: "Documents/old notes.txt",
+      extension: "txt",
       kind: "file",
       state: "partial",
       sizeBytes: "4096",
@@ -154,8 +182,8 @@ const secondPage: CandidatePage = {
       recoverabilityScore: 54,
       pathState: "incomplete",
       method: "ntfsMetadata",
-      contentSha256: null,
-      validator: null,
+      eligibility: "bestEffort",
+      selected: false,
       warnings: ["Some data extents could not be proven."],
     },
   ],
@@ -194,7 +222,7 @@ function mockRealFlow() {
                 }
               : summary,
           );
-        case "get_candidate_page":
+        case "query_candidate_page":
           return Promise.resolve(
             payload.cursor === null ? firstPage : secondPage,
           );
@@ -309,7 +337,7 @@ describe("real connected-storage desktop workflow", () => {
     });
   });
 
-  it("WIN-REAL-SCAN-001 scans the selected volume/folder then renders the first real page", async () => {
+  it("DESKTOP-RESULT-CONTROLS-022 scans the selected scope then renders the first bounded actionable page", async () => {
     mockRealFlow();
     render(<App />);
 
@@ -352,15 +380,28 @@ describe("real connected-storage desktop workflow", () => {
       scopeId: "scope-documents",
       mode: "metadata",
     });
-    expect(tauri.invoke).toHaveBeenCalledWith("get_candidate_page", {
-      requestId: expect.stringMatching(/^page-[0-9a-z-]+$/u),
-      scanId: "scan-1",
-      cursor: null,
-      limit: 100,
-    });
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      "query_candidate_page",
+      expect.objectContaining({
+        requestId: expect.stringMatching(/^result-[0-9a-z-]+$/u),
+        scanId: "scan-1",
+        query: expect.objectContaining({
+          revision: "0",
+          search: "",
+        }),
+        sort: {
+          field: "recoverabilityScore",
+          direction: "descending",
+        },
+        cursor: null,
+      }),
+    );
+    expect(
+      tauri.invoke.mock.calls.some((call) => call[0] === "get_candidate_page"),
+    ).toBe(false);
   });
 
-  it("WIN-CANDIDATE-PAGINATION-001 appends bounded pages without losing prior rows", async () => {
+  it("WIN-CANDIDATE-PAGINATION-001 renders one bounded native cursor page at a time", async () => {
     mockRealFlow();
     render(<App />);
 
@@ -374,21 +415,20 @@ describe("real connected-storage desktop workflow", () => {
       await screen.findByText("Documents/deleted invoice.pdf"),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Carregar mais" }));
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
 
     expect(await screen.findByText("Documents/old notes.txt")).toBeTruthy();
-    expect(screen.getByText("Documents/deleted invoice.pdf")).toBeTruthy();
+    expect(screen.queryByText("Documents/deleted invoice.pdf")).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "Carregar mais" }),
-    ).toBeNull();
+      screen.getByRole("button", { name: "Próxima página" }),
+    ).toBeDisabled();
     const pageCalls = tauri.invoke.mock.calls.filter(
-      (call) => call[0] === "get_candidate_page",
+      (call) => call[0] === "query_candidate_page",
     );
     expect(pageCalls).toHaveLength(2);
     expect(pageCalls[1]?.[1]).toMatchObject({
       scanId: "scan-1",
       cursor: "cursor-2",
-      limit: 100,
     });
   });
 
@@ -533,6 +573,32 @@ describe("real connected-storage desktop workflow", () => {
         }),
       ).toHaveFocus();
     });
+  });
+
+  it("DESKTOP-HELP-RESTORE-BOUNDARY-001 describes the real restore path without execution claims", async () => {
+    tauri.isTauri.mockReturnValue(false);
+    render(<App />);
+    const navigation = screen.getByRole("navigation", {
+      name: "Undelete Master",
+    });
+    const helpButton = within(navigation).getByRole("button", {
+      name: "Ajuda",
+    });
+
+    fireEvent.click(helpButton);
+
+    expect(
+      await screen.findByRole("heading", { name: "Recuperação segura" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/pasta NTFS em outro disco físico/u),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/nunca abre, pré-visualiza ou executa/u),
+    ).toBeTruthy();
+    expect(document.body.textContent).not.toContain(
+      "Esta versão não restaura, abre ou pré-visualiza arquivos recuperados",
+    );
   });
 });
 

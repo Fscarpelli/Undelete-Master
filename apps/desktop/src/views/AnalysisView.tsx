@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  File,
   Folder,
   FolderOpen,
   HardDrive,
@@ -11,20 +10,18 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import type {
   BusType,
-  CandidateKind,
-  CandidateRow,
-  CandidateState,
-  DiscoveryMethod,
-  MetadataConfidence,
   ScanMode,
   StorageDisk,
   StorageVolume,
 } from "../api/storage";
+import { ResultsWorkspace } from "../components/results/ResultsWorkspace";
 import { formatBytes, formatInteger } from "../format";
 import type { Locale, MessageKey } from "../i18n/messages";
+import type { RestoreWorkflowController } from "../state/restoreWorkflow";
+import type { ResultsWorkspaceController } from "../state/resultsWorkspace";
 import type { StorageWorkflowState } from "../state/storageScan";
 
 export interface AnalysisViewProps {
@@ -38,8 +35,10 @@ export interface AnalysisViewProps {
   clearFolder: () => void;
   selectScanMode: (mode: ScanMode) => void;
   startScan: () => Promise<void>;
-  loadMore: () => Promise<void>;
   resetScan: () => void;
+  results: ResultsWorkspaceController;
+  restore: RestoreWorkflowController;
+  recoverButtonRef: RefObject<HTMLButtonElement>;
 }
 
 const busLabels: Record<BusType, MessageKey> = {
@@ -50,39 +49,6 @@ const busLabels: Record<BusType, MessageKey> = {
   usb: "bus.usb",
   nvme: "bus.nvme",
   virtual: "bus.virtual",
-};
-
-const kindLabels: Record<CandidateKind, MessageKey> = {
-  file: "candidate.kind.file",
-  directory: "candidate.kind.directory",
-};
-
-const stateLabels: Record<CandidateState, MessageKey> = {
-  exactEvidence: "candidate.state.exactEvidence",
-  likelyComplete: "candidate.state.likelyComplete",
-  completeUnvalidated: "candidate.state.completeUnvalidated",
-  structurallyValid: "candidate.state.structurallyValid",
-  partial: "candidate.state.partial",
-  conflicted: "candidate.state.conflicted",
-  readError: "candidate.state.readError",
-  zeroedOrTrimmed: "candidate.state.zeroedOrTrimmed",
-  overwritten: "candidate.state.overwritten",
-  metadataOnly: "candidate.state.metadataOnly",
-  unknown: "candidate.state.unknown",
-};
-
-const confidenceLabels: Record<MetadataConfidence, MessageKey> = {
-  high: "candidate.confidence.high",
-  medium: "candidate.confidence.medium",
-  low: "candidate.confidence.low",
-};
-
-const methodLabels: Record<DiscoveryMethod, MessageKey> = {
-  ntfsMetadata: "candidate.method.ntfsMetadata",
-  fatMetadata: "candidate.method.fatMetadata",
-  exfatMetadata: "candidate.method.exfatMetadata",
-  carving: "candidate.method.carving",
-  recycleBin: "candidate.method.recycleBin",
 };
 
 function selectedVolume(state: StorageWorkflowState): StorageVolume | null {
@@ -615,86 +581,6 @@ function ScanPending({
   );
 }
 
-function CandidateRowView({
-  candidate,
-  locale,
-  t,
-}: {
-  candidate: CandidateRow;
-  locale: Locale;
-  t: (key: MessageKey) => string;
-}) {
-  const KindIcon = candidate.kind === "directory" ? Folder : File;
-  return (
-    <tr>
-      <th scope="row">
-        <div className="candidate-path">
-          <KindIcon size={17} aria-hidden="true" />
-          <div>
-            <bdi dir="auto">{candidate.displayPath}</bdi>
-            {candidate.warnings.length === 0 ? null : (
-              <ul className="candidate-warnings">
-                {candidate.warnings.map((warning, index) => (
-                  <li key={`${candidate.id}-${index.toString()}`}>{warning}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      </th>
-      <td>{t(kindLabels[candidate.kind])}</td>
-      <td>
-        <span>{t(methodLabels[candidate.method])}</span>
-        {candidate.method === "carving" ||
-        candidate.contentSha256 === null ? null : (
-          <span className="cell-secondary">
-            {t("candidate.method.jpegCorroborated")}
-          </span>
-        )}
-      </td>
-      <td className="number-cell">
-        <span>{formatInteger(candidate.sizeBytes, locale)} B</span>
-        <span className="cell-secondary">
-          {formatBytes(candidate.sizeBytes, locale)}
-        </span>
-      </td>
-      <td>
-        <span className="candidate-state" data-state={candidate.state}>
-          {t(stateLabels[candidate.state])}
-        </span>
-      </td>
-      <td>{t(confidenceLabels[candidate.metadataConfidence])}</td>
-      <td className="number-cell">
-        {candidate.recoverabilityScore === null
-          ? "—"
-          : `${formatInteger(BigInt(candidate.recoverabilityScore), locale)}/100`}
-      </td>
-      <td>
-        {candidate.contentSha256 === null &&
-        candidate.validator === null ? (
-          <span className="cell-secondary">
-            {t("analysis.results.noContentEvidence")}
-          </span>
-        ) : (
-          <div className="candidate-evidence">
-            {candidate.validator === null ? null : (
-              <span>
-                {t("analysis.results.validator")}:{" "}
-                <bdi dir="auto">{candidate.validator}</bdi>
-              </span>
-            )}
-            {candidate.contentSha256 === null ? null : (
-              <code>
-                <bdi dir="ltr">{candidate.contentSha256}</bdi>
-              </code>
-            )}
-          </div>
-        )}
-      </td>
-    </tr>
-  );
-}
-
 function ResultWarnings({
   warnings,
   t,
@@ -730,11 +616,19 @@ function ResultsView({
   state,
   locale,
   t,
-  loadMore,
+  results,
+  restore,
+  recoverButtonRef,
   resetScan,
 }: Pick<
   AnalysisViewProps,
-  "state" | "locale" | "t" | "loadMore" | "resetScan"
+  | "state"
+  | "locale"
+  | "t"
+  | "results"
+  | "restore"
+  | "recoverButtonRef"
+  | "resetScan"
 >) {
   const summary = state.summary;
   const heading = useRef<HTMLHeadingElement>(null);
@@ -749,9 +643,6 @@ function ResultsView({
   if (summary === null) {
     return null;
   }
-
-  const firstPageError =
-    state.candidates.length === 0 ? state.pageError : null;
 
   return (
     <div className="report">
@@ -917,98 +808,17 @@ function ResultsView({
         </section>
       ) : null}
 
-      <section className="report-section">
-        <div className="section-heading">
-          <div>
-            <h2 id="candidate-heading">{t("analysis.results.table")}</h2>
-            <p>
-              {formatInteger(BigInt(state.candidates.length), locale)}{" "}
-              {t("analysis.results.loaded")}
-            </p>
-          </div>
-        </div>
-        <p className="result-caveat" role="note">
-          {t("analysis.results.caveat")}
-        </p>
-        {firstPageError !== null ? (
-          <div className="table-action-error error-message" role="alert">
-            <span>{t(`error.${firstPageError}`)}</span>
-          </div>
-        ) : state.candidates.length === 0 ? (
-          <div className="quiet-state">
-            {t(
-              summary.scanMode === "deepJpeg"
-                ? summary.scanStatus === "partial"
-                  ? "analysis.results.noCandidatesDeepPartial"
-                  : "analysis.results.noCandidatesDeepComplete"
-                : summary.scanStatus === "partial"
-                  ? "analysis.results.noCandidatesPartial"
-                  : "analysis.results.noCandidatesComplete",
-            )}
-          </div>
-        ) : (
-          <div
-            className="table-scroll"
-            role="region"
-            aria-label={t("analysis.results.table")}
-            tabIndex={0}
-          >
-            <table className="candidate-table">
-              <caption className="visually-hidden">
-                {t("analysis.results.table")}
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">{t("analysis.results.path")}</th>
-                  <th scope="col">{t("analysis.results.kind")}</th>
-                  <th scope="col">{t("analysis.results.method")}</th>
-                  <th scope="col">{t("analysis.results.size")}</th>
-                  <th scope="col">{t("analysis.results.state")}</th>
-                  <th scope="col">{t("analysis.results.confidence")}</th>
-                  <th scope="col">{t("analysis.results.score")}</th>
-                  <th scope="col">{t("analysis.results.evidence")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {state.candidates.map((candidate) => (
-                  <CandidateRowView
-                    key={candidate.id}
-                    candidate={candidate}
-                    locale={locale}
-                    t={t}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {state.pageError === null || firstPageError !== null ? null : (
-          <div className="table-action-error error-message" role="alert">
-            <span>{t(`error.${state.pageError}`)}</span>
-          </div>
-        )}
-        {state.nextCursor === null ? null : (
-          <div className="table-actions">
-            <button
-              type="button"
-              className="button"
-              disabled={state.pagePhase === "loading"}
-              onClick={() => void loadMore()}
-            >
-              {state.pagePhase === "loading" ? (
-                <LoaderCircle
-                  className="spinner"
-                  size={17}
-                  aria-hidden="true"
-                />
-              ) : null}
-              {state.pagePhase === "loading"
-                ? t("analysis.results.loadingMore")
-                : t("analysis.results.loadMore")}
-            </button>
-          </div>
-        )}
-      </section>
+      <p className="result-caveat" role="note">
+        {t("analysis.results.caveat")}
+      </p>
+      <ResultsWorkspace
+        summary={summary}
+        controller={results}
+        restore={restore}
+        locale={locale}
+        t={t}
+        recoverButtonRef={recoverButtonRef}
+      />
 
       <ResultWarnings warnings={summary.warnings} t={t} />
     </div>

@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  CandidateRow,
   FolderSelection,
   ScanMode,
   ScanSummary,
   StorageInventory,
 } from "../api/storage";
 import {
-  getCandidatePage,
   listStorageSources,
   normalizeStorageError,
   scanStorageVolume,
@@ -24,7 +22,6 @@ type InventoryPhase =
   | "error";
 type FolderPhase = "idle" | "selecting";
 type ScanPhase = "idle" | "scanning" | "success" | "error";
-type PagePhase = "idle" | "loading" | "error";
 
 export interface StorageWorkflowState {
   inventoryPhase: InventoryPhase;
@@ -38,15 +35,11 @@ export interface StorageWorkflowState {
   scanPhase: ScanPhase;
   scanError: StorageErrorCode | null;
   summary: ScanSummary | null;
-  candidates: CandidateRow[];
-  nextCursor: string | null;
-  pagePhase: PagePhase;
-  pageError: StorageErrorCode | null;
 }
 
 let requestSequence = 0;
 
-function nextRequestId(kind: "inventory" | "folder" | "scan" | "page") {
+function nextRequestId(kind: "inventory" | "folder" | "scan") {
   requestSequence += 1;
   return `${kind}-${requestSequence.toString(36)}`;
 }
@@ -64,10 +57,6 @@ function initialState(runtimeAvailable: boolean): StorageWorkflowState {
     scanPhase: "idle",
     scanError: null,
     summary: null,
-    candidates: [],
-    nextCursor: null,
-    pagePhase: "idle",
-    pageError: null,
   };
 }
 
@@ -82,22 +71,12 @@ function inventoryContainsVolume(
 
 function clearScan(): Pick<
   StorageWorkflowState,
-  | "scanPhase"
-  | "scanError"
-  | "summary"
-  | "candidates"
-  | "nextCursor"
-  | "pagePhase"
-  | "pageError"
+  "scanPhase" | "scanError" | "summary"
 > {
   return {
     scanPhase: "idle",
     scanError: null,
     summary: null,
-    candidates: [],
-    nextCursor: null,
-    pagePhase: "idle",
-    pageError: null,
   };
 }
 
@@ -112,7 +91,6 @@ export function useStorageScan(runtimeAvailable: boolean) {
   const inventoryInFlight = useRef(false);
   const folderInFlight = useRef(false);
   const scanInFlight = useRef(false);
-  const pageInFlight = useRef(false);
   const inventoryGeneration = useRef(0);
   const scanGeneration = useRef(0);
 
@@ -192,7 +170,6 @@ export function useStorageScan(runtimeAvailable: boolean) {
       inventoryInFlight.current = false;
       folderInFlight.current = false;
       scanInFlight.current = false;
-      pageInFlight.current = false;
     };
   }, [refreshInventory, runtimeAvailable]);
 
@@ -357,22 +334,16 @@ export function useStorageScan(runtimeAvailable: boolean) {
         ? current.folderSelection.scopeId
         : null;
     const scanMode = current.scanMode;
-    let completedSummary: ScanSummary | null = null;
-
     setState((latest) => ({
       ...latest,
       scanPhase: "scanning",
       scanError: null,
       summary: null,
-      candidates: [],
-      nextCursor: null,
-      pagePhase: "idle",
-      pageError: null,
       folderCancelled: false,
     }));
 
     try {
-      completedSummary = await scanStorageVolume(
+      const completedSummary = await scanStorageVolume(
         nextRequestId("scan"),
         generation,
         volumeId,
@@ -393,29 +364,11 @@ export function useStorageScan(runtimeAvailable: boolean) {
         throw new StorageCommandError("REPORT_INCOMPATIBLE");
       }
 
-      const page = await getCandidatePage(
-        nextRequestId("page"),
-        completedSummary.scanId,
-        null,
-      );
-      if (
-        !mounted.current ||
-        scanGeneration.current !== requestGeneration
-      ) {
-        return;
-      }
-      if (page.scanId !== completedSummary.scanId || page.cursor !== null) {
-        throw new StorageCommandError("REPORT_INCOMPATIBLE");
-      }
       setState((latest) => ({
         ...latest,
         scanPhase: "success",
         scanError: null,
         summary: completedSummary,
-        candidates: page.candidates,
-        nextCursor: page.nextCursor,
-        pagePhase: "idle",
-        pageError: null,
       }));
     } catch (error) {
       if (
@@ -423,24 +376,12 @@ export function useStorageScan(runtimeAvailable: boolean) {
         scanGeneration.current === requestGeneration
       ) {
         const code = normalizeStorageError(error).code;
-        if (completedSummary === null) {
-          setState((latest) => ({
-            ...latest,
-            scanPhase: "error",
-            scanError: code,
-          }));
-        } else {
-          setState((latest) => ({
-            ...latest,
-            scanPhase: "success",
-            scanError: null,
-            summary: completedSummary,
-            candidates: [],
-            nextCursor: null,
-            pagePhase: "error",
-            pageError: code,
-          }));
-        }
+        setState((latest) => ({
+          ...latest,
+          scanPhase: "error",
+          scanError: code,
+          summary: null,
+        }));
       }
     } finally {
       if (scanGeneration.current === requestGeneration) {
@@ -449,74 +390,8 @@ export function useStorageScan(runtimeAvailable: boolean) {
     }
   }, []);
 
-  const loadMore = useCallback(async () => {
-    const current = stateRef.current;
-    const summary = current.summary;
-    const cursor = current.nextCursor;
-    if (
-      current.scanPhase !== "success" ||
-      summary === null ||
-      cursor === null ||
-      pageInFlight.current
-    ) {
-      return;
-    }
-
-    pageInFlight.current = true;
-    const requestGeneration = scanGeneration.current;
-    setState((latest) => ({
-      ...latest,
-      pagePhase: "loading",
-      pageError: null,
-    }));
-
-    try {
-      const page = await getCandidatePage(
-        nextRequestId("page"),
-        summary.scanId,
-        cursor,
-      );
-      if (
-        !mounted.current ||
-        scanGeneration.current !== requestGeneration ||
-        stateRef.current.summary?.scanId !== summary.scanId
-      ) {
-        return;
-      }
-      if (page.scanId !== summary.scanId || page.cursor !== cursor) {
-        throw new StorageCommandError("REPORT_INCOMPATIBLE");
-      }
-      const existingIds = new Set(
-        stateRef.current.candidates.map((candidate) => candidate.id),
-      );
-      if (page.candidates.some((candidate) => existingIds.has(candidate.id))) {
-        throw new StorageCommandError("REPORT_INCOMPATIBLE");
-      }
-      setState((latest) => ({
-        ...latest,
-        candidates: [...latest.candidates, ...page.candidates],
-        nextCursor: page.nextCursor,
-        pagePhase: "idle",
-        pageError: null,
-      }));
-    } catch (error) {
-      if (
-        mounted.current &&
-        scanGeneration.current === requestGeneration
-      ) {
-        setState((latest) => ({
-          ...latest,
-          pagePhase: "error",
-          pageError: normalizeStorageError(error).code,
-        }));
-      }
-    } finally {
-      pageInFlight.current = false;
-    }
-  }, []);
-
   const resetScan = useCallback(() => {
-    if (scanInFlight.current || pageInFlight.current) {
+    if (scanInFlight.current) {
       return;
     }
     setState((current) => ({
@@ -533,7 +408,6 @@ export function useStorageScan(runtimeAvailable: boolean) {
     clearFolder,
     selectScanMode,
     startScan,
-    loadMore,
     resetScan,
   };
 }

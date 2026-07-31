@@ -64,7 +64,14 @@ button, or locally invented selection authority.
   it stops at terminal state and unmount. Cancel invokes the native idempotent
   command once. Poll, cancel, and open-destination commands are serialized in
   a restore-operation queue so a late poll cannot overwrite a newer snapshot.
+- `RESTORE_JOB_NOT_FOUND` and incompatible job snapshots stop polling
+  immediately as tracking loss. `RESTORE_INTERNAL` receives at most three
+  consecutive polling attempts and the budget resets after a valid snapshot.
+  Exhaustion retains only the last native snapshot, reports the outcome as
+  unknown, and permits closing without claiming or causing cancellation.
 - Completion offers only the fixed native `open_restore_destination` action.
+  A failed open attempt preserves the completed job and manifest and remains
+  retryable.
   The WebView never receives source/destination paths, extents, offsets, disk
   numbers, handles, access masks, control codes, executables, or recovered
   bytes, and never previews or executes recovered content.

@@ -6,6 +6,7 @@ import {
   getRestoreJob,
   listStorageSources,
   normalizeRestoreError,
+  normalizeStorageError,
   openRestoreDestination,
   queryCandidatePage,
   scanStorageVolume,
@@ -394,6 +395,15 @@ describe("native connected-storage commands", () => {
     expect(
       normalizeRestoreError({ code: "RESTORE_JOB_LIMIT" }),
     ).toMatchObject({ code: "RESTORE_JOB_LIMIT" });
+  });
+
+  it.each([
+    "RESULT_QUERY_INVALID",
+    "RESULT_CURSOR_STALE",
+    "RESULT_SELECTION_STALE",
+    "RESULT_SELECTION_INVALID",
+  ] as const)("preserves the closed native result error %s", (code) => {
+    expect(normalizeStorageError({ code })).toMatchObject({ code });
   });
 });
 

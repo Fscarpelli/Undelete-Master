@@ -1,11 +1,149 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
+import type {
+  ActionableCandidateRow,
+  CandidateQueryPage,
+  CandidateSelectionSummary,
+} from "../api/storage";
 import type { MessageKey } from "../i18n/messages";
+import type { RestoreWorkflowController } from "../state/restoreWorkflow";
+import type { ResultsWorkspaceController } from "../state/resultsWorkspace";
 import type { StorageWorkflowState } from "../state/storageScan";
 import { AnalysisView } from "./AnalysisView";
 
 const t = (key: MessageKey) => key;
 const noOp = async () => undefined;
+
+const selection: CandidateSelectionSummary = {
+  selectionRevision: "0",
+  selectedCandidates: "0",
+  selectedFiles: "0",
+  selectedDirectories: "0",
+  selectedLogicalBytes: "0",
+  bestEffortCandidates: "0",
+  conflictedCandidates: "0",
+  ineligibleCandidates: "0",
+  matchingSelectedCandidates: "0",
+};
+
+const actionableCandidate: ActionableCandidateRow = {
+  id: "candidate-1",
+  displayPath: "Evidence/שלום.txt",
+  extension: "txt",
+  kind: "file",
+  state: "partial",
+  sizeBytes: "4096",
+  metadataConfidence: "medium",
+  recoverabilityScore: 61,
+  pathState: "incomplete",
+  method: "ntfsMetadata",
+  eligibility: "bestEffort",
+  selected: false,
+  warnings: [],
+};
+
+function candidatePage(
+  overrides: Partial<CandidateQueryPage> = {},
+): CandidateQueryPage {
+  return {
+    schemaVersion: 1,
+    scanId: "scan-1",
+    queryId: "query-1",
+    queryRevision: "0",
+    cursor: null,
+    nextCursor: null,
+    filteredTotal: "1",
+    extensionFacets: [{ extension: "txt", count: "1" }],
+    selection,
+    candidates: [actionableCandidate],
+    ...overrides,
+  };
+}
+
+function resultsController(
+  overrides: Partial<ResultsWorkspaceController["state"]> = {},
+): ResultsWorkspaceController {
+  const page = candidatePage();
+  return {
+    state: {
+      phase: "ready",
+      scanId: "scan-1",
+      query: {
+        revision: "0",
+        search: "",
+        extensions: [],
+        kinds: [],
+        metadataConfidences: [],
+        methods: [],
+        states: [],
+        minRecoverabilityScore: null,
+        maxRecoverabilityScore: null,
+        eligibilities: [],
+        selectedOnly: false,
+      },
+      sort: {
+        field: "recoverabilityScore",
+        direction: "descending",
+      },
+      requestRevision: 0,
+      currentPageIndex: 0,
+      cursorHistory: [null],
+      pageCache: [],
+      page,
+      selection,
+      extensionFacets: page.extensionFacets,
+      selectionPhase: "idle",
+      error: null,
+      ...overrides,
+    },
+    submitSearch: vi.fn(),
+    toggleExtension: vi.fn(),
+    toggleKind: vi.fn(),
+    toggleMetadataConfidence: vi.fn(),
+    toggleMethod: vi.fn(),
+    toggleCandidateState: vi.fn(),
+    toggleEligibility: vi.fn(),
+    setScoreRange: vi.fn(),
+    setSelectedOnly: vi.fn(),
+    sortBy: vi.fn(),
+    nextPage: vi.fn(),
+    previousPage: vi.fn(),
+    retry: vi.fn(),
+    setCandidateSelected: vi.fn(),
+    selectAllMatching: vi.fn(),
+    clearMatching: vi.fn(),
+    clearAll: vi.fn(),
+  };
+}
+
+function restoreController(): RestoreWorkflowController {
+  return {
+    state: {
+      phase: "idle",
+      scanId: "scan-1",
+      selectionRevision: "0",
+      destination: null,
+      collisionPolicy: "rename",
+      partialFilePolicy: "completeOnly",
+      bestEffortConsent: false,
+      plan: null,
+      job: null,
+      operationPhase: "idle",
+      progressBasisPoints: 0,
+      cancelRequested: false,
+      error: null,
+    },
+    chooseDestination: vi.fn(),
+    setPartialFilePolicy: vi.fn(),
+    setBestEffortConsent: vi.fn(),
+    createPlan: vi.fn(),
+    start: vi.fn(),
+    cancel: vi.fn(),
+    openDestination: vi.fn(),
+    close: vi.fn(),
+  };
+}
 
 const inventoryState: StorageWorkflowState = {
   inventoryPhase: "ready",
@@ -44,10 +182,6 @@ const inventoryState: StorageWorkflowState = {
   scanPhase: "idle",
   scanError: null,
   summary: null,
-  candidates: [],
-  nextCursor: null,
-  pagePhase: "idle",
-  pageError: null,
 };
 
 const resultState: StorageWorkflowState = {
@@ -82,22 +216,6 @@ const resultState: StorageWorkflowState = {
     jpegCarveCoverage: null,
     warnings: ["The source changed during the scan."],
   },
-  candidates: [
-    {
-      id: "candidate-1",
-      displayPath: "Evidence/שלום.txt",
-      kind: "file",
-      state: "partial",
-      sizeBytes: "4096",
-      metadataConfidence: "medium",
-      recoverabilityScore: 61,
-      pathState: "incomplete",
-      method: "ntfsMetadata",
-      contentSha256: null,
-      validator: null,
-      warnings: [],
-    },
-  ],
 };
 
 function renderAnalysis(
@@ -115,8 +233,10 @@ function renderAnalysis(
     clearFolder: vi.fn(),
     selectScanMode: vi.fn(),
     startScan: noOp,
-    loadMore: noOp,
     resetScan: vi.fn(),
+    results: resultsController(),
+    restore: restoreController(),
+    recoverButtonRef: createRef<HTMLButtonElement>(),
     ...overrides,
   };
   render(<AnalysisView {...props} />);
@@ -150,13 +270,12 @@ describe("connected-storage analysis view", () => {
     renderAnalysis(resultState);
 
     expect(screen.getByText("analysis.results.caveat")).toBeTruthy();
-    const region = screen.getByRole("region", {
+    const table = screen.getByRole("table", {
       name: "analysis.results.table",
     });
+    const region = table.closest(".results-table-scroll");
+    expect(region).not.toBeNull();
     expect(region).toHaveAttribute("tabindex", "0");
-    const table = within(region).getByRole("table", {
-      name: "analysis.results.table",
-    });
     const path = within(table).getByText("Evidence/שלום.txt");
     expect(path.closest("bdi")).toHaveAttribute("dir", "auto");
   });
@@ -240,44 +359,53 @@ describe("connected-storage analysis view", () => {
     expect(screen.getByText("analysis.mode.ntfsBlocked")).toBeTruthy();
   });
 
-  it("WIN-DEEP-PROVENANCE-001 shows bounded coverage and candidate evidence", () => {
-    const hash =
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    renderAnalysis({
-      ...resultState,
-      folderSelection: null,
-      summary: {
-        ...resultState.summary!,
-        scope: { kind: "volume", label: "Evidence (E:)" },
-        scanMode: "deepJpeg",
-        jpegCarveCoverage: {
-          bytesRequested: "1048576",
-          bytesScanned: "524288",
-          signaturesAttempted: "1000",
-          validationBytesRead: "262144",
-          partial: true,
-          readErrorCount: "0",
-          candidateLimitReached: false,
-          candidateByteLimitHits: "0",
-          signatureAttemptLimitReached: true,
-          validationByteLimitReached: false,
-          rejectedSignatures: "4",
-          truncatedSignatures: "1",
-          regionsSubmitted: "2",
-          regionLimitReached: false,
-        },
-      },
+  it("WIN-DEEP-PROVENANCE-001 shows bounded coverage and the actionable carving method", () => {
+    const deepPage = candidatePage({
+      extensionFacets: [{ extension: "jpg", count: "1" }],
       candidates: [
         {
-          ...resultState.candidates[0]!,
+          ...actionableCandidate,
           displayPath: "carved-0000000000100000.jpg",
+          extension: "jpg",
           state: "structurallyValid",
-          method: "ntfsMetadata",
-          contentSha256: hash,
-          validator: "jpeg-structural-v1",
+          method: "carving",
+          eligibility: "complete",
         },
       ],
     });
+    renderAnalysis(
+      {
+        ...resultState,
+        folderSelection: null,
+        summary: {
+          ...resultState.summary!,
+          scope: { kind: "volume", label: "Evidence (E:)" },
+          scanMode: "deepJpeg",
+          jpegCarveCoverage: {
+            bytesRequested: "1048576",
+            bytesScanned: "524288",
+            signaturesAttempted: "1000",
+            validationBytesRead: "262144",
+            partial: true,
+            readErrorCount: "0",
+            candidateLimitReached: false,
+            candidateByteLimitHits: "0",
+            signatureAttemptLimitReached: true,
+            validationByteLimitReached: false,
+            rejectedSignatures: "4",
+            truncatedSignatures: "1",
+            regionsSubmitted: "2",
+            regionLimitReached: false,
+          },
+        },
+      },
+      {
+        results: resultsController({
+          page: deepPage,
+          extensionFacets: deepPage.extensionFacets,
+        }),
+      },
+    );
 
     expect(screen.getByText("512 KiB / 1 MiB")).toBeTruthy();
     expect(
@@ -293,44 +421,57 @@ describe("connected-storage analysis view", () => {
         /analysis\.results\.jpegSignatureLimit.*analysis\.results\.limitReached/u,
       ),
     ).toBeTruthy();
-    expect(screen.getByText("candidate.method.ntfsMetadata")).toBeTruthy();
+    const table = screen.getByRole("table", {
+      name: "analysis.results.table",
+    });
+    expect(within(table).getByText("candidate.method.carving")).toBeTruthy();
     expect(
-      screen.getByText("candidate.method.jpegCorroborated"),
+      within(table).getByText("carved-0000000000100000.jpg"),
     ).toBeTruthy();
-    expect(screen.getByText(hash)).toBeTruthy();
-    expect(screen.getByText("jpeg-structural-v1")).toBeTruthy();
   });
 
   it("WIN-DEEP-ZERO-001 keeps a zero bounded deep result non-exhaustive", () => {
-    renderAnalysis({
-      ...resultState,
-      folderSelection: null,
+    const emptyPage = candidatePage({
+      filteredTotal: "0",
+      extensionFacets: [],
       candidates: [],
-      summary: {
-        ...resultState.summary!,
-        scope: { kind: "volume", label: "Evidence (E:)" },
-        scanMode: "deepJpeg",
-        totalCandidates: "0",
-        matchedCandidates: "0",
-        unknownCandidates: "0",
-        jpegCarveCoverage: {
-          bytesRequested: "1048576",
-          bytesScanned: "524288",
-          signaturesAttempted: "8",
-          validationBytesRead: "4096",
-          partial: true,
-          readErrorCount: "0",
-          candidateLimitReached: false,
-          candidateByteLimitHits: "0",
-          signatureAttemptLimitReached: false,
-          validationByteLimitReached: false,
-          rejectedSignatures: "4",
-          truncatedSignatures: "1",
-          regionsSubmitted: "2",
-          regionLimitReached: false,
+    });
+    renderAnalysis(
+      {
+        ...resultState,
+        folderSelection: null,
+        summary: {
+          ...resultState.summary!,
+          scope: { kind: "volume", label: "Evidence (E:)" },
+          scanMode: "deepJpeg",
+          totalCandidates: "0",
+          matchedCandidates: "0",
+          unknownCandidates: "0",
+          jpegCarveCoverage: {
+            bytesRequested: "1048576",
+            bytesScanned: "524288",
+            signaturesAttempted: "8",
+            validationBytesRead: "4096",
+            partial: true,
+            readErrorCount: "0",
+            candidateLimitReached: false,
+            candidateByteLimitHits: "0",
+            signatureAttemptLimitReached: false,
+            validationByteLimitReached: false,
+            rejectedSignatures: "4",
+            truncatedSignatures: "1",
+            regionsSubmitted: "2",
+            regionLimitReached: false,
+          },
         },
       },
-    });
+      {
+        results: resultsController({
+          page: emptyPage,
+          extensionFacets: [],
+        }),
+      },
+    );
 
     expect(
       screen.getByText("analysis.results.noCandidatesDeepPartial"),
@@ -338,16 +479,28 @@ describe("connected-storage analysis view", () => {
   });
 
   it("WIN-ZERO-PARTIAL-001 states that a zero partial metadata result is not exhaustive", () => {
-    renderAnalysis({
-      ...resultState,
+    const emptyPage = candidatePage({
+      filteredTotal: "0",
+      extensionFacets: [],
       candidates: [],
-      summary: {
-        ...resultState.summary!,
-        totalCandidates: "0",
-        matchedCandidates: "0",
-        unknownCandidates: "0",
-      },
     });
+    renderAnalysis(
+      {
+        ...resultState,
+        summary: {
+          ...resultState.summary!,
+          totalCandidates: "0",
+          matchedCandidates: "0",
+          unknownCandidates: "0",
+        },
+      },
+      {
+        results: resultsController({
+          page: emptyPage,
+          extensionFacets: [],
+        }),
+      },
+    );
 
     expect(
       screen.getByText("analysis.results.noCandidatesPartial"),
@@ -355,17 +508,29 @@ describe("connected-storage analysis view", () => {
   });
 
   it("WIN-ZERO-COMPLETE-001 never equates zero metadata candidates with zero recoverable bytes", () => {
-    renderAnalysis({
-      ...resultState,
+    const emptyPage = candidatePage({
+      filteredTotal: "0",
+      extensionFacets: [],
       candidates: [],
-      summary: {
-        ...resultState.summary!,
-        scanStatus: "complete",
-        totalCandidates: "0",
-        matchedCandidates: "0",
-        unknownCandidates: "0",
-      },
     });
+    renderAnalysis(
+      {
+        ...resultState,
+        summary: {
+          ...resultState.summary!,
+          scanStatus: "complete",
+          totalCandidates: "0",
+          matchedCandidates: "0",
+          unknownCandidates: "0",
+        },
+      },
+      {
+        results: resultsController({
+          page: emptyPage,
+          extensionFacets: [],
+        }),
+      },
+    );
 
     expect(
       screen.getByText("analysis.results.noCandidatesComplete"),
@@ -373,11 +538,13 @@ describe("connected-storage analysis view", () => {
   });
 
   it("WIN-FIRST-PAGE-ERROR-001 gives the page failure precedence over a zero-result message", () => {
-    renderAnalysis({
-      ...resultState,
-      candidates: [],
-      pagePhase: "error",
-      pageError: "REPORT_INCOMPATIBLE",
+    renderAnalysis(resultState, {
+      results: resultsController({
+        phase: "error",
+        page: null,
+        extensionFacets: [],
+        error: "REPORT_INCOMPATIBLE",
+      }),
     });
 
     expect(screen.getByRole("alert")).toHaveTextContent(

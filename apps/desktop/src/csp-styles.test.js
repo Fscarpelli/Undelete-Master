@@ -36,6 +36,28 @@ describe("CSP-compatible stylesheet loading", () => {
     expect(forcedColors).toContain("box-shadow: none;");
   });
 
+  it("DESKTOP-RESULTS-BOUNDED-STYLES-001 keeps results, selection, and restore progress CSP-safe", () => {
+    expect(stylesheetSource).toContain(".results-layout");
+    expect(stylesheetSource).toContain(".results-table-region");
+    expect(stylesheetSource).toContain(".results-selection-bar");
+    expect(stylesheetSource).toContain(".restore-dialog");
+    expect(stylesheetSource).toContain(".restore-progress");
+    expect(stylesheetSource).toContain("position: sticky;");
+    expect(stylesheetSource).toContain("progress");
+    expect(stylesheetSource).not.toContain("style=");
+  });
+
+  it("DESKTOP-RESULTS-FORCED-COLORS-001 preserves result and dialog boundaries in Windows high contrast", () => {
+    const forcedColors =
+      stylesheetSource.match(
+        /@media\s*\(forced-colors:\s*active\)\s*\{([\s\S]*)\}\s*$/u,
+      )?.[1] ?? "";
+
+    expect(forcedColors).toContain(".results-selection-bar");
+    expect(forcedColors).toContain(".restore-dialog");
+    expect(forcedColors).toContain(".results-table-region");
+  });
+
   it("DESKTOP-DEV-CSP-001 keeps production free of WebSocket sources", () => {
     const productionCsp = tauriConfig.app.security.csp;
     const developmentCsp = tauriConfig.app.security.devCsp;

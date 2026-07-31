@@ -168,6 +168,122 @@ const ptBR = {
   "candidate.confidence.medium": "Média",
   "candidate.confidence.low": "Baixa",
 
+  "results.search.label": "Pesquisar resultados",
+  "results.search.placeholder": "Nome, caminho ou extensão",
+  "results.search.submit": "Pesquisar",
+  "results.filters.title": "Filtros",
+  "results.filters.extensions": "Extensões",
+  "results.filters.extensionSearch": "Filtrar extensões",
+  "results.filters.selectedExtensions": "Extensões selecionadas",
+  "results.filters.removeExtension": "Remover extensão",
+  "results.filters.noExtension": "Sem extensão",
+  "results.filters.kinds": "Tipos",
+  "results.filters.confidences": "Confiança dos metadados",
+  "results.filters.methods": "Métodos",
+  "results.filters.states": "Estados",
+  "results.filters.eligibilities": "Possibilidade de recuperação",
+  "results.filters.score": "Pontuação de recuperação",
+  "results.filters.minScore": "Pontuação mínima",
+  "results.filters.maxScore": "Pontuação máxima",
+  "results.filters.selectedOnly": "Mostrar somente selecionados",
+  "results.eligibility.complete": "Recuperação completa",
+  "results.eligibility.bestEffort": "Recuperação parcial",
+  "results.eligibility.ineligible": "Não recuperável",
+  "results.summary.filtered": "Resultados filtrados",
+  "results.summary.visible": "Visíveis nesta página",
+  "results.summary.loading": "Carregando resultados reais",
+  "results.summary.empty": "Nenhum resultado corresponde aos filtros atuais.",
+  "results.summary.error": "Não foi possível carregar os resultados.",
+  "results.summary.retry": "Tentar novamente",
+  "results.table.extension": "Extensão",
+  "results.table.eligibility": "Recuperação",
+  "results.table.warnings": "Avisos",
+  "results.selection.filtered": "Selecionar todos os resultados filtrados",
+  "results.selection.row": "Selecionar este resultado",
+  "results.selection.summary": "Resumo da seleção",
+  "results.selection.files": "Arquivos",
+  "results.selection.directories": "Pastas",
+  "results.selection.bytes": "Bytes lógicos",
+  "results.selection.bestEffort": "Itens parciais",
+  "results.selection.conflicts": "Itens conflitantes",
+  "results.selection.ineligible": "Itens não recuperáveis",
+  "results.selection.clearMatching": "Limpar correspondentes",
+  "results.selection.clearAll": "Limpar seleção",
+  "results.selection.recover": "Recuperar selecionados",
+  "results.selection.ineligibleBlocked":
+    "Remova os itens não recuperáveis antes de continuar.",
+  "results.selection.updating": "Atualizando seleção",
+  "results.pagination.previous": "Página anterior",
+  "results.pagination.next": "Próxima página",
+  "results.pagination.page": "Página",
+
+  "restore.dialog.title": "Recuperar itens selecionados",
+  "restore.dialog.close": "Fechar recuperação",
+  "restore.destination.selecting": "Aguardando a seleção do Windows",
+  "restore.destination.title": "Destino seguro",
+  "restore.destination.selected": "Destino autorizado",
+  "restore.destination.volume": "Volume",
+  "restore.destination.filesystem": "Sistema de arquivos",
+  "restore.destination.freeBytes": "Espaço livre",
+  "restore.destination.change": "Escolher outro destino",
+  "restore.setup.title": "Escolha onde recuperar",
+  "restore.setup.body":
+    "Use uma pasta NTFS em outro disco físico. O destino é validado novamente antes de qualquer arquivo ser criado.",
+  "restore.setup.review": "Revisar plano",
+  "restore.policy.title": "Política para arquivos incompletos",
+  "restore.policy.completeOnly": "Somente itens completos",
+  "restore.policy.completeOnlyBody":
+    "Remova da seleção todos os itens que exigem recuperação parcial ou escolha “Preencher lacunas com zeros e gerar mapa” para continuar.",
+  "restore.policy.zeroFillAndMap": "Preencher lacunas com zeros e gerar mapa",
+  "restore.policy.zeroFillAndMapBody":
+    "Recupera o que foi lido, preenche intervalos indisponíveis com zeros e registra exatamente esses intervalos no arquivo lateral.",
+  "restore.policy.consent":
+    "Entendo que arquivos parciais podem não abrir ou representar o conteúdo original.",
+  "restore.review.title": "Revise antes de iniciar",
+  "restore.review.destination": "Destino",
+  "restore.review.items": "Itens",
+  "restore.review.files": "Arquivos",
+  "restore.review.directories": "Pastas",
+  "restore.review.bytes": "Bytes lógicos",
+  "restore.review.bestEffort": "Itens parciais",
+  "restore.review.collision": "Colisões",
+  "restore.review.collisionRename":
+    "Renomear sem substituir arquivos existentes",
+  "restore.review.digest": "Identidade do plano",
+  "restore.review.start": "Iniciar recuperação",
+  "restore.progress.title": "Recuperação em andamento",
+  "restore.progress.label": "Progresso da recuperação",
+  "restore.progress.items": "Itens processados",
+  "restore.progress.bytes": "Bytes gravados",
+  "restore.progress.completed": "Concluídos",
+  "restore.progress.failed": "Falharam",
+  "restore.progress.cancelled": "Cancelados",
+  "restore.progress.current": "Item atual",
+  "restore.progress.cancelling": "Cancelamento solicitado",
+  "restore.progress.cancel": "Cancelar recuperação",
+  "restore.progress.warnings": "Avisos",
+  "restore.finish.title": "Resultado da recuperação",
+  "restore.finish.status": "Estado final",
+  "restore.finish.completed": "Trabalho concluído",
+  "restore.finish.failed": "Trabalho encerrado com falha",
+  "restore.finish.cancelled": "Trabalho cancelado",
+  "restore.finish.itemsCompleted": "Itens concluídos",
+  "restore.finish.itemsFailed": "Itens com falha",
+  "restore.finish.itemsCancelled": "Itens cancelados",
+  "restore.finish.published": "Itens publicados",
+  "restore.finish.partial": "Itens parciais",
+  "restore.finish.manifestSha256": "SHA-256 do manifesto",
+  "restore.finish.reconciliation": "Reconciliação do manifesto",
+  "restore.finish.durable": "Concluído e persistido",
+  "restore.finish.needsReconciliation": "Requer reconciliação",
+  "restore.finish.openDestination": "Abrir pasta de destino",
+  "restore.finish.done": "Concluir",
+  "restore.error.title": "Não foi possível continuar a recuperação",
+  "restore.error.retryDestination": "Escolher novamente o destino",
+  "restore.trackingLost.title": "Resultado da recuperação desconhecido",
+  "restore.trackingLost.body":
+    "Não foi possível confirmar o resultado da recuperação. O último estado conhecido pode estar desatualizado. Fechar esta janela não cancela o trabalho nem confirma que ele terminou.",
+
   "settings.title": "Configurações",
   "settings.subtitle":
     "Estas preferências alteram o aplicativo imediatamente e ficam salvas apenas neste dispositivo.",
@@ -189,13 +305,16 @@ const ptBR = {
     "Como a análise de volumes funciona e quais limites protegem seus dados.",
   "help.available.title": "Disponível agora",
   "help.available.body":
-    "Detecta volumes locais montados reais sem elevação, permite uma pasta opcional no modo de metadados e oferece busca profunda por JPEGs contíguos em regiões NTFS comprovadamente livres. Os resultados e a cobertura são reais e limitados.",
+    "Detecta volumes locais montados reais sem elevação, permite uma pasta opcional no modo de metadados, oferece busca profunda limitada para JPEG e apresenta resultados acionáveis com seleção, filtros, ordenação e paginação.",
   "help.safety.title": "Somente leitura, sempre",
   "help.safety.body":
     "A interface consulta o inventário sem elevação. Ao iniciar a análise, o broker solicitado pelo UAC apenas revalida a identidade escolhida e faz leituras limitadas; ele não grava, bloqueia, desmonta, formata ou executa o conteúdo encontrado.",
-  "help.unavailable.title": "Ainda não disponível",
+  "help.restore.title": "Recuperação segura",
+  "help.restore.body":
+    "Os itens selecionados podem ser recuperados somente para uma pasta NTFS em outro disco físico, depois que o destino for autorizado. O aplicativo renomeia colisões sem substituir arquivos existentes; itens incompletos exigem consentimento explícito para preencher lacunas com zeros e gerar o mapa lateral.",
+  "help.unavailable.title": "Limites atuais",
   "help.unavailable.body":
-    "Esta versão não restaura, abre ou pré-visualiza arquivos recuperados e não lida com volumes bloqueados, remotos ou layouts compostos cuja identidade não possa ser comprovada.",
+    "A recuperação não grava na origem e não restaura no caminho original nem no mesmo disco físico. O aplicativo nunca abre, pré-visualiza ou executa conteúdo recuperado e ainda não retoma trabalhos depois de fechado nem aceita destinos bloqueados, remotos ou de identidade incerta.",
   "help.interpretation.title": "Pasta e ancestralidade",
   "help.interpretation.body":
     "A pasta é um filtro aplicado após a análise de metadados do volume. Correspondências têm ancestralidade comprovada; candidatos desconhecidos ficam separados e nunca são apresentados como pertencentes à pasta.",
@@ -228,6 +347,46 @@ const ptBR = {
     "A estrutura do volume está danificada ou não pôde ser analisada com segurança.",
   "error.SCAN_INTERNAL":
     "O scanner encontrou uma falha interna. Nenhum resultado inventado foi exibido.",
+  "error.RESULT_QUERY_INVALID":
+    "Os filtros ou a ordenação não puderam ser aplicados com segurança.",
+  "error.RESULT_CURSOR_STALE":
+    "Esta página expirou porque os resultados mudaram. A consulta foi reiniciada.",
+  "error.RESULT_SELECTION_STALE":
+    "A seleção mudou em outra operação. Revise os itens antes de continuar.",
+  "error.RESULT_SELECTION_INVALID":
+    "A seleção recebida não corresponde aos resultados desta análise.",
+  "error.RESTORE_DESTINATION_INVALID":
+    "Escolha uma pasta NTFS local, gravável e autorizada em outro disco físico.",
+  "error.RESTORE_DESTINATION_LIMIT":
+    "Há seleções de destino demais em andamento. Aguarde e tente novamente.",
+  "error.RESTORE_DESTINATION_EXPIRED":
+    "A autorização do destino expirou. Escolha a pasta novamente.",
+  "error.RESTORE_DIFFERENT_DISK_REQUIRED":
+    "O destino precisa estar em um disco físico diferente da origem.",
+  "error.RESTORE_SOURCE_CHANGED":
+    "A identidade da origem mudou. Faça uma nova análise antes de recuperar.",
+  "error.RESTORE_SELECTION_STALE":
+    "A seleção mudou depois que o plano foi criado. Revise e gere outro plano.",
+  "error.RESTORE_SELECTION_EMPTY":
+    "Selecione ao menos um item recuperável.",
+  "error.RESTORE_ITEM_INELIGIBLE":
+    "A seleção contém itens que não podem ser recuperados.",
+  "error.RESTORE_PARTIAL_POLICY_REQUIRED":
+    "Confirme explicitamente a política para arquivos incompletos.",
+  "error.RESTORE_PLAN_INVALID":
+    "O plano de recuperação não é válido para esta análise.",
+  "error.RESTORE_PLAN_LIMIT":
+    "Há planos de recuperação demais em andamento. Aguarde e tente novamente.",
+  "error.RESTORE_PLAN_EXPIRED":
+    "O plano expirou. Revise a seleção e crie outro plano.",
+  "error.RESTORE_JOB_LIMIT":
+    "Já há um trabalho de recuperação ativo. Aguarde sua conclusão.",
+  "error.RESTORE_JOB_NOT_FOUND":
+    "O trabalho de recuperação não está mais disponível.",
+  "error.RESTORE_JOB_NOT_COMPLETE":
+    "A pasta só pode ser aberta depois que o trabalho terminar.",
+  "error.RESTORE_INTERNAL":
+    "Uma falha interna impediu confirmar ou concluir a operação solicitada.",
   "error.REPORT_INCOMPATIBLE":
     "O aplicativo recebeu uma resposta incompatível e não exibiu dados potencialmente incorretos.",
 } as const;
@@ -400,6 +559,122 @@ const enUS: Record<MessageKey, string> = {
   "candidate.confidence.medium": "Medium",
   "candidate.confidence.low": "Low",
 
+  "results.search.label": "Search results",
+  "results.search.placeholder": "Name, path, or extension",
+  "results.search.submit": "Search",
+  "results.filters.title": "Filters",
+  "results.filters.extensions": "Extensions",
+  "results.filters.extensionSearch": "Filter extensions",
+  "results.filters.selectedExtensions": "Selected extensions",
+  "results.filters.removeExtension": "Remove extension",
+  "results.filters.noExtension": "No extension",
+  "results.filters.kinds": "Kinds",
+  "results.filters.confidences": "Metadata confidence",
+  "results.filters.methods": "Methods",
+  "results.filters.states": "States",
+  "results.filters.eligibilities": "Recovery eligibility",
+  "results.filters.score": "Recovery score",
+  "results.filters.minScore": "Minimum score",
+  "results.filters.maxScore": "Maximum score",
+  "results.filters.selectedOnly": "Show selected only",
+  "results.eligibility.complete": "Complete recovery",
+  "results.eligibility.bestEffort": "Partial recovery",
+  "results.eligibility.ineligible": "Ineligible",
+  "results.summary.filtered": "Filtered results",
+  "results.summary.visible": "Visible on this page",
+  "results.summary.loading": "Loading real results",
+  "results.summary.empty": "No result matches the current filters.",
+  "results.summary.error": "Results could not be loaded.",
+  "results.summary.retry": "Try again",
+  "results.table.extension": "Extension",
+  "results.table.eligibility": "Recovery",
+  "results.table.warnings": "Warnings",
+  "results.selection.filtered": "Select all filtered results",
+  "results.selection.row": "Select this result",
+  "results.selection.summary": "Selection summary",
+  "results.selection.files": "Files",
+  "results.selection.directories": "Folders",
+  "results.selection.bytes": "Logical bytes",
+  "results.selection.bestEffort": "Partial items",
+  "results.selection.conflicts": "Conflicted items",
+  "results.selection.ineligible": "Ineligible items",
+  "results.selection.clearMatching": "Clear matching",
+  "results.selection.clearAll": "Clear selection",
+  "results.selection.recover": "Recover selected",
+  "results.selection.ineligibleBlocked":
+    "Remove ineligible items before continuing.",
+  "results.selection.updating": "Updating selection",
+  "results.pagination.previous": "Previous page",
+  "results.pagination.next": "Next page",
+  "results.pagination.page": "Page",
+
+  "restore.dialog.title": "Recover selected items",
+  "restore.dialog.close": "Close recovery",
+  "restore.destination.selecting": "Waiting for the Windows selection",
+  "restore.destination.title": "Safe destination",
+  "restore.destination.selected": "Authorized destination",
+  "restore.destination.volume": "Volume",
+  "restore.destination.filesystem": "File system",
+  "restore.destination.freeBytes": "Free space",
+  "restore.destination.change": "Choose another destination",
+  "restore.setup.title": "Choose where to recover",
+  "restore.setup.body":
+    "Use an NTFS folder on another physical disk. The destination is revalidated before any file is created.",
+  "restore.setup.review": "Review plan",
+  "restore.policy.title": "Incomplete-file policy",
+  "restore.policy.completeOnly": "Complete items only",
+  "restore.policy.completeOnlyBody":
+    "Remove every best-effort item from the selection, or choose “Fill gaps with zeros and create a map” to continue.",
+  "restore.policy.zeroFillAndMap": "Fill gaps with zeros and create a map",
+  "restore.policy.zeroFillAndMapBody":
+    "Recovers readable content, fills unavailable ranges with zeros, and records those exact ranges in the sidecar file.",
+  "restore.policy.consent":
+    "I understand that partial files might not open or represent the original content.",
+  "restore.review.title": "Review before starting",
+  "restore.review.destination": "Destination",
+  "restore.review.items": "Items",
+  "restore.review.files": "Files",
+  "restore.review.directories": "Folders",
+  "restore.review.bytes": "Logical bytes",
+  "restore.review.bestEffort": "Partial items",
+  "restore.review.collision": "Collisions",
+  "restore.review.collisionRename":
+    "Rename without replacing existing files",
+  "restore.review.digest": "Plan identity",
+  "restore.review.start": "Start recovery",
+  "restore.progress.title": "Recovery in progress",
+  "restore.progress.label": "Recovery progress",
+  "restore.progress.items": "Items processed",
+  "restore.progress.bytes": "Bytes written",
+  "restore.progress.completed": "Completed",
+  "restore.progress.failed": "Failed",
+  "restore.progress.cancelled": "Cancelled",
+  "restore.progress.current": "Current item",
+  "restore.progress.cancelling": "Cancellation requested",
+  "restore.progress.cancel": "Cancel recovery",
+  "restore.progress.warnings": "Warnings",
+  "restore.finish.title": "Recovery result",
+  "restore.finish.status": "Final status",
+  "restore.finish.completed": "Job completed",
+  "restore.finish.failed": "Job ended with a failure",
+  "restore.finish.cancelled": "Job cancelled",
+  "restore.finish.itemsCompleted": "Completed items",
+  "restore.finish.itemsFailed": "Failed items",
+  "restore.finish.itemsCancelled": "Cancelled items",
+  "restore.finish.published": "Published items",
+  "restore.finish.partial": "Partial items",
+  "restore.finish.manifestSha256": "Manifest SHA-256",
+  "restore.finish.reconciliation": "Manifest reconciliation",
+  "restore.finish.durable": "Completed and persisted",
+  "restore.finish.needsReconciliation": "Needs reconciliation",
+  "restore.finish.openDestination": "Open destination folder",
+  "restore.finish.done": "Done",
+  "restore.error.title": "Recovery could not continue",
+  "restore.error.retryDestination": "Choose the destination again",
+  "restore.trackingLost.title": "Recovery outcome unknown",
+  "restore.trackingLost.body":
+    "The recovery outcome could not be confirmed. The last known state may be stale. Closing this dialog does not cancel the job or confirm that it finished.",
+
   "settings.title": "Settings",
   "settings.subtitle":
     "These preferences change the application immediately and are stored only on this device.",
@@ -421,13 +696,16 @@ const enUS: Record<MessageKey, string> = {
     "How volume scanning works and which boundaries protect your data.",
   "help.available.title": "Available now",
   "help.available.body":
-    "Detects real mounted local volumes without elevation, accepts an optional folder in metadata mode, and offers a deep search for contiguous JPEGs in proven-free NTFS regions. Results and coverage are real and bounded.",
+    "Detects real mounted local volumes without elevation, accepts an optional folder in metadata mode, offers a bounded deep JPEG search, and presents actionable results with selection, filters, sorting, and pagination.",
   "help.safety.title": "Always read-only",
   "help.safety.body":
     "The interface queries inventory without elevation. When a scan starts, the UAC broker only revalidates the selected identity and performs bounded reads; it does not write, lock, dismount, format, or execute discovered content.",
-  "help.unavailable.title": "Not available yet",
+  "help.restore.title": "Safe recovery",
+  "help.restore.body":
+    "Selected items can be recovered only to an authorized NTFS folder on another physical disk. The application renames collisions without replacing existing files; incomplete items require explicit consent to fill unavailable ranges with zeros and produce the sidecar map.",
+  "help.unavailable.title": "Current limits",
   "help.unavailable.body":
-    "This version does not restore, open, or preview recovered files, and does not handle locked, remote, or composite volumes whose identity cannot be proven.",
+    "Recovery never writes to the source and does not restore to the original path or the same physical disk. The application never opens, previews, or executes recovered content, cannot resume jobs after it closes, and rejects locked, remote, or uncertain-identity destinations.",
   "help.interpretation.title": "Folder scope and ancestry",
   "help.interpretation.body":
     "A folder is a filter applied after the volume metadata scan. Matches have proven ancestry; unknown candidates stay separate and are never presented as belonging to the folder.",
@@ -459,6 +737,46 @@ const enUS: Record<MessageKey, string> = {
     "The volume structure is damaged or could not be analyzed safely.",
   "error.SCAN_INTERNAL":
     "The scanner encountered an internal failure. No invented result was shown.",
+  "error.RESULT_QUERY_INVALID":
+    "The filters or sort order could not be applied safely.",
+  "error.RESULT_CURSOR_STALE":
+    "This page expired because the results changed. The query was restarted.",
+  "error.RESULT_SELECTION_STALE":
+    "The selection changed in another operation. Review the items before continuing.",
+  "error.RESULT_SELECTION_INVALID":
+    "The received selection does not belong to these scan results.",
+  "error.RESTORE_DESTINATION_INVALID":
+    "Choose an authorized, writable local NTFS folder on another physical disk.",
+  "error.RESTORE_DESTINATION_LIMIT":
+    "Too many destination selections are in progress. Wait and try again.",
+  "error.RESTORE_DESTINATION_EXPIRED":
+    "The destination authorization expired. Choose the folder again.",
+  "error.RESTORE_DIFFERENT_DISK_REQUIRED":
+    "The destination must be on a different physical disk from the source.",
+  "error.RESTORE_SOURCE_CHANGED":
+    "The source identity changed. Run a new scan before recovering.",
+  "error.RESTORE_SELECTION_STALE":
+    "The selection changed after the plan was created. Review it and create another plan.",
+  "error.RESTORE_SELECTION_EMPTY":
+    "Select at least one eligible item.",
+  "error.RESTORE_ITEM_INELIGIBLE":
+    "The selection contains items that cannot be recovered.",
+  "error.RESTORE_PARTIAL_POLICY_REQUIRED":
+    "Explicitly confirm the incomplete-file policy.",
+  "error.RESTORE_PLAN_INVALID":
+    "The recovery plan is not valid for this scan.",
+  "error.RESTORE_PLAN_LIMIT":
+    "Too many recovery plans are in progress. Wait and try again.",
+  "error.RESTORE_PLAN_EXPIRED":
+    "The plan expired. Review the selection and create another plan.",
+  "error.RESTORE_JOB_LIMIT":
+    "A recovery job is already active. Wait for it to finish.",
+  "error.RESTORE_JOB_NOT_FOUND":
+    "The recovery job is no longer available.",
+  "error.RESTORE_JOB_NOT_COMPLETE":
+    "The folder can be opened only after the job finishes.",
+  "error.RESTORE_INTERNAL":
+    "An internal failure prevented the requested operation from being confirmed or completed.",
   "error.REPORT_INCOMPATIBLE":
     "The application received an incompatible response and did not display potentially incorrect data.",
 };

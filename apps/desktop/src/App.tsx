@@ -1,8 +1,10 @@
 import { isTauri } from "@tauri-apps/api/core";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AppShell, type Screen } from "./components/AppShell";
 import { translate, type MessageKey } from "./i18n/messages";
 import { usePreferences } from "./state/preferences";
+import { useRestoreWorkflow } from "./state/restoreWorkflow";
+import { useResultsWorkspace } from "./state/resultsWorkspace";
 import { useStorageScan } from "./state/storageScan";
 import { AnalysisView } from "./views/AnalysisView";
 import { HelpView } from "./views/HelpView";
@@ -19,6 +21,17 @@ export function App() {
   } = usePreferences();
   const runtimeAvailable = isTauri();
   const storage = useStorageScan(runtimeAvailable);
+  const scanId =
+    storage.state.scanPhase === "success"
+      ? (storage.state.summary?.scanId ?? null)
+      : null;
+  const results = useResultsWorkspace(runtimeAvailable, scanId);
+  const restore = useRestoreWorkflow(
+    runtimeAvailable,
+    scanId,
+    results.state.selection,
+  );
+  const recoverButtonRef = useRef<HTMLButtonElement>(null);
   const t = useMemo(
     () => (key: MessageKey) => translate(preferences.locale, key),
     [preferences.locale],
@@ -38,8 +51,10 @@ export function App() {
           clearFolder={storage.clearFolder}
           selectScanMode={storage.selectScanMode}
           startScan={storage.startScan}
-          loadMore={storage.loadMore}
           resetScan={storage.resetScan}
+          results={results}
+          restore={restore}
+          recoverButtonRef={recoverButtonRef}
         />
       )}
       {screen === "settings" && (

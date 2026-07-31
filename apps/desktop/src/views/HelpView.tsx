@@ -1,6 +1,7 @@
 import {
   CircleOff,
   FileCheck2,
+  FolderOutput,
   Info,
   ShieldCheck,
 } from "lucide-react";
@@ -24,6 +25,11 @@ const sections: Array<{
     title: "help.safety.title",
     body: "help.safety.body",
     icon: ShieldCheck,
+  },
+  {
+    title: "help.restore.title",
+    body: "help.restore.body",
+    icon: FolderOutput,
   },
   {
     title: "help.unavailable.title",
