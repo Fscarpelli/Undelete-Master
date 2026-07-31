@@ -5,6 +5,10 @@ import {
   parseCandidateQueryPage,
   parseCandidatePage,
   parseFolderSelection,
+  parseOpenRestoreDestinationResponse,
+  parseRestoreDestinationSummary,
+  parseRestoreJobSnapshot,
+  parseRestorePlanSummary,
   parseScanSummary,
   parseStorageInventory,
 } from "./storage";
@@ -75,7 +79,250 @@ const inventory = {
   ],
 };
 
+const restoreDestination = {
+  schemaVersion: 1,
+  destinationId: "destination-1",
+  label: "Recovered files",
+  volumeLabel: "Backup (E:)",
+  fileSystem: "NTFS",
+  freeBytes: "9007199254740993",
+  relation: "different",
+};
+
+const restorePlan = {
+  schemaVersion: 1,
+  planId: "plan-1",
+  planDigest:
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  scanId: "scan-1",
+  destinationId: "destination-1",
+  selectionRevision: "7",
+  collisionPolicy: "rename",
+  partialFilePolicy: "zeroFillAndMap",
+  itemsTotal: "3",
+  filesTotal: "2",
+  directoriesTotal: "1",
+  logicalBytes: "9007199254740993",
+  bestEffortItems: "1",
+};
+
+const queuedRestoreJob = {
+  schemaVersion: 1,
+  jobId: "job-1",
+  planId: "plan-1",
+  status: "queued",
+  itemsTotal: "3",
+  itemsCompleted: "0",
+  itemsFailed: "0",
+  itemsCancelled: "0",
+  bytesTotal: "9007199254740993",
+  bytesCompleted: "0",
+  currentItem: null,
+  warnings: [],
+  manifest: null,
+};
+
+const runningRestoreJob = {
+  ...queuedRestoreJob,
+  status: "running",
+  itemsCompleted: "1",
+  bytesCompleted: "42",
+  currentItem: {
+    ordinal: "1",
+    candidateId: "42",
+    kind: "file",
+  },
+};
+
+const completedRestoreJob = {
+  ...runningRestoreJob,
+  status: "completed",
+  itemsCompleted: "3",
+  bytesCompleted: "9007199254740993",
+  currentItem: null,
+  manifest: {
+    manifestSha256:
+      "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    completionStatus: "completedDurable",
+    publishedItems: "3",
+  },
+};
+
 describe("real storage contracts", () => {
+  it("parses exact opaque restore destination, plan, job, and open responses", () => {
+    expect(parseRestoreDestinationSummary(restoreDestination)).toEqual(
+      restoreDestination,
+    );
+    expect(parseRestorePlanSummary(restorePlan)).toEqual(restorePlan);
+    expect(parseRestoreJobSnapshot(runningRestoreJob)).toEqual(
+      runningRestoreJob,
+    );
+    expect(
+      parseOpenRestoreDestinationResponse({
+        schemaVersion: 1,
+        opened: true,
+      }),
+    ).toEqual({ schemaVersion: 1, opened: true });
+  });
+
+  it("rejects restore authority fields recursively instead of leaking paths or bytes", () => {
+    expect(() =>
+      parseRestoreDestinationSummary({
+        ...restoreDestination,
+        path: "E:\\Recovered",
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreDestinationSummary({
+        ...restoreDestination,
+        diskNumber: 1,
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestorePlanSummary({
+        ...restorePlan,
+        extents: [{ offset: "4096", length: "512" }],
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...runningRestoreJob,
+        currentItem: {
+          ...runningRestoreJob.currentItem,
+          handle: "native-handle",
+        },
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        manifest: {
+          ...completedRestoreJob.manifest,
+          recoveredBytes: "42",
+        },
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseOpenRestoreDestinationResponse({
+        schemaVersion: 1,
+        opened: true,
+        executable: "explorer.exe",
+      }),
+    ).toThrow(StorageContractError);
+  });
+
+  it("accepts only a bounded, different NTFS destination summary", () => {
+    for (const invalid of [
+      { ...restoreDestination, relation: "same" },
+      { ...restoreDestination, fileSystem: "ntfs" },
+      { ...restoreDestination, freeBytes: 42 },
+      { ...restoreDestination, freeBytes: "01" },
+      { ...restoreDestination, destinationId: "E:\\Recovered" },
+      { ...restoreDestination, label: "E:\\Recovered" },
+      { ...restoreDestination, label: "x".repeat(513) },
+    ]) {
+      expect(() => parseRestoreDestinationSummary(invalid)).toThrow(
+        StorageContractError,
+      );
+    }
+  });
+
+  it("requires an internally consistent bounded immutable restore plan", () => {
+    for (const invalid of [
+      { ...restorePlan, schemaVersion: 2 },
+      { ...restorePlan, selectionRevision: "07" },
+      { ...restorePlan, collisionPolicy: "overwrite" },
+      { ...restorePlan, partialFilePolicy: "skip" },
+      { ...restorePlan, partialFilePolicy: "completeOnly" },
+      { ...restorePlan, itemsTotal: "4" },
+      { ...restorePlan, bestEffortItems: "3" },
+      {
+        ...restorePlan,
+        itemsTotal: String(MAX_RETAINED_CANDIDATES_PER_SCAN + 1),
+        filesTotal: String(MAX_RETAINED_CANDIDATES_PER_SCAN),
+      },
+      { ...restorePlan, planDigest: "ABCDEF".repeat(10) + "ABCD" },
+      { ...restorePlan, planId: "../plan" },
+    ]) {
+      expect(() => parseRestorePlanSummary(invalid)).toThrow(
+        StorageContractError,
+      );
+    }
+  });
+
+  it("rejects incoherent job counters, unbounded warnings, and nonterminal manifests", () => {
+    for (const invalid of [
+      { ...runningRestoreJob, itemsCompleted: "4" },
+      { ...runningRestoreJob, bytesCompleted: "9007199254740994" },
+      { ...runningRestoreJob, itemsFailed: 1 },
+      { ...runningRestoreJob, itemsCancelled: "01" },
+      { ...runningRestoreJob, warnings: Array(129).fill("warning") },
+      {
+        ...runningRestoreJob,
+        warnings: ["Restore failed at E:\\Recovered\\deleted.txt"],
+      },
+      {
+        ...runningRestoreJob,
+        manifest: completedRestoreJob.manifest,
+      },
+      {
+        ...runningRestoreJob,
+        currentItem: {
+          ordinal: "3",
+          candidateId: "42",
+          kind: "file",
+        },
+      },
+    ]) {
+      expect(() => parseRestoreJobSnapshot(invalid)).toThrow(
+        StorageContractError,
+      );
+    }
+  });
+
+  it("enforces legal restore status transitions and immutable job bindings", () => {
+    const queued = parseRestoreJobSnapshot(queuedRestoreJob);
+    expect(parseRestoreJobSnapshot(completedRestoreJob, queued).status).toBe(
+      "completed",
+    );
+
+    const cancelling = parseRestoreJobSnapshot({
+      ...runningRestoreJob,
+      status: "cancelling",
+    });
+    const completed = parseRestoreJobSnapshot(completedRestoreJob);
+    expect(() =>
+      parseRestoreJobSnapshot(runningRestoreJob, cancelling),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(runningRestoreJob, completed),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        {
+          ...completedRestoreJob,
+          manifest: {
+            ...completedRestoreJob.manifest,
+            manifestSha256: "0".repeat(64),
+          },
+        },
+        completed,
+      ),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        { ...runningRestoreJob, planId: "plan-substituted" },
+        queued,
+      ),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        { ...runningRestoreJob, itemsTotal: "4" },
+        queued,
+      ),
+    ).toThrow(StorageContractError);
+  });
+
   it("parses one exact schema-v1 actionable query page", () => {
     expect(parseCandidateQueryPage(queryPage)).toEqual(queryPage);
   });

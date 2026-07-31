@@ -2,6 +2,7 @@ export const STORAGE_CONTRACT_SCHEMA_VERSION = 1;
 export const SCAN_SUMMARY_SCHEMA_VERSION = 3;
 export const CANDIDATE_PAGE_SCHEMA_VERSION = 2;
 export const CANDIDATE_QUERY_SCHEMA_VERSION = 1;
+export const RESTORE_CONTRACT_SCHEMA_VERSION = 1;
 
 const UNSIGNED_DECIMAL = /^(0|[1-9][0-9]*)$/;
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -150,6 +151,79 @@ export interface CandidateSelectionUpdate {
   queryId: string;
   selectionRevision: string;
   selection: CandidateSelectionSummary;
+}
+
+export type RestoreCollisionPolicy = "rename";
+export type PartialFilePolicy = "completeOnly" | "zeroFillAndMap";
+export type RestoreJobStatus =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface RestoreDestinationSummary {
+  schemaVersion: 1;
+  destinationId: string;
+  label: string;
+  volumeLabel: string;
+  fileSystem: "NTFS";
+  freeBytes: string;
+  relation: "different";
+}
+
+export interface RestorePlanSummary {
+  schemaVersion: 1;
+  planId: string;
+  planDigest: string;
+  scanId: string;
+  destinationId: string;
+  selectionRevision: string;
+  collisionPolicy: RestoreCollisionPolicy;
+  partialFilePolicy: PartialFilePolicy;
+  itemsTotal: string;
+  filesTotal: string;
+  directoriesTotal: string;
+  logicalBytes: string;
+  bestEffortItems: string;
+}
+
+export interface RestoreCurrentItem {
+  ordinal: string;
+  candidateId: string;
+  kind: CandidateKind;
+}
+
+export type RestoreCompletionStatus =
+  | "completedDurable"
+  | "needsReconciliation";
+
+export interface RestoreManifestSummary {
+  manifestSha256: string;
+  completionStatus: RestoreCompletionStatus;
+  publishedItems: string;
+}
+
+export interface RestoreJobSnapshot {
+  schemaVersion: 1;
+  jobId: string;
+  planId: string;
+  status: RestoreJobStatus;
+  itemsTotal: string;
+  itemsCompleted: string;
+  itemsFailed: string;
+  itemsCancelled: string;
+  bytesTotal: string;
+  bytesCompleted: string;
+  currentItem: RestoreCurrentItem | null;
+  warnings: string[];
+  manifest: RestoreManifestSummary | null;
+}
+
+export interface OpenRestoreDestinationResponse {
+  schemaVersion: 1;
+  opened: true;
 }
 
 export interface StorageVolume {
@@ -341,6 +415,24 @@ function oneOf<T extends string>(
     throw new StorageContractError();
   }
   return value as T;
+}
+
+export function parseRestoreOpaqueId(value: unknown): string {
+  return opaqueId(value);
+}
+
+export function parseRestoreSelectionRevision(value: unknown): string {
+  return decimal(value);
+}
+
+export function parseRestoreCollisionPolicy(
+  value: unknown,
+): RestoreCollisionPolicy {
+  return oneOf(value, ["rename"]);
+}
+
+export function parsePartialFilePolicy(value: unknown): PartialFilePolicy {
+  return oneOf(value, ["completeOnly", "zeroFillAndMap"]);
 }
 
 function volume(value: unknown): StorageVolume {
@@ -951,4 +1043,330 @@ export function parseCandidateSelectionUpdate(
     selectionRevision,
     selection,
   };
+}
+
+function restoreSummaryLabel(value: unknown): string {
+  const label = text(value);
+  if (label.includes("/") || label.includes("\\")) {
+    throw new StorageContractError();
+  }
+  return label;
+}
+
+function restoreWarningList(value: unknown): string[] {
+  const warnings = warningList(value);
+  if (
+    warnings.some(
+      (warning) =>
+        warning.includes("\\") || /(?:^|[^A-Za-z])[A-Za-z]:\//u.test(warning),
+    )
+  ) {
+    throw new StorageContractError();
+  }
+  return warnings;
+}
+
+function sha256(value: unknown): string {
+  if (typeof value !== "string" || !SHA256_HEX.test(value)) {
+    throw new StorageContractError();
+  }
+  return value;
+}
+
+export function parseRestoreDestinationSummary(
+  value: unknown,
+): RestoreDestinationSummary {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "destinationId",
+    "label",
+    "volumeLabel",
+    "fileSystem",
+    "freeBytes",
+    "relation",
+  ]);
+  if (
+    item.schemaVersion !== RESTORE_CONTRACT_SCHEMA_VERSION ||
+    item.fileSystem !== "NTFS" ||
+    item.relation !== "different"
+  ) {
+    throw new StorageContractError();
+  }
+  return {
+    schemaVersion: 1,
+    destinationId: opaqueId(item.destinationId),
+    label: restoreSummaryLabel(item.label),
+    volumeLabel: restoreSummaryLabel(item.volumeLabel),
+    fileSystem: "NTFS",
+    freeBytes: decimal(item.freeBytes),
+    relation: "different",
+  };
+}
+
+export function parseRestorePlanSummary(value: unknown): RestorePlanSummary {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "planId",
+    "planDigest",
+    "scanId",
+    "destinationId",
+    "selectionRevision",
+    "collisionPolicy",
+    "partialFilePolicy",
+    "itemsTotal",
+    "filesTotal",
+    "directoriesTotal",
+    "logicalBytes",
+    "bestEffortItems",
+  ]);
+  if (item.schemaVersion !== RESTORE_CONTRACT_SCHEMA_VERSION) {
+    throw new StorageContractError();
+  }
+  const parsed: RestorePlanSummary = {
+    schemaVersion: 1,
+    planId: opaqueId(item.planId),
+    planDigest: sha256(item.planDigest),
+    scanId: opaqueId(item.scanId),
+    destinationId: opaqueId(item.destinationId),
+    selectionRevision: decimal(item.selectionRevision),
+    collisionPolicy: parseRestoreCollisionPolicy(item.collisionPolicy),
+    partialFilePolicy: parsePartialFilePolicy(item.partialFilePolicy),
+    itemsTotal: decimal(item.itemsTotal),
+    filesTotal: decimal(item.filesTotal),
+    directoriesTotal: decimal(item.directoriesTotal),
+    logicalBytes: decimal(item.logicalBytes),
+    bestEffortItems: decimal(item.bestEffortItems),
+  };
+  const itemsTotal = BigInt(parsed.itemsTotal);
+  const filesTotal = BigInt(parsed.filesTotal);
+  const directoriesTotal = BigInt(parsed.directoriesTotal);
+  if (
+    itemsTotal === 0n ||
+    itemsTotal > BigInt(MAX_RETAINED_CANDIDATES_PER_SCAN) ||
+    filesTotal + directoriesTotal !== itemsTotal ||
+    BigInt(parsed.bestEffortItems) > filesTotal ||
+    (parsed.partialFilePolicy === "completeOnly" &&
+      parsed.bestEffortItems !== "0")
+  ) {
+    throw new StorageContractError();
+  }
+  return parsed;
+}
+
+function restoreCurrentItem(
+  value: unknown,
+  itemsTotal: bigint,
+): RestoreCurrentItem | null {
+  if (value === null) {
+    return null;
+  }
+  const item = record(value);
+  exactKeys(item, ["ordinal", "candidateId", "kind"]);
+  const current = {
+    ordinal: decimal(item.ordinal),
+    candidateId: decimal(item.candidateId),
+    kind: oneOf(item.kind, ["file", "directory"]),
+  };
+  if (BigInt(current.ordinal) >= itemsTotal) {
+    throw new StorageContractError();
+  }
+  return current;
+}
+
+function restoreManifestSummary(
+  value: unknown,
+  itemsCompleted: bigint,
+): RestoreManifestSummary | null {
+  if (value === null) {
+    return null;
+  }
+  const item = record(value);
+  exactKeys(item, [
+    "manifestSha256",
+    "completionStatus",
+    "publishedItems",
+  ]);
+  const manifest = {
+    manifestSha256: sha256(item.manifestSha256),
+    completionStatus: oneOf(item.completionStatus, [
+      "completedDurable",
+      "needsReconciliation",
+    ]),
+    publishedItems: decimal(item.publishedItems),
+  };
+  if (BigInt(manifest.publishedItems) > itemsCompleted) {
+    throw new StorageContractError();
+  }
+  return manifest;
+}
+
+function isTerminalRestoreStatus(status: RestoreJobStatus): boolean {
+  return (
+    status === "completed" || status === "failed" || status === "cancelled"
+  );
+}
+
+const LEGAL_RESTORE_JOB_TRANSITIONS: Record<
+  RestoreJobStatus,
+  readonly RestoreJobStatus[]
+> = {
+  queued: [
+    "queued",
+    "running",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+  ],
+  running: ["running", "cancelling", "completed", "failed", "cancelled"],
+  cancelling: ["cancelling", "completed", "failed", "cancelled"],
+  completed: ["completed"],
+  failed: ["failed"],
+  cancelled: ["cancelled"],
+};
+
+function sameRestoreManifest(
+  left: RestoreManifestSummary | null,
+  right: RestoreManifestSummary | null,
+): boolean {
+  return (
+    (left === null && right === null) ||
+    (left !== null &&
+      right !== null &&
+      left.manifestSha256 === right.manifestSha256 &&
+      left.completionStatus === right.completionStatus &&
+      left.publishedItems === right.publishedItems)
+  );
+}
+
+function sameTerminalRestoreSnapshot(
+  previous: RestoreJobSnapshot,
+  current: RestoreJobSnapshot,
+): boolean {
+  return (
+    previous.status === current.status &&
+    previous.itemsCompleted === current.itemsCompleted &&
+    previous.itemsFailed === current.itemsFailed &&
+    previous.itemsCancelled === current.itemsCancelled &&
+    previous.bytesCompleted === current.bytesCompleted &&
+    previous.warnings.length === current.warnings.length &&
+    previous.warnings.every(
+      (warning, index) => warning === current.warnings[index],
+    ) &&
+    sameRestoreManifest(previous.manifest, current.manifest)
+  );
+}
+
+export function parseRestoreJobSnapshot(
+  value: unknown,
+  previous?: RestoreJobSnapshot,
+): RestoreJobSnapshot {
+  const item = record(value);
+  exactKeys(item, [
+    "schemaVersion",
+    "jobId",
+    "planId",
+    "status",
+    "itemsTotal",
+    "itemsCompleted",
+    "itemsFailed",
+    "itemsCancelled",
+    "bytesTotal",
+    "bytesCompleted",
+    "currentItem",
+    "warnings",
+    "manifest",
+  ]);
+  if (item.schemaVersion !== RESTORE_CONTRACT_SCHEMA_VERSION) {
+    throw new StorageContractError();
+  }
+  const status = oneOf(item.status, [
+    "queued",
+    "running",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+  ]);
+  const itemsTotal = decimal(item.itemsTotal);
+  const itemsCompleted = decimal(item.itemsCompleted);
+  const itemsFailed = decimal(item.itemsFailed);
+  const itemsCancelled = decimal(item.itemsCancelled);
+  const bytesTotal = decimal(item.bytesTotal);
+  const bytesCompleted = decimal(item.bytesCompleted);
+  const total = BigInt(itemsTotal);
+  const completed = BigInt(itemsCompleted);
+  const failed = BigInt(itemsFailed);
+  const cancelled = BigInt(itemsCancelled);
+  const completedBytes = BigInt(bytesCompleted);
+  if (
+    total === 0n ||
+    total > BigInt(MAX_RETAINED_CANDIDATES_PER_SCAN) ||
+    completed + failed + cancelled > total ||
+    completedBytes > BigInt(bytesTotal)
+  ) {
+    throw new StorageContractError();
+  }
+  const currentItem = restoreCurrentItem(item.currentItem, total);
+  const manifest = restoreManifestSummary(item.manifest, completed);
+  if (
+    (!isTerminalRestoreStatus(status) && manifest !== null) ||
+    ((status === "queued" || isTerminalRestoreStatus(status)) &&
+      currentItem !== null) ||
+    (status === "queued" &&
+      (completed !== 0n ||
+        failed !== 0n ||
+        cancelled !== 0n ||
+        completedBytes !== 0n))
+  ) {
+    throw new StorageContractError();
+  }
+  const parsed: RestoreJobSnapshot = {
+    schemaVersion: 1,
+    jobId: opaqueId(item.jobId),
+    planId: opaqueId(item.planId),
+    status,
+    itemsTotal,
+    itemsCompleted,
+    itemsFailed,
+    itemsCancelled,
+    bytesTotal,
+    bytesCompleted,
+    currentItem,
+    warnings: restoreWarningList(item.warnings),
+    manifest,
+  };
+  if (
+    previous !== undefined &&
+    (previous.jobId !== parsed.jobId ||
+      previous.planId !== parsed.planId ||
+      previous.itemsTotal !== parsed.itemsTotal ||
+      previous.bytesTotal !== parsed.bytesTotal ||
+      !LEGAL_RESTORE_JOB_TRANSITIONS[previous.status].includes(parsed.status) ||
+      BigInt(previous.itemsCompleted) > completed ||
+      BigInt(previous.itemsFailed) > failed ||
+      BigInt(previous.itemsCancelled) > cancelled ||
+      BigInt(previous.bytesCompleted) > completedBytes ||
+      (isTerminalRestoreStatus(previous.status) &&
+        !sameTerminalRestoreSnapshot(previous, parsed)))
+  ) {
+    throw new StorageContractError();
+  }
+  return parsed;
+}
+
+export function parseOpenRestoreDestinationResponse(
+  value: unknown,
+): OpenRestoreDestinationResponse {
+  const item = record(value);
+  exactKeys(item, ["schemaVersion", "opened"]);
+  if (
+    item.schemaVersion !== RESTORE_CONTRACT_SCHEMA_VERSION ||
+    item.opened !== true
+  ) {
+    throw new StorageContractError();
+  }
+  return { schemaVersion: 1, opened: true };
 }
