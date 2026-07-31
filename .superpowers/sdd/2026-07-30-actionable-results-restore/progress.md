@@ -9,6 +9,6 @@ Task 3: complete (commits 66adb03, 3d1454b, 992b0d6, aea6572, 3432959; adversari
 Task 4: fix round 1 committed at 963d2b8; all seven original findings addressed
 Task 4: complete (commits b43ab90, 963d2b8, 32df04b; two scoped review rounds clean, 78 restore tests and all required gates passed)
 Task 4: minor deferred - `crates/restore/src/transaction.rs` is currently 3,507 lines; split it only after the security-critical state machine is stable to improve auditability
-Task 5: implementation complete; independent post-commit review pending (native coordinator, six restore commands, two-phase start authorization, real engine observer/cancellation/manifest lifecycle, deterministic NTFS vertical fixture, ADR-0028, traceability, and focused gates passed; packaged/real-device evidence remains Task 7)
-Task 6: pending
+Task 5: complete (commit 37ab34e; independent post-commit review clean; native coordinator, six restore commands, two-phase start authorization, real engine observer/cancellation/manifest lifecycle, deterministic NTFS vertical fixture, ADR-0028, traceability, and focused/full gates passed; packaged/real-device evidence remains Task 7)
+Task 6: in progress
 Task 7: pending
