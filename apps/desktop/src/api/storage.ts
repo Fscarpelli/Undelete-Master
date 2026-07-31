@@ -418,6 +418,21 @@ function oneOf<T extends string>(
   return value as T;
 }
 
+export type ScanProgressPhase =
+  | "bootstrap"
+  | "mftRecords"
+  | "namespace"
+  | "candidates"
+  | "deepJpeg"
+  | "complete";
+
+export interface ScanProgressEvent {
+  requestId: string;
+  phase: ScanProgressPhase;
+  completed: string;
+  total: string;
+}
+
 export function parseRestoreOpaqueId(value: unknown): string {
   return opaqueId(value);
 }

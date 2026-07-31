@@ -326,6 +326,22 @@ pub struct NtfsScanCoverage {
     pub bytes_examined: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtfsScanProgressPhase {
+    Bootstrap,
+    MftRecords,
+    Namespace,
+    Candidates,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NtfsScanProgress {
+    pub phase: NtfsScanProgressPhase,
+    pub completed: u64,
+    pub total: u64,
+}
+
 /// Trusted allocation evidence derived from `$Bitmap`.
 #[derive(Debug, Clone)]
 pub struct NtfsAllocationSnapshot {
@@ -1248,6 +1264,21 @@ fn build_namespace(
 
 /// Scans an NTFS volume region for deleted (and orphaned) candidates.
 pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError> {
+    scan_ntfs_with_progress(reader, |_| {})
+}
+
+pub fn scan_ntfs_with_progress<F>(
+    reader: &dyn SourceReader,
+    mut progress: F,
+) -> Result<NtfsScanOutput, ScanError>
+where
+    F: FnMut(NtfsScanProgress),
+{
+    progress(NtfsScanProgress {
+        phase: NtfsScanProgressPhase::Bootstrap,
+        completed: 0,
+        total: 1,
+    });
     let mut warnings = Vec::new();
     let sector0 = reader.read_vec_at(0, 512)?;
     let boot = NtfsBoot::parse(&sector0, reader.len())?;
@@ -1358,6 +1389,11 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         bytes_available,
         bytes_examined,
     };
+    progress(NtfsScanProgress {
+        phase: NtfsScanProgressPhase::MftRecords,
+        completed: 0,
+        total: record_count,
+    });
 
     // Pass 1: parse the trusted MFT in bounded batches. Only directories and
     // free base records are retained; active regular files are classified and
@@ -1459,6 +1495,11 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         batch_start_record = batch_start_record
             .checked_add(batch_record_count)
             .ok_or_else(|| ScanError::Corrupt("MFT batch cursor overflow".into()))?;
+        progress(NtfsScanProgress {
+            phase: NtfsScanProgressPhase::MftRecords,
+            completed: batch_start_record.min(record_count),
+            total: record_count,
+        });
     }
     // Pass 2: merge $DATA streams from extension records referenced by
     // resident attribute lists.
@@ -1571,6 +1612,11 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
     mft_warning_budget.finish(&mut warnings);
 
     let namespace = build_namespace(&entries, is_complete, &mut warnings);
+    progress(NtfsScanProgress {
+        phase: NtfsScanProgressPhase::Namespace,
+        completed: 1,
+        total: 1,
+    });
 
     // Pass 3: build candidates from records marked free.
     let mut candidates = Vec::new();
@@ -1624,9 +1670,19 @@ pub fn scan_ntfs(reader: &dyn SourceReader) -> Result<NtfsScanOutput, ScanError>
         });
     }
     candidates.sort_by_key(|c| c.id);
+    progress(NtfsScanProgress {
+        phase: NtfsScanProgressPhase::Candidates,
+        completed: 1,
+        total: 1,
+    });
     let is_complete = namespace.is_complete;
     let allocation = allocation.map(|map| NtfsAllocationSnapshot { cluster_size, map });
 
+    progress(NtfsScanProgress {
+        phase: NtfsScanProgressPhase::Complete,
+        completed: 1,
+        total: 1,
+    });
     Ok(NtfsScanOutput {
         boot,
         candidates,

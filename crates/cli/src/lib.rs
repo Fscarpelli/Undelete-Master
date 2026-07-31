@@ -20,7 +20,10 @@ pub use um_carving::CarveEvidence;
 use um_core::{Candidate, Region, SourceReader};
 use um_fs_common::ScanError;
 use um_fs_fat::{scan_fat, FatVariant};
-use um_fs_ntfs::{scan_ntfs, NtfsNamespace, NtfsScanCoverage};
+use um_fs_ntfs::{
+    scan_ntfs_with_progress, NtfsNamespace, NtfsScanCoverage, NtfsScanProgress,
+    NtfsScanProgressPhase,
+};
 use um_io_common::{validate_local_regular_file, FileImageReader, RegionReader, SourcePathError};
 use um_partition::{discover, PartitionTableKind};
 
@@ -43,6 +46,23 @@ pub enum VolumeScanMode {
     #[default]
     MetadataOnly,
     DeepJpeg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeScanProgressPhase {
+    Bootstrap,
+    MftRecords,
+    Namespace,
+    Candidates,
+    DeepJpeg,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeScanProgress {
+    pub phase: VolumeScanProgressPhase,
+    pub completed: u64,
+    pub total: u64,
 }
 
 #[derive(Debug, Error)]
@@ -161,8 +181,19 @@ pub fn scan_volume_reader_with_mode(
     reader: &dyn SourceReader,
     mode: VolumeScanMode,
 ) -> Result<VolumeScanDetails, CliError> {
+    scan_volume_reader_with_progress(reader, mode, |_| {})
+}
+
+pub fn scan_volume_reader_with_progress<F>(
+    reader: &dyn SourceReader,
+    mode: VolumeScanMode,
+    progress: F,
+) -> Result<VolumeScanDetails, CliError>
+where
+    F: FnMut(VolumeScanProgress),
+{
     let region = Region::new(0, reader.len()).ok_or(CliError::EmptyImage)?;
-    scan_volume_details_with_mode(0, region, reader, mode)
+    scan_volume_details_with_progress(0, region, reader, mode, progress)
 }
 
 fn validate_extension(path: &Path) -> Result<(), CliError> {
@@ -258,13 +289,44 @@ fn scan_volume_details_with_mode(
     reader: &dyn SourceReader,
     mode: VolumeScanMode,
 ) -> Result<VolumeScanDetails, CliError> {
-    match scan_ntfs(reader) {
+    scan_volume_details_with_progress(index, region, reader, mode, |_| {})
+}
+
+fn scan_volume_details_with_progress<F>(
+    index: u32,
+    region: Region,
+    reader: &dyn SourceReader,
+    mode: VolumeScanMode,
+    mut progress: F,
+) -> Result<VolumeScanDetails, CliError>
+where
+    F: FnMut(VolumeScanProgress),
+{
+    match scan_ntfs_with_progress(reader, |item: NtfsScanProgress| {
+        let phase = match item.phase {
+            NtfsScanProgressPhase::Bootstrap => VolumeScanProgressPhase::Bootstrap,
+            NtfsScanProgressPhase::MftRecords => VolumeScanProgressPhase::MftRecords,
+            NtfsScanProgressPhase::Namespace => VolumeScanProgressPhase::Namespace,
+            NtfsScanProgressPhase::Candidates => VolumeScanProgressPhase::Candidates,
+            NtfsScanProgressPhase::Complete => VolumeScanProgressPhase::Complete,
+        };
+        progress(VolumeScanProgress {
+            phase,
+            completed: item.completed,
+            total: item.total,
+        });
+    }) {
         Ok(output) => {
             let metadata_complete = output.is_complete;
             let mut warnings = output.warnings;
             let (candidates, carve_evidence, jpeg_carve_coverage, deep_complete) = match mode {
                 VolumeScanMode::MetadataOnly => (output.candidates, Vec::new(), None, true),
                 VolumeScanMode::DeepJpeg => {
+                    progress(VolumeScanProgress {
+                        phase: VolumeScanProgressPhase::DeepJpeg,
+                        completed: 0,
+                        total: 0,
+                    });
                     let deep = deep::scan_ntfs_deep_jpeg(
                         reader,
                         index,
@@ -272,6 +334,11 @@ fn scan_volume_details_with_mode(
                         output.allocation.as_ref(),
                     )?;
                     warnings.extend(deep.warnings);
+                    progress(VolumeScanProgress {
+                        phase: VolumeScanProgressPhase::Complete,
+                        completed: 1,
+                        total: 1,
+                    });
                     (
                         deep.candidates,
                         deep.evidence,

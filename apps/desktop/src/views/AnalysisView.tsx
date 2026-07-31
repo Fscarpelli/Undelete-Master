@@ -10,7 +10,7 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type {
   BusType,
   ScanMode,
@@ -545,11 +545,57 @@ function InventoryView({
 
 function ScanPending({
   mode,
+  scanProgress,
+  scanStartedAt,
   t,
 }: {
   mode: ScanMode;
+  scanProgress: StorageWorkflowState["scanProgress"];
+  scanStartedAt: number | null;
   t: (key: MessageKey) => string;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let active = true;
+    let frame: number;
+    let lastTick = Date.now();
+    const tick = (timestamp: number) => {
+      if (!active) {
+        return;
+      }
+      if (timestamp - lastTick >= 1000) {
+        lastTick = timestamp;
+        setNow(Date.now());
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+    };
+  }, []);
+  const elapsedSeconds =
+    scanStartedAt === null ? 0 : Math.max(0, Math.floor((now - scanStartedAt) / 1000));
+  const completed = scanProgress === null ? 0n : BigInt(scanProgress.completed);
+  const total = scanProgress === null ? 0n : BigInt(scanProgress.total);
+  const determinate =
+    scanProgress?.phase === "mftRecords" && total > 0n && completed <= total;
+  const percent = determinate
+    ? Math.min(99, Number((completed * 100n) / total))
+    : 0;
+  const etaSeconds =
+    determinate && completed > 0n && elapsedSeconds > 0
+      ? Math.max(0, Math.round((elapsedSeconds * Number(total - completed)) / Number(completed)))
+      : null;
+  const formatDuration = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return `${minutes.toString().padStart(2, "0")}m ${remainder.toString().padStart(2, "0")}s`;
+  };
+  const phaseKey = scanProgress === null
+    ? "analysis.scan.phase.bootstrap"
+    : `analysis.scan.phase.${scanProgress.phase}`;
   return (
     <div className="page storage-page">
       <PageHeader t={t} />
@@ -568,13 +614,30 @@ function ScanPending({
                 : "analysis.scan.pendingBody",
             )}
           </p>
+          <p className="scan-phase-label">{t(phaseKey as MessageKey)}</p>
         </div>
-        <div
-          className="indeterminate-track"
-          role="progressbar"
-          aria-label={t("analysis.scan.pendingTitle")}
-        >
-          <span />
+        {determinate ? (
+          <progress
+            className="scan-progress-native"
+            max={100}
+            value={percent}
+            aria-label={t("analysis.scan.pendingTitle")}
+          />
+        ) : (
+          <div
+            className="indeterminate-track"
+            role="progressbar"
+            aria-label={t("analysis.scan.pendingTitle")}
+          >
+            <span />
+          </div>
+        )}
+        <div className="scan-progress-facts" aria-live="polite">
+          <span>{t("analysis.scan.elapsed")}: <strong>{formatDuration(elapsedSeconds)}</strong></span>
+          <span>
+            {t("analysis.scan.eta")}: <strong>{etaSeconds === null ? t("analysis.scan.etaCalculating") : formatDuration(etaSeconds)}</strong>
+          </span>
+          {determinate ? <span>{percent}%</span> : <span>{t("analysis.scan.progressUnknown")}</span>}
         </div>
       </section>
     </div>
@@ -837,7 +900,14 @@ export function AnalysisView(props: AnalysisViewProps) {
   }
 
   if (state.scanPhase === "scanning") {
-    return <ScanPending mode={state.scanMode} t={t} />;
+    return (
+      <ScanPending
+        mode={state.scanMode}
+        scanProgress={state.scanProgress}
+        scanStartedAt={state.scanStartedAt}
+        t={t}
+      />
+    );
   }
 
   if (

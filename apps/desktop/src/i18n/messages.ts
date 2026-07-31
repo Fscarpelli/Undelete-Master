@@ -66,6 +66,15 @@ const ptBR = {
     "O mecanismo está lendo o volume e validando metadados reais. Esta versão não oferece cancelamento, percentual ou previsão; mantenha o aplicativo aberto até a conclusão.",
   "analysis.scan.pendingDeepBody":
     "O mecanismo está validando metadados e examinando regiões NTFS comprovadamente livres por assinaturas JPEG. Esta análise pode demorar bastante; não há percentual, previsão nem cancelamento nesta versão.",
+  "analysis.scan.phase.bootstrap": "Preparando leitura protegida",
+  "analysis.scan.phase.mftRecords": "Examinando registros MFT",
+  "analysis.scan.phase.namespace": "Reconstruindo caminhos e pastas",
+  "analysis.scan.phase.candidates": "Classificando candidatos recuperáveis",
+  "analysis.scan.phase.deepJpeg": "Examinando regiões livres por JPEG",
+  "analysis.scan.elapsed": "Tempo decorrido",
+  "analysis.scan.eta": "Estimativa restante",
+  "analysis.scan.etaCalculating": "Calculando com base no ritmo real",
+  "analysis.scan.progressUnknown": "Etapa em andamento; o scanner ainda não forneceu total mensurável",
   "analysis.scan.errorTitle": "Não foi possível concluir a análise",
 
   "analysis.results.readOnly": "Origem validada · somente leitura",
@@ -458,6 +467,15 @@ const enUS: Record<MessageKey, string> = {
     "The engine is reading the volume and validating real metadata. This version has no cancellation, percentage, or ETA; keep the application open until it completes.",
   "analysis.scan.pendingDeepBody":
     "The engine is validating metadata and examining proven-free NTFS regions for JPEG signatures. This scan can take substantially longer; this version has no percentage, ETA, or cancellation.",
+  "analysis.scan.phase.bootstrap": "Preparing protected read",
+  "analysis.scan.phase.mftRecords": "Examining MFT records",
+  "analysis.scan.phase.namespace": "Reconstructing paths and folders",
+  "analysis.scan.phase.candidates": "Classifying recoverable candidates",
+  "analysis.scan.phase.deepJpeg": "Examining free regions for JPEGs",
+  "analysis.scan.elapsed": "Elapsed time",
+  "analysis.scan.eta": "Estimated remaining",
+  "analysis.scan.etaCalculating": "Calculating from the measured rate",
+  "analysis.scan.progressUnknown": "Stage in progress; the scanner has not supplied a measurable total yet",
   "analysis.scan.errorTitle": "The scan could not be completed",
 
   "analysis.results.readOnly": "Validated source · read-only",

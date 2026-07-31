@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   parseCandidatePage,
   parseCandidateQueryPage,
@@ -29,6 +30,7 @@ import {
   type RestoreJobSnapshot,
   type RestorePlanSummary,
   type ScanMode,
+  type ScanProgressEvent,
   type ScanSummary,
   type StorageInventory,
 } from "./storage";
@@ -305,6 +307,58 @@ export async function getCandidatePage(
     throw new StorageCommandError("REPORT_INCOMPATIBLE");
   }
   return page;
+}
+
+const SCAN_PROGRESS_PHASES = new Set([
+  "bootstrap",
+  "mftRecords",
+  "namespace",
+  "candidates",
+  "deepJpeg",
+  "complete",
+]);
+
+function scanProgressEvent(value: unknown): ScanProgressEvent | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.requestId !== "string" ||
+    typeof item.phase !== "string" ||
+    !SCAN_PROGRESS_PHASES.has(item.phase) ||
+    typeof item.completed !== "string" ||
+    typeof item.total !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(item.completed) ||
+    !/^(0|[1-9][0-9]*)$/.test(item.total)
+  ) {
+    return null;
+  }
+  return {
+    requestId: item.requestId,
+    phase: item.phase as ScanProgressEvent["phase"],
+    completed: item.completed,
+    total: item.total,
+  };
+}
+
+export async function listenScanProgress(
+  requestId: string,
+  onProgress: (event: ScanProgressEvent) => void,
+): Promise<UnlistenFn> {
+  requireDesktop();
+  try {
+    return await listen<unknown>("scan-progress", (event) => {
+      const progress = scanProgressEvent(event.payload);
+      if (progress !== null && progress.requestId === requestId) {
+        onProgress(progress);
+      }
+    });
+  } catch {
+    // The scan remains authoritative even if an event bridge is unavailable;
+    // the UI falls back to its truthful indeterminate state.
+    return () => undefined;
+  }
 }
 
 export async function queryCandidatePage(

@@ -83,8 +83,8 @@ protected installation and Authenticode signing remain pending. GitHub Actions
 These rows map [SDD-019](specs/019-ntfs-coverage-and-jpeg-deep-scan.md).
 They distinguish the implemented bounded whole-NTFS JPEG slice from the much
 broader recovery product. Desktop deep scan and transactional restore now
-exist. Broader carving formats, fragmented carving, and scan-time progress and
-cancellation do not.
+exist. Broader carving formats, fragmented carving, and scan cancellation do
+not; native progress is surfaced when a trustworthy total exists.
 
 | Requirement | Design section | Code module | Unit tests | Integration tests | E2E scenario | Evidence artifact | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |

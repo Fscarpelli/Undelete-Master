@@ -5,11 +5,12 @@ use std::{
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 use um_broker_client::{open_windows_source, BrokerClientError};
 use um_cli::{
     CarveEvidence, CliError, JpegCarveCoverage, MftScanCoverage, VolumeScanDetails, VolumeScanMode,
-    VolumeScanStatus,
+    VolumeScanProgress, VolumeScanProgressPhase, VolumeScanStatus,
 };
 use um_core::{
     Candidate, CandidateKind, CandidateState, DiscoveryMethod, MetadataConfidence, ReadError,
@@ -93,6 +94,26 @@ pub(crate) struct DesktopScanSummary {
     mft_coverage: Option<DesktopMftCoverage>,
     jpeg_carve_coverage: Option<DesktopJpegCarveCoverage>,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopScanProgressEvent {
+    pub request_id: String,
+    pub phase: &'static str,
+    pub completed: String,
+    pub total: String,
+}
+
+fn scan_progress_phase(phase: VolumeScanProgressPhase) -> &'static str {
+    match phase {
+        VolumeScanProgressPhase::Bootstrap => "bootstrap",
+        VolumeScanProgressPhase::MftRecords => "mftRecords",
+        VolumeScanProgressPhase::Namespace => "namespace",
+        VolumeScanProgressPhase::Candidates => "candidates",
+        VolumeScanProgressPhase::DeepJpeg => "deepJpeg",
+        VolumeScanProgressPhase::Complete => "complete",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -617,6 +638,7 @@ pub(crate) fn select_scan_folder(
 
 #[tauri::command]
 pub(crate) async fn scan_storage_volume(
+    app: AppHandle,
     state: tauri::State<'_, DesktopStorageState>,
     request_id: String,
     generation: String,
@@ -646,11 +668,25 @@ pub(crate) async fn scan_storage_volume(
         .transpose()?;
 
     let broker_volume_id = volume_id.clone();
+    let progress_app = app.clone();
+    let progress_request_id = request_id.clone();
     let (details, physical_disk_number) = tauri::async_runtime::spawn_blocking(move || {
         let reader = open_windows_source(&broker_volume_id).map_err(map_broker_error)?;
         let physical_disk_number = reader.physical_disk_number();
-        let details = um_cli::scan_volume_reader_with_mode(&reader, mode.cli_mode())
-            .map_err(map_cli_scan_error)?;
+        let details = um_cli::scan_volume_reader_with_progress(
+            &reader,
+            mode.cli_mode(),
+            |progress: VolumeScanProgress| {
+                let event = DesktopScanProgressEvent {
+                    request_id: progress_request_id.clone(),
+                    phase: scan_progress_phase(progress.phase),
+                    completed: progress.completed.to_string(),
+                    total: progress.total.to_string(),
+                };
+                let _ = progress_app.emit("scan-progress", event);
+            },
+        )
+        .map_err(map_cli_scan_error)?;
         Ok::<_, DesktopStorageError>((details, physical_disk_number))
     })
     .await

@@ -349,6 +349,32 @@ h2 {
   animation: indeterminate 1.35s ease-in-out infinite;
 }
 
+.scan-progress-native {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--cyan);
+}
+
+.scan-phase-label {
+  margin: var(--sp-2) 0 0;
+  color: var(--cyan);
+  font-size: var(--fs-sm);
+  font-weight: 680;
+}
+
+.scan-progress-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-progress-facts strong {
+  color: var(--text);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -366,7 +392,7 @@ h2 {
 }
 
 .report {
-  width: min(100%, 1180px);
+  width: min(100%, 1600px);
   margin: 0 auto;
 }
 
@@ -1109,6 +1135,7 @@ tbody th {
 }
 
 .candidate-table {
+  width: 100%;
   min-width: 1180px;
 }
 
@@ -1416,6 +1443,7 @@ tbody th {
 }
 
 .results-table {
+  width: 100%;
   min-width: 960px;
 }
 

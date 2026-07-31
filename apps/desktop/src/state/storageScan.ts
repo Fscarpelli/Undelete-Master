@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   FolderSelection,
+  ScanProgressEvent,
   ScanMode,
   ScanSummary,
   StorageInventory,
@@ -9,6 +10,7 @@ import {
   listStorageSources,
   normalizeStorageError,
   scanStorageVolume,
+  listenScanProgress,
   selectScanFolder,
   StorageCommandError,
   type StorageErrorCode,
@@ -34,6 +36,8 @@ export interface StorageWorkflowState {
   folderCancelled: boolean;
   scanPhase: ScanPhase;
   scanError: StorageErrorCode | null;
+  scanProgress: ScanProgressEvent | null;
+  scanStartedAt: number | null;
   summary: ScanSummary | null;
 }
 
@@ -56,6 +60,8 @@ function initialState(runtimeAvailable: boolean): StorageWorkflowState {
     folderCancelled: false,
     scanPhase: "idle",
     scanError: null,
+    scanProgress: null,
+    scanStartedAt: null,
     summary: null,
   };
 }
@@ -71,11 +77,13 @@ function inventoryContainsVolume(
 
 function clearScan(): Pick<
   StorageWorkflowState,
-  "scanPhase" | "scanError" | "summary"
+  "scanPhase" | "scanError" | "scanProgress" | "scanStartedAt" | "summary"
 > {
   return {
     scanPhase: "idle",
     scanError: null,
+    scanProgress: null,
+    scanStartedAt: null,
     summary: null,
   };
 }
@@ -338,13 +346,24 @@ export function useStorageScan(runtimeAvailable: boolean) {
       ...latest,
       scanPhase: "scanning",
       scanError: null,
+      scanProgress: null,
+      scanStartedAt: Date.now(),
       summary: null,
       folderCancelled: false,
     }));
 
+    const scanRequestId = nextRequestId("scan");
+    const unlistenPromise = listenScanProgress(scanRequestId, (progress) => {
+      if (
+        mounted.current &&
+        scanGeneration.current === requestGeneration
+      ) {
+        setState((latest) => ({ ...latest, scanProgress: progress }));
+      }
+    });
     try {
       const completedSummary = await scanStorageVolume(
-        nextRequestId("scan"),
+        scanRequestId,
         generation,
         volumeId,
         scopeId,
@@ -368,6 +387,12 @@ export function useStorageScan(runtimeAvailable: boolean) {
         ...latest,
         scanPhase: "success",
         scanError: null,
+        scanProgress: {
+          requestId: scanRequestId,
+          phase: "complete",
+          completed: "1",
+          total: "1",
+        },
         summary: completedSummary,
       }));
     } catch (error) {
@@ -380,10 +405,12 @@ export function useStorageScan(runtimeAvailable: boolean) {
           ...latest,
           scanPhase: "error",
           scanError: code,
+          scanProgress: null,
           summary: null,
         }));
       }
     } finally {
+      void unlistenPromise.then((unlisten) => unlisten());
       if (scanGeneration.current === requestGeneration) {
         scanInFlight.current = false;
       }

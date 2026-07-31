@@ -181,6 +181,8 @@ const inventoryState: StorageWorkflowState = {
   folderCancelled: false,
   scanPhase: "idle",
   scanError: null,
+  scanProgress: null,
+  scanStartedAt: null,
   summary: null,
 };
 
@@ -244,6 +246,29 @@ function renderAnalysis(
 }
 
 describe("connected-storage analysis view", () => {
+  it("SCAN-PROGRESS-001 renders measured MFT progress and a rate-based ETA", () => {
+    renderAnalysis({
+      ...inventoryState,
+      scanPhase: "scanning",
+      scanStartedAt: Date.now() - 10_000,
+      scanProgress: {
+        requestId: "scan-1",
+        phase: "mftRecords",
+        completed: "500",
+        total: "1000",
+      },
+    });
+
+    expect(screen.getByText("analysis.scan.phase.mftRecords")).toBeTruthy();
+    expect(
+      screen.getByRole("progressbar", {
+        name: "analysis.scan.pendingTitle",
+      }),
+    ).toHaveValue(50);
+    expect(screen.getByText(/analysis\.scan\.elapsed/u)).toBeTruthy();
+    expect(screen.getByText(/analysis\.scan\.eta/u)).toBeTruthy();
+  });
+
   it("WIN-VOLUME-RADIO-A11Y-001 gives each real volume a labelled radio", () => {
     const selectVolume = vi.fn();
     renderAnalysis(inventoryState, { selectVolume });

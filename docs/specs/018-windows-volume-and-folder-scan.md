@@ -65,7 +65,9 @@ to accept regular image files under ADR-0003.
 - remote, mapped, redirected, CD-ROM, RAM-disk or composite-volume scans;
 - hotplug subscription or a guarantee that a mutable mounted volume is a
   snapshot;
-- scan pause, resume, progress percentage, ETA or cooperative cancellation;
+- scan pause, resume or cooperative cancellation. The desktop receives real
+  phase progress events: MFT enumeration reports measured percentage/ETA, and
+  later phases remain indeterminate when no trustworthy total exists;
 - preview, content execution or session persistence;
 - repair, exFAT, ReFS, locked-BitLocker key handling or image creation;
 - arbitrary paths, device paths, pipe names, offsets or access masks supplied
@@ -688,7 +690,9 @@ A new accepted SDD/ADR is required before adding:
 
 - whole-disk, unmounted-volume, VHD/VHDX or composite-volume authority;
 - folder scope for FAT or another filesystem;
-- scan cancellation, scan progress, snapshotting or hotplug guarantees;
+- scan cancellation, snapshotting or hotplug guarantees. Scan progress is
+  reported only from bounded native work already completed; it is not a claim
+  of snapshot consistency or exhaustive recovery coverage;
 - another protocol opcode, generic device-control or persistent service;
 - preview, broader/fragmented carving, exFAT, session persistence or content
   execution;

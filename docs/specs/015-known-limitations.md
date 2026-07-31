@@ -154,11 +154,12 @@ a whole NTFS mounted volume; metadata remains the default scan mode.
 ## Product-flow limitations
 
 - No persistent sessions, checkpoint resume, import or export.
-- The scan itself has no pause, resume, cooperative cancellation, phase
-  percentage, heartbeat or ETA.
-- The desktop deep scan is exposed with an honest indeterminate state and
-  explicit text that percentage, ETA and cancellation are absent. Closing or
-  interrupting that workflow has no supported cooperative checkpoint contract.
+- The scan still has no pause, resume or cooperative cancellation. The desktop
+  now receives real native phase events; MFT enumeration reports a measured
+  percentage and ETA, while later phases remain indeterminate when no
+  trustworthy total exists.
+- Closing or interrupting a scan has no supported cooperative checkpoint
+  contract, so the current scan is discarded.
 - Restore has native item/byte progress and cooperative cancellation only
   during the current process. Cancellation is best-effort between bounded
   reads/writes and never represents an incomplete file as published.
