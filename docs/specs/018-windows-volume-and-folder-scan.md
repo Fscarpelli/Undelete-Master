@@ -159,6 +159,13 @@ extents and the reviewed direct bus class are then derived authoritatively by
 the broker. Serial mismatch, disappearance, changed geometry, changed extents,
 changed storage bus, or unresolvable identity fails closed.
 
+For legacy direct USB bridges that return only `ERROR_INVALID_FUNCTION` or
+`ERROR_NOT_SUPPORTED` for `StorageAccessAlignmentProperty`, the broker may use
+the validated mounted-volume logical sector for buffered read alignment. It
+records this fallback mode, revalidates the same mode and geometry, and rejects
+all other alignment failures. This does not enable unbuffered I/O or weaken the
+read-only source handle.
+
 The pre-UAC identity tuple is exactly volume GUID plus serial. A replacement
 that preserves both values exactly is indistinguishable from the selected
 volume under the current model. UAC and independent broker enumeration still

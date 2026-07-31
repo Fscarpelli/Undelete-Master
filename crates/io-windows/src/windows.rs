@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use um_core::{SectorLayout, SourceIdentity, SourceKind};
 use windows_sys::Win32::Foundation::{
-    LocalFree, ERROR_CANCELLED, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, GENERIC_READ,
-    GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    LocalFree, ERROR_CANCELLED, ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED, ERROR_PIPE_CONNECTED,
+    ERROR_PIPE_LISTENING, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -599,7 +600,8 @@ pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, Storage
         .copied()
         .ok_or(StorageError::InvalidGeometry)?;
     let length = query_handle_length(&handle)?;
-    let layout = query_handle_sector_layout(&handle)?;
+    let (layout, alignment_fallback) =
+        query_handle_sector_layout(&handle, selected.logical_sector_bytes)?;
     if length == 0 || length > i64::MAX as u64 || length % u64::from(layout.logical) != 0 {
         return Err(StorageError::InvalidGeometry);
     }
@@ -636,6 +638,7 @@ pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, Storage
         expected_volume_serial: selected.volume_serial,
         expected_storage_bus_type: storage_bus_type,
         expected_extents: extents,
+        expected_alignment_fallback: alignment_fallback,
     })
 }
 
@@ -650,6 +653,7 @@ pub(super) struct RawVolumeInner {
     expected_volume_serial: u32,
     expected_storage_bus_type: i32,
     expected_extents: Vec<DiskExtent>,
+    expected_alignment_fallback: bool,
 }
 
 impl RawVolumeInner {
@@ -689,12 +693,13 @@ impl RawVolumeInner {
         let storage_bus_type = query_storage_bus_type(&guard)?;
         let extents = query_volume_disk_extents(&guard)?;
         let length = query_handle_length(&guard)?;
-        let layout = query_handle_sector_layout(&guard)?;
+        let (layout, alignment_fallback) = query_handle_sector_layout(&guard, self.layout.logical)?;
         if storage_bus_type != self.expected_storage_bus_type
             || physical_backing_from_bus_type(storage_bus_type) != PhysicalBacking::Direct
             || extents != self.expected_extents
             || length != self.length
             || layout != self.layout
+            || alignment_fallback != self.expected_alignment_fallback
         {
             return Err(StorageError::SourceIdentityChanged);
         }
@@ -1868,8 +1873,28 @@ fn parse_storage_bus_type(buffer: &[u8], bytes_returned: usize) -> Result<i32, S
     ))
 }
 
-fn query_handle_sector_layout(handle: &OwnedHandle) -> Result<SectorLayout, StorageError> {
-    query_storage_alignment(handle)
+fn query_handle_sector_layout(
+    handle: &OwnedHandle,
+    fallback_logical_sector: u32,
+) -> Result<(SectorLayout, bool), StorageError> {
+    resolve_sector_layout(query_storage_alignment(handle), fallback_logical_sector)
+}
+
+fn resolve_sector_layout(
+    alignment: Result<SectorLayout, StorageError>,
+    fallback_logical_sector: u32,
+) -> Result<(SectorLayout, bool), StorageError> {
+    match alignment {
+        Ok(layout) => Ok((layout, false)),
+        Err(StorageError::WindowsApi { code, .. })
+            if code == ERROR_INVALID_FUNCTION || code == ERROR_NOT_SUPPORTED =>
+        {
+            SectorLayout::new(fallback_logical_sector, fallback_logical_sector)
+                .map(|layout| (layout, true))
+                .ok_or(StorageError::InvalidGeometry)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn query_file_information<H: AsRawHandle>(
@@ -2195,6 +2220,44 @@ mod tests {
             validate_handle_volume_serial(0xA1B2_C3D4, 0xA1B2_C3D5),
             Err(StorageError::SourceIdentityChanged)
         ));
+    }
+
+    #[test]
+    fn windows_legacy_alignment_003_uses_only_the_vetted_logical_fallback() {
+        let modern = SectorLayout::new(512, 4096).unwrap();
+        assert_eq!(
+            resolve_sector_layout(Ok(modern), 512).unwrap(),
+            (modern, false)
+        );
+
+        for code in [ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED] {
+            let fallback = resolve_sector_layout(
+                Err(StorageError::WindowsApi {
+                    operation: "alignment-probe",
+                    code,
+                }),
+                512,
+            )
+            .unwrap();
+            assert_eq!(fallback, (SectorLayout::new(512, 512).unwrap(), true));
+        }
+
+        assert!(resolve_sector_layout(
+            Err(StorageError::WindowsApi {
+                operation: "alignment-probe",
+                code: 5,
+            }),
+            512,
+        )
+        .is_err());
+        assert!(resolve_sector_layout(
+            Err(StorageError::WindowsApi {
+                operation: "alignment-probe",
+                code: ERROR_INVALID_FUNCTION,
+            }),
+            0,
+        )
+        .is_err());
     }
 
     #[test]

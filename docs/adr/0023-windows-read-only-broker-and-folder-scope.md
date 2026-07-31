@@ -75,6 +75,12 @@ Adopt the exact mounted-volume architecture in
    exactly `GENERIC_READ` and `OPEN_EXISTING`, binds the selected serial to that
    live handle with the query-only `GetVolumeInformationByHandleW`, and rejects
    composite or unproven virtual/array mappings before any source byte is read.
+   If and only if a legacy USB bridge rejects
+   `StorageAccessAlignmentProperty` as unsupported, the broker uses the
+   already validated `GetDiskFreeSpaceW` logical sector as both logical and
+   conservative physical alignment for buffered reads, records that evidence
+   mode, and requires it to remain stable during revalidation. Other alignment
+   errors and invalid sector values still fail closed.
    A replacement preserving exactly the selected GUID plus
    serial remains indistinguishable at first open: UAC and broker enumeration
    still occur, but extents, length and geometry are derived from the source

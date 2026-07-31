@@ -914,9 +914,13 @@ fn map_broker_error(error: BrokerClientError) -> DesktopStorageError {
             "UAC_CANCELLED",
             "The Windows elevation request was canceled.",
         ),
-        BrokerClientError::SourceNotFound | BrokerClientError::SourceUnavailable => {
+        BrokerClientError::SourceNotFound => {
             DesktopStorageError::new("SOURCE_GONE", "The selected source is no longer available.")
         }
+        BrokerClientError::SourceUnavailable => DesktopStorageError::new(
+            "SOURCE_IO",
+            "The connected source could not be opened for read-only scanning.",
+        ),
         BrokerClientError::SourceIdentityMismatch | BrokerClientError::SourceChanged => {
             DesktopStorageError::new(
                 "SOURCE_IDENTITY_CHANGED",
