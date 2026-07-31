@@ -124,6 +124,12 @@ function CandidateRow({
       data-candidate-id={candidate.id}
       data-eligibility={candidate.eligibility}
       data-selected={candidate.selected ? "true" : "false"}
+      onClick={(event) => {
+        if (event.target instanceof HTMLInputElement) {
+          return;
+        }
+        controller.setCandidateSelected(candidate.id, !candidate.selected);
+      }}
     >
       <td className="results-selection-column">
         <input

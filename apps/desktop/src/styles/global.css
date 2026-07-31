@@ -1145,7 +1145,8 @@ tbody th {
 
 .candidate-table {
   width: 100%;
-  min-width: 1180px;
+  min-width: 0;
+  table-layout: fixed;
 }
 
 .candidate-path {
@@ -1153,6 +1154,7 @@ tbody th {
   gap: var(--sp-2);
   align-items: flex-start;
   min-width: 260px;
+  overflow-wrap: anywhere;
 }
 
 .candidate-path > svg {
@@ -1473,6 +1475,7 @@ tbody th {
 
 .results-table th,
 .results-table td {
+  overflow-wrap: anywhere;
   vertical-align: middle;
 }
 
