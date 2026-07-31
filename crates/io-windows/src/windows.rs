@@ -34,6 +34,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SYNCHRONIZE,
     VOLUME_NAME_GUID,
 };
+use windows_sys::Win32::System::Com::{
+    CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+};
 use windows_sys::Win32::System::Ioctl::{
     PropertyStandardQuery, StorageAccessAlignmentProperty, StorageDeviceProperty, DISK_EXTENT,
     GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_STORAGE_QUERY_PROPERTY,
@@ -417,6 +420,16 @@ impl DestinationRootQuery for WindowsDestinationRootQuery {
 pub(super) fn open_retained_directory_in_shell(
     retained_directory: File,
 ) -> Result<(), StorageError> {
+    let worker = std::thread::Builder::new()
+        .name("undelete-master-shell-open".to_owned())
+        .spawn(move || run_retained_directory_shell_thread(retained_directory))
+        .map_err(|_| StorageError::ShellThreadUnavailable)?;
+    worker
+        .join()
+        .map_err(|_| StorageError::ShellThreadPanicked)?
+}
+
+fn run_retained_directory_shell_thread(retained_directory: File) -> Result<(), StorageError> {
     let root = query_destination_root_information(&retained_directory)?;
     if !root.is_directory {
         return Err(DestinationError::NotDirectory.into());
@@ -427,11 +440,95 @@ pub(super) fn open_retained_directory_in_shell(
 
     let final_path = query_final_guid_path(&retained_directory)?;
     volume_guid_root_from_final_path(&final_path)?;
-    let verb = wide_string(OsStr::new("explore"));
-    let final_path = wide_string(OsStr::new(&final_path));
+    let request = RetainedDirectoryShellRequest::new(OsString::from(final_path));
+    let mut platform = WindowsRetainedDirectoryShellPlatform;
+    let result = execute_retained_directory_shell_request(&request, &mut platform);
+    drop(retained_directory);
+    result
+}
+
+#[derive(Debug)]
+struct RetainedDirectoryShellRequest {
+    target: OsString,
+}
+
+impl RetainedDirectoryShellRequest {
+    fn new(target: OsString) -> Self {
+        Self { target }
+    }
+
+    fn target(&self) -> &OsStr {
+        &self.target
+    }
+
+    fn verb(&self) -> &'static str {
+        "explore"
+    }
+
+    fn mask(&self) -> u32 {
+        SEE_MASK_NOASYNC
+    }
+}
+
+trait RetainedDirectoryShellPlatform {
+    fn initialize_com(&mut self, flags: u32) -> i32;
+    fn execute(&mut self, request: &RetainedDirectoryShellRequest) -> Result<(), StorageError>;
+    fn uninitialize_com(&mut self);
+}
+
+struct InitializedShellComApartment<'a, P: RetainedDirectoryShellPlatform> {
+    platform: &'a mut P,
+}
+
+impl<P: RetainedDirectoryShellPlatform> Drop for InitializedShellComApartment<'_, P> {
+    fn drop(&mut self) {
+        self.platform.uninitialize_com();
+    }
+}
+
+fn execute_retained_directory_shell_request<P: RetainedDirectoryShellPlatform>(
+    request: &RetainedDirectoryShellRequest,
+    platform: &mut P,
+) -> Result<(), StorageError> {
+    let hresult = platform.initialize_com(SHELL_COM_STA_FLAGS);
+    if hresult < 0 {
+        return Err(StorageError::ComInitializationFailed { hresult });
+    }
+
+    let apartment = InitializedShellComApartment { platform };
+    apartment.platform.execute(request)
+}
+
+struct WindowsRetainedDirectoryShellPlatform;
+
+impl RetainedDirectoryShellPlatform for WindowsRetainedDirectoryShellPlatform {
+    fn initialize_com(&mut self, flags: u32) -> i32 {
+        initialize_retained_directory_shell_com(flags)
+    }
+
+    fn execute(&mut self, request: &RetainedDirectoryShellRequest) -> Result<(), StorageError> {
+        execute_fixed_retained_directory_explore(request)
+    }
+
+    fn uninitialize_com(&mut self) {
+        uninitialize_retained_directory_shell_com();
+    }
+}
+
+fn initialize_retained_directory_shell_com(flags: u32) -> i32 {
+    // SAFETY: the reserved pointer is null and `flags` is supplied only by the
+    // closed lifecycle above as STA | DISABLE_OLE1DDE on this dedicated thread.
+    unsafe { CoInitializeEx(null(), flags) }
+}
+
+fn execute_fixed_retained_directory_explore(
+    request: &RetainedDirectoryShellRequest,
+) -> Result<(), StorageError> {
+    let verb = wide_string(OsStr::new(request.verb()));
+    let final_path = wide_string(request.target());
     let mut execution = ShellExecuteInfoW {
         cb_size: size_of::<ShellExecuteInfoW>() as u32,
-        mask: 0,
+        mask: request.mask(),
         window: null_mut(),
         verb: verb.as_ptr(),
         file: final_path.as_ptr(),
@@ -447,10 +544,10 @@ pub(super) fn open_retained_directory_in_shell(
         process: null_mut(),
     };
     // SAFETY: `execution` contains live NUL-terminated buffers for the fixed
-    // `explore` verb and the bounded normalized directory target queried from
-    // `retained_directory`; optional pointers are null, the handle remains
-    // live through the synchronous shell request, and no process handle is
-    // requested or returned.
+    // `explore` verb and bounded retained-handle-derived directory target;
+    // optional pointers are null, SEE_MASK_NOASYNC keeps the operation on this
+    // initialized STA through its asynchronous phase, and no process handle is
+    // requested.
     let launched = unsafe { ShellExecuteExW(&mut execution) };
     if launched == 0 {
         return Err(last_windows_error(
@@ -458,6 +555,12 @@ pub(super) fn open_retained_directory_in_shell(
         ));
     }
     Ok(())
+}
+
+fn uninitialize_retained_directory_shell_com() {
+    // SAFETY: called exactly once by the apartment guard after each
+    // nonnegative CoInitializeEx result, on the same dedicated shell thread.
+    unsafe { CoUninitialize() };
 }
 
 pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, StorageError> {
@@ -1155,8 +1258,10 @@ impl Drop for LocalAllocation {
 }
 
 const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
+const SEE_MASK_NOASYNC: u32 = 0x0000_0100;
 const SW_HIDE: i32 = 0;
 const SW_SHOWNORMAL: i32 = 1;
+const SHELL_COM_STA_FLAGS: u32 = (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32;
 
 #[repr(C)]
 struct ShellExecuteInfoW {
@@ -2508,15 +2613,128 @@ mod tests {
         let operation = &source[start..end];
 
         assert!(operation.contains("retained_directory: File"));
+        assert!(operation.contains("std::thread::Builder::new()"));
+        assert!(operation.contains("run_retained_directory_shell_thread(retained_directory)"));
         assert!(operation.contains("query_destination_root_information(&retained_directory)"));
         assert!(operation.contains("query_final_guid_path(&retained_directory)"));
-        assert!(operation.contains("OsStr::new(\"explore\")"));
-        assert!(operation.contains("ShellExecuteExW"));
+        assert!(operation.contains("drop(retained_directory)"));
+        assert!(operation.contains("SHELL_COM_STA_FLAGS"));
+        assert!(operation.contains("SEE_MASK_NOASYNC"));
+        assert!(operation.contains("\"explore\""));
+        assert!(operation.contains("ShellExecuteExW(&mut execution)"));
         assert!(operation.contains("parameters: null()"));
         assert!(!operation.contains("std::process::Command"));
         assert!(!operation.contains("PATH"));
         assert!(!operation.contains("executable"));
         assert!(!operation.contains("arguments"));
+    }
+
+    #[test]
+    fn windows_destination_shell_002_uses_fixed_sta_and_noasync_contract() {
+        let request =
+            RetainedDirectoryShellRequest::new(OsString::from(r"\\?\Volume{FIXTURE}\job"));
+        let mut platform = ScriptedRetainedDirectoryShellPlatform::success(0);
+
+        execute_retained_directory_shell_request(&request, &mut platform)
+            .expect("fixed shell request");
+
+        assert_eq!(platform.calls, ["initialize", "execute", "uninitialize"]);
+        assert_eq!(platform.initialize_flags, [SHELL_COM_STA_FLAGS]);
+        assert_eq!(platform.observed_masks, [SEE_MASK_NOASYNC]);
+        assert_eq!(platform.observed_verbs, ["explore"]);
+        assert_eq!(request.target(), OsStr::new(r"\\?\Volume{FIXTURE}\job"));
+    }
+
+    #[test]
+    fn windows_destination_shell_003_balances_s_false_and_shell_failure() {
+        let request =
+            RetainedDirectoryShellRequest::new(OsString::from(r"\\?\Volume{FIXTURE}\job"));
+        let mut platform = ScriptedRetainedDirectoryShellPlatform::shell_failure(1);
+
+        assert!(matches!(
+            execute_retained_directory_shell_request(&request, &mut platform),
+            Err(StorageError::WindowsApi {
+                operation: "fixture-shell-execute",
+                code: 31,
+            })
+        ));
+        assert_eq!(
+            platform.calls,
+            ["initialize", "execute", "uninitialize"],
+            "S_FALSE is successful COM initialization and must be balanced"
+        );
+    }
+
+    #[test]
+    fn windows_destination_shell_004_does_not_execute_or_uninitialize_after_com_failure() {
+        let request =
+            RetainedDirectoryShellRequest::new(OsString::from(r"\\?\Volume{FIXTURE}\job"));
+        let mut platform = ScriptedRetainedDirectoryShellPlatform::success(-2_147_417_850);
+
+        assert!(matches!(
+            execute_retained_directory_shell_request(&request, &mut platform),
+            Err(StorageError::ComInitializationFailed {
+                hresult: -2_147_417_850,
+            })
+        ));
+        assert_eq!(platform.calls, ["initialize"]);
+        assert!(platform.observed_masks.is_empty());
+        assert!(platform.observed_verbs.is_empty());
+    }
+
+    struct ScriptedRetainedDirectoryShellPlatform {
+        initialize_result: i32,
+        fail_shell: bool,
+        calls: Vec<&'static str>,
+        initialize_flags: Vec<u32>,
+        observed_masks: Vec<u32>,
+        observed_verbs: Vec<&'static str>,
+    }
+
+    impl ScriptedRetainedDirectoryShellPlatform {
+        fn success(initialize_result: i32) -> Self {
+            Self {
+                initialize_result,
+                fail_shell: false,
+                calls: Vec::new(),
+                initialize_flags: Vec::new(),
+                observed_masks: Vec::new(),
+                observed_verbs: Vec::new(),
+            }
+        }
+
+        fn shell_failure(initialize_result: i32) -> Self {
+            Self {
+                fail_shell: true,
+                ..Self::success(initialize_result)
+            }
+        }
+    }
+
+    impl RetainedDirectoryShellPlatform for ScriptedRetainedDirectoryShellPlatform {
+        fn initialize_com(&mut self, flags: u32) -> i32 {
+            self.calls.push("initialize");
+            self.initialize_flags.push(flags);
+            self.initialize_result
+        }
+
+        fn execute(&mut self, request: &RetainedDirectoryShellRequest) -> Result<(), StorageError> {
+            self.calls.push("execute");
+            self.observed_masks.push(request.mask());
+            self.observed_verbs.push(request.verb());
+            if self.fail_shell {
+                Err(StorageError::WindowsApi {
+                    operation: "fixture-shell-execute",
+                    code: 31,
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn uninitialize_com(&mut self) {
+            self.calls.push("uninitialize");
+        }
     }
 
     fn destination_baseline() -> DestinationRootBaseline {

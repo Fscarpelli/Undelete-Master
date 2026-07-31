@@ -133,7 +133,11 @@ Adopt the exact mounted-volume architecture in
     coordination to duplicate and revalidate only an already-retained
     destination handle and to ask the shell to explore only an already-retained
     completed-job directory. Those operations do not add a source write,
-    caller-selected path, executable, verb or argument.
+    caller-selected path, executable, verb or argument. The shell request runs
+    on one dedicated joined thread whose COM apartment is initialized with
+    `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`. It uses
+    `SEE_MASK_NOASYNC`, the fixed `explore` verb and null parameters, and keeps
+    the retained `File` live through the call.
 19. Pull-request and ordinary local tests never open a real disk. The image CLI
     remains the read-only fallback and is not superseded.
 
@@ -173,11 +177,16 @@ authority is narrower than its implementation language surface:
 - query the already-bound peer image with `QueryFullProcessImageNameW` and
   compare it with the canonical fixed desktop sibling before serving;
 - elevate the fixed sibling broker;
-- call the existing `ShellExecuteExW` declaration with the fixed `explore`
-  operation and no parameters for a bounded normalized path obtained from the
-  already-retained completed-job directory handle; the handle remains live
-  through the call and no caller can supply a path, executable, verb or
-  argument;
+- dispatch the existing `ShellExecuteExW` declaration from one dedicated
+  joined worker thread only. That thread calls `CoInitializeEx` with exactly
+  `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`, treats every negative
+  HRESULT as failure, and balances both successful results (`S_OK` and
+  `S_FALSE`) with exactly one same-thread `CoUninitialize` through a guard;
+- construct that shell request only from a bounded normalized path obtained
+  from the already-retained completed-job directory handle, set
+  `SEE_MASK_NOASYNC`, use the fixed `explore` verb and null parameters, and
+  keep the handle live until the shell call has completed. No caller can
+  supply a path, executable, verb or argument;
 - open only an internally resolved mounted-volume selector for read;
 - seek and read bounded bytes.
 
@@ -232,10 +241,12 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
 - free space is a current observation, not a reservation, and can change after
   revalidation; the restore transaction must still report later allocation or
   write failures explicitly;
-- `ShellExecuteExW` is asynchronous after the fixed request is accepted. The
-  native handle prevents substitution through the call, but this boundary does
-  not control Explorer after return or authenticate shell extensions; it opens
-  only the completed job directory and never a recovered file;
+- `SEE_MASK_NOASYNC` keeps ShellExecute's potentially asynchronous setup on
+  the initialized apartment until the fixed call returns; it does not make
+  Explorer itself part of this process. The native handle prevents target
+  substitution through the call, but this boundary does not control Explorer
+  after return or authenticate shell extensions; it opens only the completed
+  job directory and never a recovered file;
 - there is no cancellation, snapshot or hotplug guarantee;
 - FAT cannot be folder-scoped;
 - unmounted and composite sources are unsupported;
@@ -263,6 +274,10 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
 - the shell helper verifies directory/non-reparse state and obtains its
   bounded normalized target with `GetFinalPathNameByHandleW` from that same
   live handle before issuing the fixed `explore` request;
+- the retained-directory shell worker uses one STA COM initialization and
+  balances every nonnegative initialization result with one same-thread
+  `CoUninitialize`; a negative HRESULT neither executes the request nor calls
+  `CoUninitialize`;
 - recovered labels are bounded, sanitized and rendered as text;
 - recursive NTFS namespace work is bounded before a saturated sibling descent;
   saturation remains incomplete/partial evidence and unproven ancestry remains
@@ -278,6 +293,11 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
 recursive expansion and the corrected bound of at most 600 calls for the
 synthetic saturated graph. These source-level regressions do not replace native
 package, signature or hostile-corpus evidence.
+
+The retained-directory regression seam executes no Explorer process. Static
+mutation tests pin the exact shell call count and callsites, unique fixed
+`runas`, fixed `explore`/`SEE_MASK_NOASYNC` request, null parameters, handle-only
+public API, dedicated thread and balanced COM lifecycle.
 
 The following remain required before a release claim:
 
@@ -315,6 +335,17 @@ desktop path with opaque volume and NTFS directory identities.
 - [ADR-0027](0027-destination-capability-and-disk-separation.md): opaque
   destination authority, protocol v3 source disk identity and fail-closed
   physical-disk separation.
+
+## Platform references
+
+- [ShellExecuteExW function](https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw):
+  initialize COM before the call; some shell extensions require an STA.
+- [SHELLEXECUTEINFOW structure](https://learn.microsoft.com/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow):
+  `SEE_MASK_NOASYNC` is required when the calling thread has no message loop or
+  will terminate after `ShellExecuteExW`.
+- [CoInitializeEx function](https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex):
+  both `S_OK` and `S_FALSE` require a matching `CoUninitialize`; failed calls
+  do not.
 
 ## Revisit triggers
 

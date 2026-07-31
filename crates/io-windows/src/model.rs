@@ -140,6 +140,12 @@ pub enum StorageError {
     BrokerExitedBeforeConnect,
     #[error("the broker pipe accept timeout is outside the allowed bound")]
     InvalidPipeTimeout,
+    #[error("COM initialization failed on the dedicated shell thread with HRESULT {hresult}")]
+    ComInitializationFailed { hresult: i32 },
+    #[error("the dedicated Windows shell thread could not be started")]
+    ShellThreadUnavailable,
+    #[error("the dedicated Windows shell thread terminated unexpectedly")]
+    ShellThreadPanicked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]

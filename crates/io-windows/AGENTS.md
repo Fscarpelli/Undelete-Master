@@ -18,11 +18,19 @@ These instructions extend the repository root `AGENTS.md`.
     already-bound peer process handle solely to require the canonical fixed
     `undelete-master-desktop.exe` sibling of the running broker before serving;
   - fixed-path `runas` launch of the packaged read-only broker;
+  - one handle-only completed-job directory explore request on a dedicated
+    joined thread that initializes COM with
+    `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`, uses
+    `SEE_MASK_NOASYNC`, the fixed `explore` verb and null parameters, derives
+    its target from that same retained directory handle, and keeps the handle
+    live through `ShellExecuteExW`;
   - broker-internal volume open with `GENERIC_READ`, `OPEN_EXISTING`, and
     read/write/delete sharing, followed only by bounded aligned reads.
 - Every `DeviceIoControl` wrapper is private and hard-codes one reviewed query
   control code. No caller may supply an IOCTL, desired-access mask, device path,
-  pipe path, security descriptor, or shell verb.
+  pipe path, security descriptor, shell path, executable, verb or arguments.
+  The only shell verbs are the unique fixed `runas` broker launch and the
+  unique fixed retained-directory `explore` request.
 - The crate must not expose or import write, trim, format, lock, dismount,
   offline, eject, mount, filesystem-mutation, arbitrary process, registry, or
   network capabilities. Source handles are never write-capable.
@@ -41,8 +49,10 @@ These instructions extend the repository root `AGENTS.md`.
   `crates/io-common`; do not duplicate them here.
 - Tests use pure DTOs, protocol doubles, ordinary temporary files/pipes, or
   deterministic image readers. Ordinary unit/PR tests never open or mutate a
-  real disk or volume. A future device test requires an isolated, disposable,
-  explicitly allowlisted and marked VHD plus the SDD-018 fail-closed guard.
+  real disk or volume and never launch Explorer. Shell lifecycle tests use a
+  pure platform seam plus static mutation checks. A future device test requires
+  an isolated, disposable, explicitly allowlisted and marked VHD plus the
+  SDD-018 fail-closed guard.
 - Preserve the residual-risk statements in ADR-0022 for ordinary image paths
   and ADR-0023 for hotplug, active-volume consistency, unsigned development
   builds, an exact GUID-plus-serial volume clone, and incomplete filesystem
