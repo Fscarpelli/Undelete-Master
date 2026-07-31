@@ -5,7 +5,10 @@ use std::{io, io::Read, io::Write};
 use um_core::{SectorLayout, SourceIdentity};
 
 use crate::DestinationError;
-use crate::{FolderScope, LocationError, StorageError, StorageInventory, StorageLocation};
+use crate::{
+    DestinationRootSnapshot, FolderScope, LocationError, StorageError, StorageInventory,
+    StorageLocation,
+};
 
 pub(super) fn classify_path(_path: &Path) -> Result<StorageLocation, LocationError> {
     Ok(StorageLocation::Local)
@@ -55,9 +58,23 @@ impl DestinationRootBindingInner {
         match *self {}
     }
 
+    pub(super) fn try_clone_directory_file(&self) -> Result<std::fs::File, StorageError> {
+        match *self {}
+    }
+
+    pub(super) fn revalidate(&self) -> Result<DestinationRootSnapshot, StorageError> {
+        match *self {}
+    }
+
     pub(super) fn into_directory_file(self) -> std::fs::File {
         match self {}
     }
+}
+
+pub(super) fn open_retained_directory_in_shell(
+    _retained_directory: std::fs::File,
+) -> Result<(), StorageError> {
+    Err(DestinationError::UnsupportedPlatform.into())
 }
 
 pub(super) fn open_raw_volume(_volume_id: &str) -> Result<RawVolumeInner, StorageError> {

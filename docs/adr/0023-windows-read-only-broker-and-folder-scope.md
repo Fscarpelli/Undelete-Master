@@ -125,10 +125,15 @@ Adopt the exact mounted-volume architecture in
 16. FAT supports a whole-mounted-volume scan only. Folder scope is NTFS-only.
 17. JavaScript sees exactly four commands and only opaque IDs, sanitized display
     data, decimal-string `u64` values and pages of at most 100 candidates.
-18. The desktop does not implement cancellation, hotplug subscription,
-    destination writes, restore publication, preview, exFAT, session
-    persistence or a snapshot guarantee. ADR-0027 adds query-only destination
-    authority and disk-separation evidence without adding a write capability.
+18. The original SDD-018 desktop slice did not implement cancellation, hotplug
+    subscription, destination writes, restore publication, preview, exFAT,
+    session persistence or a snapshot guarantee. ADR-0027 adds query-only
+    destination authority and disk-separation evidence without adding a write
+    capability. SDD-020 Task 5 additionally permits native restore
+    coordination to duplicate and revalidate only an already-retained
+    destination handle and to ask the shell to explore only an already-retained
+    completed-job directory. Those operations do not add a source write,
+    caller-selected path, executable, verb or argument.
 19. Pull-request and ordinary local tests never open a real disk. The image CLI
     remains the read-only fallback and is not superseded.
 
@@ -153,6 +158,13 @@ authority is narrower than its implementation language surface:
 - open one Rust-owned destination selection with fixed query/list access,
   read/write sharing without delete sharing, `OPEN_EXISTING`, backup semantics
   and final-reparse no-follow; retain that exact directory handle;
+- duplicate that already-authorized directory handle through safe
+  `std::fs::File::try_clone` only, preserving the same Windows file object and
+  no-delete-share authority without reopening or exposing its picker path;
+- revalidate the retained directory itself as a non-reparse directory with the
+  same volume serial, file index and final volume GUID, then repeat the
+  NTFS/direct/single-disk query and report only bounded current free bytes and
+  native policy evidence;
 - derive a final volume GUID from that handle, open only that internally
   derived GUID with desired access `0`, and query its serial, sanitized
   label/filesystem, free bytes, bounded physical-disk extents, and the same
@@ -161,6 +173,11 @@ authority is narrower than its implementation language surface:
 - query the already-bound peer image with `QueryFullProcessImageNameW` and
   compare it with the canonical fixed desktop sibling before serving;
 - elevate the fixed sibling broker;
+- call the existing `ShellExecuteExW` declaration with the fixed `explore`
+  operation and no parameters for a bounded normalized path obtained from the
+  already-retained completed-job directory handle; the handle remains live
+  through the call and no caller can supply a path, executable, verb or
+  argument;
 - open only an internally resolved mounted-volume selector for read;
 - seek and read bounded bytes.
 
@@ -188,6 +205,10 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
 - protocol and UI surfaces are finite and testable;
 - destination validation retains one non-serializable, query-only handle and
   rejects unknown, composite, same-disk, changed-source and non-NTFS evidence;
+- restore coordination can derive one worker handle and fresh free-space
+  observation without reopening the mutable picker path;
+- opening a completed destination is a closed handle-only shell operation
+  rather than a WebView-provided path or process request;
 - source and destination reject known virtual, file-backed, Storage Spaces,
   array/network, unknown, and future bus classes before trusting a disk number;
 - the image CLI remains available.
@@ -205,6 +226,16 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
   not proof against a hypervisor or third-party filter that emulates an
   allowlisted direct bus;
 - a live mounted volume can change during the scan;
+- each safe destination-handle duplicate extends the retained
+  no-delete-share lifetime and must remain bounded by the native
+  authority/job stores;
+- free space is a current observation, not a reservation, and can change after
+  revalidation; the restore transaction must still report later allocation or
+  write failures explicitly;
+- `ShellExecuteExW` is asynchronous after the fixed request is accepted. The
+  native handle prevents substitution through the call, but this boundary does
+  not control Explorer after return or authenticate shell extensions; it opens
+  only the completed job directory and never a recovered file;
 - there is no cancellation, snapshot or hotplug guarantee;
 - FAT cannot be folder-scoped;
 - unmounted and composite sources are unsupported;
@@ -226,6 +257,12 @@ mask, trim, format, delete, lock, dismount, mount or repair is permitted.
 - no native path, GUID, handle, extent or source byte reaches JavaScript;
 - source and destination physical disk numbers remain native-only and never
   reach JavaScript;
+- destination revalidation and shell-open accept only retained native handles;
+  they expose no native path, GUID, handle value, executable, verb or argument
+  to JavaScript;
+- the shell helper verifies directory/non-reparse state and obtains its
+  bounded normalized target with `GetFinalPathNameByHandleW` from that same
+  live handle before issuing the fixed `explore` request;
 - recovered labels are bounded, sanitized and rendered as text;
 - recursive NTFS namespace work is bounded before a saturated sibling descent;
   saturation remains incomplete/partial evidence and unproven ancestry remains
@@ -285,4 +322,5 @@ Revisit before adding whole-disk/unmounted authority, another filesystem folder
 scope, a protocol message or wire-field change, generic IOCTL, service,
 cancellation, progress, snapshot, destination filesystem, same-disk override,
 restore write inside this boundary, preview, exFAT, content execution, real-disk
-test or public artifact without completed release gates.
+test, another shell verb/executable/argument, a caller-supplied shell path, or a
+public artifact without completed release gates.

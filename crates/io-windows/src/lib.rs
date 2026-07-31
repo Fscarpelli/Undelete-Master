@@ -103,6 +103,50 @@ pub struct DestinationRootBinding {
     inner: platform::DestinationRootBindingInner,
 }
 
+/// Bounded native-only observation of a revalidated destination root.
+///
+/// This value contains no path, volume GUID, extent, handle, or shell input
+/// and deliberately does not implement serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestinationRootSnapshot {
+    file_system: String,
+    free_bytes: u64,
+    physical_disk_number: u32,
+    reparse_safe: bool,
+}
+
+impl DestinationRootSnapshot {
+    fn new(
+        file_system: String,
+        free_bytes: u64,
+        physical_disk_number: u32,
+        reparse_safe: bool,
+    ) -> Self {
+        Self {
+            file_system,
+            free_bytes,
+            physical_disk_number,
+            reparse_safe,
+        }
+    }
+
+    pub fn file_system(&self) -> &str {
+        &self.file_system
+    }
+
+    pub fn free_bytes(&self) -> u64 {
+        self.free_bytes
+    }
+
+    pub fn physical_disk_number(&self) -> u32 {
+        self.physical_disk_number
+    }
+
+    pub fn reparse_safe(&self) -> bool {
+        self.reparse_safe
+    }
+}
+
 impl DestinationRootBinding {
     pub fn display_label(&self) -> &str {
         self.inner.display_label()
@@ -128,6 +172,21 @@ impl DestinationRootBinding {
         self.inner.reparse_safe()
     }
 
+    /// Duplicates only the already-authorized retained directory handle.
+    ///
+    /// The duplicate refers to the same Windows file object and retains the
+    /// admission handle's no-delete-share protection. No path is reopened or
+    /// exposed.
+    pub fn try_clone_directory_file(&self) -> Result<std::fs::File, StorageError> {
+        self.inner.try_clone_directory_file()
+    }
+
+    /// Revalidates the retained authority through the same live directory
+    /// handle and returns only bounded native policy evidence.
+    pub fn revalidate(&self) -> Result<DestinationRootSnapshot, StorageError> {
+        self.inner.revalidate()
+    }
+
     /// Consumes the opaque binding and transfers the exact retained directory
     /// handle to native capability-relative restore code.
     pub fn into_directory_file(self) -> std::fs::File {
@@ -142,6 +201,17 @@ pub fn open_destination_root_binding(
 ) -> Result<DestinationRootBinding, StorageError> {
     platform::open_destination_root_binding(destination_root)
         .map(|inner| DestinationRootBinding { inner })
+}
+
+/// Opens an already-retained native job directory in the Windows shell.
+///
+/// The caller supplies only the owned directory handle. The platform adapter
+/// verifies that handle and derives the bounded normalized shell target from
+/// it; callers cannot select a path, verb, executable, or argument.
+pub fn open_retained_directory_in_shell(
+    retained_directory: std::fs::File,
+) -> Result<(), StorageError> {
+    platform::open_retained_directory_in_shell(retained_directory)
 }
 
 /// Broker-facing read-only RAW volume.
@@ -909,6 +979,13 @@ mod destination_root_contract_tests {
             open_destination_root_binding;
         let _consume: fn(DestinationRootBinding) -> std::fs::File =
             DestinationRootBinding::into_directory_file;
+        let _duplicate: fn(&DestinationRootBinding) -> Result<std::fs::File, StorageError> =
+            DestinationRootBinding::try_clone_directory_file;
+        let _revalidate: fn(
+            &DestinationRootBinding,
+        ) -> Result<DestinationRootSnapshot, StorageError> = DestinationRootBinding::revalidate;
+        let _open_shell: fn(std::fs::File) -> Result<(), StorageError> =
+            open_retained_directory_in_shell;
     }
 
     #[test]
@@ -928,6 +1005,15 @@ mod destination_root_contract_tests {
     fn windows_destination_binding_007_non_windows_is_structured_unsupported() {
         assert!(matches!(
             open_destination_root_binding(Path::new("/tmp")),
+            Err(StorageError::Destination(
+                DestinationError::UnsupportedPlatform
+            ))
+        ));
+
+        let executable = std::fs::File::open(std::env::current_exe().expect("current executable"))
+            .expect("open a disposable read-only handle");
+        assert!(matches!(
+            open_retained_directory_in_shell(executable),
             Err(StorageError::Destination(
                 DestinationError::UnsupportedPlatform
             ))

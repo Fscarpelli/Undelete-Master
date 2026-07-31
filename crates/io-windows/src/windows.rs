@@ -54,17 +54,17 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 use crate::model::{
     build_inventory_from_query_results, decode_ntfs_file_reference, derive_folder_scope_id,
     derive_volume_id, drive_scan_policy, open_destination_root_with, parse_folder_identity_path,
-    plan_aligned_read, DestinationRootEvidence, DestinationRootInformation, DestinationRootQuery,
-    DestinationVolumeInformation, DiskExtent, DriveKind, NativeVolumeSnapshot, PhysicalBacking,
-    ScanPolicy,
+    plan_aligned_read, volume_guid_root_from_final_path, DestinationRootEvidence,
+    DestinationRootInformation, DestinationRootQuery, DestinationVolumeInformation, DiskExtent,
+    DriveKind, NativeVolumeSnapshot, PhysicalBacking, PhysicalDiskSet, ScanPolicy,
 };
 use crate::transport_config::{
     broker_executable_from_current, build_broker_arguments, build_pipe_name, build_pipe_sddl,
     desktop_executable_from_broker,
 };
 use crate::{
-    DestinationError, FolderScope, FolderScopeError, LocationError, StorageError, StorageInventory,
-    StorageLocation, UnsupportedReason,
+    DestinationError, DestinationRootSnapshot, FolderScope, FolderScopeError, LocationError,
+    StorageError, StorageInventory, StorageLocation, UnsupportedReason,
 };
 
 const DRIVE_UNKNOWN: u32 = 0;
@@ -273,9 +273,102 @@ impl DestinationRootBindingInner {
         self.reparse_safe
     }
 
+    pub(super) fn try_clone_directory_file(&self) -> Result<File, StorageError> {
+        duplicate_retained_directory_file(&self._root_handle)
+    }
+
+    pub(super) fn revalidate(&self) -> Result<DestinationRootSnapshot, StorageError> {
+        let root = query_destination_root_information(&self._root_handle)?;
+        let final_path = query_final_guid_path(&self._root_handle)?;
+        let final_volume_guid = volume_guid_root_from_final_path(&final_path)?;
+        let volume = query_destination_volume(&final_volume_guid)?;
+        validate_destination_root_revalidation(
+            &DestinationRootBaseline {
+                final_volume_guid: self._final_volume_guid.clone(),
+                file_system: self.file_system.clone(),
+                physical_disk_number: self.physical_disk_number,
+                reparse_safe: self.reparse_safe,
+                physical_backing: self._physical_backing,
+                volume_serial: self._volume_serial,
+                file_index: self._file_index,
+            },
+            root,
+            &final_volume_guid,
+            &volume,
+        )
+        .map_err(StorageError::from)
+    }
+
     pub(super) fn into_directory_file(self) -> File {
         self._root_handle
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DestinationRootBaseline {
+    final_volume_guid: String,
+    file_system: String,
+    physical_disk_number: u32,
+    reparse_safe: bool,
+    physical_backing: PhysicalBacking,
+    volume_serial: u32,
+    file_index: u64,
+}
+
+fn validate_destination_root_revalidation(
+    baseline: &DestinationRootBaseline,
+    root: DestinationRootInformation,
+    final_volume_guid: &str,
+    volume: &DestinationVolumeInformation,
+) -> Result<DestinationRootSnapshot, DestinationError> {
+    if !root.is_directory {
+        return Err(DestinationError::NotDirectory);
+    }
+    if root.is_reparse_point || !baseline.reparse_safe {
+        return Err(DestinationError::ReparsePoint);
+    }
+    if root.volume_serial != baseline.volume_serial
+        || root.file_index != baseline.file_index
+        || !final_volume_guid.eq_ignore_ascii_case(&baseline.final_volume_guid)
+        || volume.volume_serial != baseline.volume_serial
+        || volume.total_bytes == 0
+    {
+        return Err(DestinationError::IdentityUnavailable);
+    }
+    if baseline.physical_backing != PhysicalBacking::Direct
+        || volume.physical_backing != PhysicalBacking::Direct
+    {
+        return Err(DestinationError::UnprovenPhysicalBacking);
+    }
+    if !baseline.file_system.eq_ignore_ascii_case("NTFS")
+        || !volume
+            .file_system
+            .eq_ignore_ascii_case(&baseline.file_system)
+    {
+        return Err(DestinationError::UnsupportedFileSystem);
+    }
+
+    let physical_disks = PhysicalDiskSet::from_numbers(&volume.disk_numbers);
+    let physical_disk_number = physical_disks.single()?;
+    if physical_disk_number != baseline.physical_disk_number {
+        return Err(DestinationError::IdentityUnavailable);
+    }
+
+    Ok(DestinationRootSnapshot::new(
+        baseline.file_system.clone(),
+        volume.free_bytes.min(volume.total_bytes),
+        physical_disk_number,
+        true,
+    ))
+}
+
+fn duplicate_retained_directory_file(retained_directory: &File) -> Result<File, StorageError> {
+    retained_directory
+        .try_clone()
+        .map_err(|error| StorageError::WindowsApi {
+            operation: "File::try_clone(destination-root)",
+            code: error.raw_os_error().unwrap_or_default() as u32,
+        })
 }
 
 struct WindowsDestinationRootQuery;
@@ -305,15 +398,8 @@ impl DestinationRootQuery for WindowsDestinationRootQuery {
         &mut self,
         handle: &Self::RootHandle,
     ) -> Result<DestinationRootInformation, DestinationError> {
-        let information =
-            query_file_information(handle).map_err(|_| DestinationError::IdentityUnavailable)?;
-        Ok(DestinationRootInformation {
-            is_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
-            is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
-            volume_serial: information.dwVolumeSerialNumber,
-            file_index: (u64::from(information.nFileIndexHigh) << 32)
-                | u64::from(information.nFileIndexLow),
-        })
+        query_destination_root_information(handle)
+            .map_err(|_| DestinationError::IdentityUnavailable)
     }
 
     fn query_final_path(&mut self, handle: &Self::RootHandle) -> Result<String, DestinationError> {
@@ -326,6 +412,52 @@ impl DestinationRootQuery for WindowsDestinationRootQuery {
     ) -> Result<DestinationVolumeInformation, DestinationError> {
         query_destination_volume(volume_guid).map_err(|_| DestinationError::IdentityUnavailable)
     }
+}
+
+pub(super) fn open_retained_directory_in_shell(
+    retained_directory: File,
+) -> Result<(), StorageError> {
+    let root = query_destination_root_information(&retained_directory)?;
+    if !root.is_directory {
+        return Err(DestinationError::NotDirectory.into());
+    }
+    if root.is_reparse_point {
+        return Err(DestinationError::ReparsePoint.into());
+    }
+
+    let final_path = query_final_guid_path(&retained_directory)?;
+    volume_guid_root_from_final_path(&final_path)?;
+    let verb = wide_string(OsStr::new("explore"));
+    let final_path = wide_string(OsStr::new(&final_path));
+    let mut execution = ShellExecuteInfoW {
+        cb_size: size_of::<ShellExecuteInfoW>() as u32,
+        mask: 0,
+        window: null_mut(),
+        verb: verb.as_ptr(),
+        file: final_path.as_ptr(),
+        parameters: null(),
+        directory: null(),
+        show: SW_SHOWNORMAL,
+        instance: null_mut(),
+        item_id_list: null_mut(),
+        class_name: null(),
+        class_key: null_mut(),
+        hot_key: 0,
+        icon_or_monitor: null_mut(),
+        process: null_mut(),
+    };
+    // SAFETY: `execution` contains live NUL-terminated buffers for the fixed
+    // `explore` verb and the bounded normalized directory target queried from
+    // `retained_directory`; optional pointers are null, the handle remains
+    // live through the synchronous shell request, and no process handle is
+    // requested or returned.
+    let launched = unsafe { ShellExecuteExW(&mut execution) };
+    if launched == 0 {
+        return Err(last_windows_error(
+            "ShellExecuteExW(open-retained-directory)",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn open_raw_volume(volume_id: &str) -> Result<RawVolumeInner, StorageError> {
@@ -1024,6 +1156,7 @@ impl Drop for LocalAllocation {
 
 const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
 const SW_HIDE: i32 = 0;
+const SW_SHOWNORMAL: i32 = 1;
 
 #[repr(C)]
 struct ShellExecuteInfoW {
@@ -1631,8 +1764,8 @@ fn query_handle_sector_layout(handle: &OwnedHandle) -> Result<SectorLayout, Stor
     query_storage_alignment(handle)
 }
 
-fn query_file_information(
-    handle: &OwnedHandle,
+fn query_file_information<H: AsRawHandle>(
+    handle: &H,
 ) -> Result<BY_HANDLE_FILE_INFORMATION, StorageError> {
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: `handle` is a live FILE_READ_ATTRIBUTES directory handle and
@@ -1642,6 +1775,19 @@ fn query_file_information(
         return Err(last_windows_error("GetFileInformationByHandle"));
     }
     Ok(information)
+}
+
+fn query_destination_root_information<H: AsRawHandle>(
+    handle: &H,
+) -> Result<DestinationRootInformation, StorageError> {
+    let information = query_file_information(handle)?;
+    Ok(DestinationRootInformation {
+        is_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+        is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        volume_serial: information.dwVolumeSerialNumber,
+        file_index: (u64::from(information.nFileIndexHigh) << 32)
+            | u64::from(information.nFileIndexLow),
+    })
 }
 
 fn checked_final_guid_path_capacity(required: u32) -> Result<(usize, u32), StorageError> {
@@ -1659,7 +1805,7 @@ fn checked_final_guid_path_capacity(required: u32) -> Result<(usize, u32), Stora
     Ok((capacity, api_capacity))
 }
 
-fn query_final_guid_path(handle: &OwnedHandle) -> Result<String, StorageError> {
+fn query_final_guid_path<H: AsRawHandle>(handle: &H) -> Result<String, StorageError> {
     // SAFETY: a null buffer with zero capacity is the documented sizing query;
     // `handle` remains live and VOLUME_NAME_GUID requests a read-only name.
     let required = unsafe {
@@ -1692,7 +1838,7 @@ fn query_final_guid_path(handle: &OwnedHandle) -> Result<String, StorageError> {
     if written >= buffer.len() {
         return Err(StorageError::InvalidGeometry);
     }
-    Ok(String::from_utf16_lossy(&buffer[..written]))
+    String::from_utf16(&buffer[..written]).map_err(|_| StorageError::InvalidGeometry)
 }
 
 fn reject_reparse_ancestry(path: &Path) -> Result<(), StorageError> {
@@ -2064,6 +2210,345 @@ mod tests {
                 checked_final_guid_path_capacity(invalid),
                 Err(StorageError::InvalidGeometry)
             ));
+        }
+    }
+
+    #[test]
+    fn windows_destination_revalidation_001_accepts_only_the_unchanged_retained_authority() {
+        let baseline = destination_baseline();
+        let root = destination_root_information();
+        let volume = destination_volume_information();
+
+        let snapshot = validate_destination_root_revalidation(
+            &baseline,
+            root,
+            r"\\?\Volume{DEST-0001}\",
+            &volume,
+        )
+        .expect("unchanged authority");
+
+        assert_eq!(snapshot.file_system(), "ntfs");
+        assert_eq!(snapshot.free_bytes(), 700);
+        assert_eq!(snapshot.physical_disk_number(), 9);
+        assert!(snapshot.reparse_safe());
+    }
+
+    #[test]
+    fn windows_destination_revalidation_002_rejects_root_identity_and_guid_drift() {
+        let baseline = destination_baseline();
+        let root = destination_root_information();
+        let volume = destination_volume_information();
+
+        let mut not_directory = root;
+        not_directory.is_directory = false;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                not_directory,
+                r"\\?\Volume{DEST-0001}\",
+                &volume,
+            ),
+            Err(DestinationError::NotDirectory)
+        );
+
+        let mut reparse = root;
+        reparse.is_reparse_point = true;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                reparse,
+                r"\\?\Volume{DEST-0001}\",
+                &volume,
+            ),
+            Err(DestinationError::ReparsePoint)
+        );
+
+        let mut unsafe_baseline = baseline.clone();
+        unsafe_baseline.reparse_safe = false;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &unsafe_baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &volume,
+            ),
+            Err(DestinationError::ReparsePoint)
+        );
+
+        let mut changed_serial = root;
+        changed_serial.volume_serial ^= 1;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                changed_serial,
+                r"\\?\Volume{DEST-0001}\",
+                &volume,
+            ),
+            Err(DestinationError::IdentityUnavailable)
+        );
+
+        let mut changed_file_index = root;
+        changed_file_index.file_index += 1;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                changed_file_index,
+                r"\\?\Volume{DEST-0001}\",
+                &volume,
+            ),
+            Err(DestinationError::IdentityUnavailable)
+        );
+
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0002}\",
+                &volume,
+            ),
+            Err(DestinationError::IdentityUnavailable)
+        );
+    }
+
+    #[test]
+    fn windows_destination_revalidation_003_rejects_volume_and_backing_drift() {
+        let baseline = destination_baseline();
+        let root = destination_root_information();
+
+        let mut changed_baseline_file_system = baseline.clone();
+        changed_baseline_file_system.file_system = "ReFS".to_owned();
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &changed_baseline_file_system,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &destination_volume_information(),
+            ),
+            Err(DestinationError::UnsupportedFileSystem)
+        );
+
+        let mut changed_baseline_backing = baseline.clone();
+        changed_baseline_backing.physical_backing = PhysicalBacking::Unproven;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &changed_baseline_backing,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &destination_volume_information(),
+            ),
+            Err(DestinationError::UnprovenPhysicalBacking)
+        );
+
+        let mut changed_serial = destination_volume_information();
+        changed_serial.volume_serial ^= 1;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &changed_serial,
+            ),
+            Err(DestinationError::IdentityUnavailable)
+        );
+
+        let mut invalid_total = destination_volume_information();
+        invalid_total.total_bytes = 0;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &invalid_total,
+            ),
+            Err(DestinationError::IdentityUnavailable)
+        );
+
+        let mut changed_file_system = destination_volume_information();
+        changed_file_system.file_system = "ReFS".to_owned();
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &changed_file_system,
+            ),
+            Err(DestinationError::UnsupportedFileSystem)
+        );
+
+        let mut missing_disk = destination_volume_information();
+        missing_disk.disk_numbers.clear();
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &missing_disk,
+            ),
+            Err(DestinationError::MissingDiskMapping)
+        );
+
+        let mut multiple_disks = destination_volume_information();
+        multiple_disks.disk_numbers.push(10);
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &multiple_disks,
+            ),
+            Err(DestinationError::MultiDiskVolume)
+        );
+
+        let mut changed_disk = destination_volume_information();
+        changed_disk.disk_numbers = vec![10];
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &changed_disk,
+            ),
+            Err(DestinationError::IdentityUnavailable)
+        );
+
+        let mut unproven_backing = destination_volume_information();
+        unproven_backing.physical_backing = PhysicalBacking::Unproven;
+        assert_eq!(
+            validate_destination_root_revalidation(
+                &baseline,
+                root,
+                r"\\?\Volume{DEST-0001}\",
+                &unproven_backing,
+            ),
+            Err(DestinationError::UnprovenPhysicalBacking)
+        );
+    }
+
+    #[test]
+    fn windows_destination_revalidation_004_returns_current_bounded_free_bytes() {
+        let baseline = destination_baseline();
+        let root = destination_root_information();
+        let mut volume = destination_volume_information();
+        volume.free_bytes = 1_500;
+
+        let snapshot = validate_destination_root_revalidation(
+            &baseline,
+            root,
+            r"\\?\Volume{DEST-0001}\",
+            &volume,
+        )
+        .expect("free-space changes do not substitute identity");
+
+        assert_eq!(snapshot.free_bytes(), 1_000);
+
+        volume.free_bytes = 25;
+        let snapshot = validate_destination_root_revalidation(
+            &baseline,
+            root,
+            r"\\?\Volume{DEST-0001}\",
+            &volume,
+        )
+        .expect("free-space decreases remain observable");
+        assert_eq!(snapshot.free_bytes(), 25);
+    }
+
+    #[test]
+    fn windows_destination_clone_001_duplicates_the_retained_directory_identity() {
+        let unique = format!(
+            "um-io-windows-destination-clone-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&directory).expect("create disposable directory");
+        let retained = File::from(
+            open_destination_root_handle(&directory).expect("open retained directory handle"),
+        );
+
+        let duplicate =
+            duplicate_retained_directory_file(&retained).expect("duplicate retained handle");
+        let retained_information =
+            query_file_information(&retained).expect("query retained identity");
+        let duplicate_information =
+            query_file_information(&duplicate).expect("query duplicate identity");
+
+        assert_eq!(
+            retained_information.dwVolumeSerialNumber,
+            duplicate_information.dwVolumeSerialNumber
+        );
+        assert_eq!(
+            (
+                retained_information.nFileIndexHigh,
+                retained_information.nFileIndexLow,
+            ),
+            (
+                duplicate_information.nFileIndexHigh,
+                duplicate_information.nFileIndexLow,
+            )
+        );
+
+        drop(duplicate);
+        drop(retained);
+        std::fs::remove_dir(&directory).expect("remove disposable directory");
+    }
+
+    #[test]
+    fn windows_destination_shell_001_is_a_closed_handle_only_fixed_operation() {
+        let source = include_str!("windows.rs");
+        let start = source
+            .find("pub(super) fn open_retained_directory_in_shell")
+            .expect("closed shell helper");
+        let end = source[start..]
+            .find("pub(super) fn open_raw_volume")
+            .map(|offset| start + offset)
+            .expect("next audited boundary");
+        let operation = &source[start..end];
+
+        assert!(operation.contains("retained_directory: File"));
+        assert!(operation.contains("query_destination_root_information(&retained_directory)"));
+        assert!(operation.contains("query_final_guid_path(&retained_directory)"));
+        assert!(operation.contains("OsStr::new(\"explore\")"));
+        assert!(operation.contains("ShellExecuteExW"));
+        assert!(operation.contains("parameters: null()"));
+        assert!(!operation.contains("std::process::Command"));
+        assert!(!operation.contains("PATH"));
+        assert!(!operation.contains("executable"));
+        assert!(!operation.contains("arguments"));
+    }
+
+    fn destination_baseline() -> DestinationRootBaseline {
+        DestinationRootBaseline {
+            final_volume_guid: r"\\?\Volume{DEST-0001}\".to_owned(),
+            file_system: "ntfs".to_owned(),
+            physical_disk_number: 9,
+            reparse_safe: true,
+            physical_backing: PhysicalBacking::Direct,
+            volume_serial: 0xA1B2_C3D4,
+            file_index: 42,
+        }
+    }
+
+    fn destination_root_information() -> DestinationRootInformation {
+        DestinationRootInformation {
+            is_directory: true,
+            is_reparse_point: false,
+            volume_serial: 0xA1B2_C3D4,
+            file_index: 42,
+        }
+    }
+
+    fn destination_volume_information() -> DestinationVolumeInformation {
+        DestinationVolumeInformation {
+            label: "Recovery".to_owned(),
+            file_system: "NTFS".to_owned(),
+            volume_serial: 0xA1B2_C3D4,
+            total_bytes: 1_000,
+            free_bytes: 700,
+            disk_numbers: vec![9],
+            physical_backing: PhysicalBacking::Direct,
         }
     }
 
