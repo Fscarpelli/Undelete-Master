@@ -1,8 +1,8 @@
 # SDD-012 — Test and Validation Plan
 
-Status: Normative; same-revision local gates and release-pair inspection
-passed; remote, signed-release and governed real-device recovery evidence
-pending
+Status: Normative; same-revision local gates, release-pair inspection and
+GitHub Actions quality run #9 passed; signed-release and governed real-device
+recovery evidence pending
 
 ## Mandatory same-revision gates
 
@@ -58,7 +58,7 @@ that a real source scan succeeded.
 | Static safety | no source mutation; physical-disk identity only through fixed query-only extent/property calls; one private top-level canonical import and exactly five bare non-macro audited `CreateFileW` shapes; raw/qualified/rebound/link-name/dynamic resolution denied; one exact `ShellExecuteExW` extern; exact root/io-windows/Tauri dependency inventories, workspace-only first-party child dependencies, no first-party proc-macro crates, Cargo patch rejection, deterministic nested `.cargo/config(.toml)` rejection outside generated/vendor trees with normalized in-repo member traversal and fail-closed escape/loop handling, closed io-windows macro invocation/rebinding surface, and resolved-package loader deny; exactly 12 Tauri commands; closed protocol/opcode surface; no real-device CI | Same-revision static validators and their regression suites passed; live destination/recovery acceptance remains pending |
 | Native package | both binaries, hashes, fixed sibling layout, extracted `asInvoker`/`requireAdministrator` manifests | Passed for the unsigned local release pair at the Task 7 revision; hashes and exact limitations are retained in the Task 7 evidence |
 | Native UX | actual Tauri window, inventory only, required sizes, focus/zoom/forced colors | Release window launch/close and mounted-volume rendering observed; scan, restore, 200% zoom, forced-colors and assistive-technology acceptance remain pending |
-| Remote | pushed revision and successful GitHub Actions conclusions | Pending |
+| Remote | pushed revision and successful GitHub Actions conclusions | Passed for commit `41b06d790d47699994a82c41eba44a0a314cc9ab`: `quality` run #9 completed successfully on draft PR #2; later revisions require their own run |
 | Release | Authenticode, clean machine, SBOM/licensing and endpoint-security disposition | Pending |
 
 ## Focused regression families
@@ -115,6 +115,6 @@ signed production readiness.
 
 The [2026-07-30 actionable-restore evidence](../evidence/actionable-restore-2026-07-30.md)
 records the frozen revision, required gates, release-pair hashes, extracted
-manifest levels, bounded packaged launch and explicitly unverified real-device
-recovery. It does not promote unsigned local binaries to a redistributable
-release.
+manifest levels, bounded packaged launch, successful remote `quality` run #9
+and explicitly unverified real-device recovery. It does not promote unsigned
+local binaries to a redistributable release.

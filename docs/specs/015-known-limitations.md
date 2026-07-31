@@ -8,10 +8,12 @@ This repository is not a production data-recovery release. The desktop now has
 an implemented real mounted-volume discovery, bounded results workspace and
 transactional restore workflow. Required local gates, an unsigned release
 build, embedded-manifest inspection and a bounded inventory-only launch have
-passed. Remote CI, signing, endpoint-security reputation, clean-machine and
-governed real deleted-file recovery gates remain pending. An interactive scan
-reported by the product owner is diagnostic input, not retained acceptance
-evidence; no real-volume scan has been executed as a project acceptance test.
+passed. GitHub Actions `quality` run #9 passed for pushed commit
+`41b06d790d47699994a82c41eba44a0a314cc9ab`. Signing, endpoint-security
+reputation, clean-machine and governed real deleted-file recovery gates remain
+pending. An interactive scan reported by the product owner is diagnostic
+input, not retained acceptance evidence; no real-volume scan has been executed
+as a project acceptance test.
 
 The `scan-image` CLI process command continues to analyze approved regular
 image files in metadata mode and does not restore them. The desktop can restore
@@ -193,7 +195,9 @@ a whole NTFS mounted volume; metadata remains the default scan mode.
 - The unsigned desktop/broker pair, hashes, extracted manifests and an actual
   inventory-only Tauri launch are recorded. A real scan, destination picker,
   deleted-file restore, open-destination action, screen reader, 200% zoom,
-  forced-colors, remote CI and clean-machine exercise remain pending.
+  forced-colors and clean-machine exercise remain pending. Remote GitHub
+  Actions `quality` run #9 passed for commit
+  `41b06d790d47699994a82c41eba44a0a314cc9ab`.
 - The broker now queries the already-bound peer with
   `QueryFullProcessImageNameW` and requires the canonical fixed
   `undelete-master-desktop.exe` sibling before serving. This reduces the

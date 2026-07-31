@@ -3,7 +3,9 @@
 Status: `Implemented-unverified`; this is the mounted-volume scan baseline.
 SDD-019 and SDD-020 extend the current product with bounded JPEG carving and
 transactional restore. Local gates and the unsigned release pair are recorded;
-governed real scanning/recovery, signing and remote gates remain pending.
+GitHub Actions `quality` run #9 passed for pushed commit
+`41b06d790d47699994a82c41eba44a0a314cc9ab`. Governed real
+scanning/recovery and signing gates remain pending.
 
 Decision date: 2026-07-29
 Related decision:
@@ -662,7 +664,7 @@ frozen revision:
 | Native UX | Actual Tauri window at required sizes; no simulated screen | Inventory and Settings keyboard navigation observed; 150% DPI native/UIA bounds previously verified; broader accessibility matrix pending |
 | Real storage inventory | Read-only inventory only; observed source labels must be sanitized | Two supported local NTFS volumes observed; no scan activated |
 | Real source scan | Not required and not executed as part of this increment | No claim |
-| Remote CI | Workflow URL and successful conclusions for pushed revision | Pending |
+| Remote CI | Workflow URL and successful conclusions for pushed revision | Passed for commit `41b06d790d47699994a82c41eba44a0a314cc9ab`: `quality` run #9 on draft PR #2 completed successfully |
 | Signing and endpoint security | Authenticode, administrator-protected package placement, clean-machine and vendor disposition for exact artifact | Pending |
 
 Norton deleted an unsigned development executable on 2026-07-29. That event is

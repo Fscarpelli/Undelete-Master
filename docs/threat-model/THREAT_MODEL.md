@@ -73,7 +73,7 @@ metadata/DTO and DTO/React rendering.
 | False completeness | Parser/filter to UI | User treats partial count as exhaustive | NTFS/FAT status/warnings retained; unknown ancestry separate; score not a guarantee | Native presentation and external corpus pending | Mitigating |
 | Fabricated production state | Browser/UI data path | User trusts nonexistent scan or restore | Browser fails closed; exact 12-command inventory; no production sample/fallback/timer result; real-only validator covers direct, aliased, namespace and dynamic invocations | Governed packaged scan/recovery interaction remains pending | Mitigating |
 | Recovered-content execution | Candidate/restore UI | Malware executes | No content preview or execution; recovered files remain untrusted; the fixed shell action opens only a terminal job directory after native authority revalidation and accepts no path/executable from the WebView | Preview would require a separately sandboxed design; user execution outside the app remains possible | Mitigating |
-| Destructive test | CI/local tests | Real media damaged | Synthetic images/readers only; static CI/device guard | Same-revision CI-safety and real-only validators passed; static analysis remains defense in depth and remote CI/runtime isolation evidence is pending | Mitigating |
+| Destructive test | CI/local tests | Real media damaged | Synthetic images/readers only; static CI/device guard | Same-revision CI-safety/real-only validators and GitHub Actions `quality` run #9 passed for commit `41b06d790d47699994a82c41eba44a0a314cc9ab`; static analysis and managed-runner logs remain defense in depth rather than proof against runtime or obfuscated device access | Mitigating |
 | Unsigned artifact quarantine | Release | User disables protection or trusts altered binary | Event remains unresolved; no false-positive claim; release requires signing and exact hashes | Norton disposition, Authenticode and clean-machine evidence pending | Open |
 
 ## Protocol security facts
@@ -111,10 +111,12 @@ capability remains query-only at admission and is consumed by the implemented
 capability-relative transactional publisher without path reopening.
 Namespace-budget saturation remains explicitly partial/unknown rather than
 complete evidence. No real volume was scanned or restored for this evidence.
-Local gates, static guards and unsigned native binaries/manifests/hashes are
-recorded. Actual assistive-technology acceptance, remote CI, external corpora,
-disposable allowlisted VHD rejection, Authenticode, administrator-protected
-installation, clean-machine and endpoint-security disposition remain pending.
+Local gates, static guards, unsigned native binaries/manifests/hashes and
+GitHub Actions `quality` run #9 for pushed commit
+`41b06d790d47699994a82c41eba44a0a314cc9ab` are recorded. Actual
+assistive-technology acceptance, external corpora, disposable allowlisted VHD
+rejection, Authenticode, administrator-protected installation, clean-machine
+and endpoint-security disposition remain pending.
 
 Norton’s deletion of an unsigned development build is inconclusive. Temporary
 local protection state is not a mitigation and must not be generalized into a

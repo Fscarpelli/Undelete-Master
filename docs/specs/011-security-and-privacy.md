@@ -136,8 +136,10 @@ privacy and browser fail-closed behavior.
 
 Same-revision Rust/frontend/static gates, the unsigned native sibling pair,
 extracted execution levels and bounded inventory/Settings Tauri interaction
-are recorded in the Task 7 evidence. No real source scan or deleted-file
-restore has been executed as validation. Broader accessibility, remote CI,
+are recorded in the Task 7 evidence. GitHub Actions `quality` run #9 also
+passed for pushed commit
+`41b06d790d47699994a82c41eba44a0a314cc9ab`. No real source scan or
+deleted-file restore has been executed as validation. Broader accessibility,
 signing, protected installation, clean-machine and endpoint-security evidence
 remain pending.
 

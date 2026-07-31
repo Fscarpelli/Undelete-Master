@@ -136,6 +136,28 @@ separately governed source and a proven different physical NTFS destination.
 It must verify the published file, sidecar when applicable and terminal
 manifest hashes without writing to the source.
 
+## Remote GitHub Actions evidence
+
+Draft pull request
+[#2](https://github.com/Fscarpelli/Undelete-Master/pull/2) exercised commit
+[`41b06d790d47699994a82c41eba44a0a314cc9ab`](https://github.com/Fscarpelli/Undelete-Master/commit/41b06d790d47699994a82c41eba44a0a314cc9ab)
+through GitHub Actions
+[`quality` run #9](https://github.com/Fscarpelli/Undelete-Master/actions/runs/30606689992)
+(`run_id` `30606689992`). GitHub reported the workflow as `completed` with
+conclusion `success`.
+
+All three jobs completed with conclusion `success`:
+
+- `Rust format, lint, test, and release smoke`;
+- `Frontend and native desktop build`;
+- `Documentation and CI safety`.
+
+This closes the remote quality-CI gate for that exact pushed revision. It does
+not prove a real-volume scan or restore, publisher identity, protected
+installation, clean-machine compatibility, assistive-technology acceptance,
+endpoint-security reputation or arbitrary-media recovery. Any later release
+revision requires its own successful remote run.
+
 ## Current disposition
 
 The actionable native query/filter/sort/cursor/selection workspace, opaque
@@ -153,5 +175,5 @@ product/release acceptance:
 - screen-reader, 200% zoom and Windows high-contrast acceptance;
 - installer/protected placement, Authenticode, SBOM/licensing release review
   and endpoint-security disposition;
-- clean-machine and remote GitHub Actions evidence;
+- clean-machine evidence;
 - external forensic corpus and long-running performance evidence.

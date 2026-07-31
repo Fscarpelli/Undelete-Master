@@ -307,7 +307,10 @@ The following remain required before a release claim:
 - updated static real-only and destructive-storage validators;
 - native main/broker build, hashes, sibling layout and manifest extraction;
 - actual Tauri visual/accessibility review without a real source scan;
-- remote CI on the pushed revision;
+- remote CI on the exact pushed revision; GitHub Actions `quality` run #9
+  satisfies this for commit
+  `41b06d790d47699994a82c41eba44a0a314cc9ab`, while every later release
+  revision requires its own successful run;
 - signed clean-machine artifacts, administrator-protected package placement and
   endpoint-security disposition.
 

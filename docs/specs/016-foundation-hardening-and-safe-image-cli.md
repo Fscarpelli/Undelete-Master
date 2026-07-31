@@ -1,7 +1,7 @@
 # SDD-016 — Foundation Hardening and Safe Image CLI
 
-Status: Parser and image-CLI requirements verified on the frozen code tree;
-quality/CI and superseded UI scope remain partial or not started
+Status: Parser, image-CLI, and quality/CI requirements verified on the frozen
+code tree; superseded UI scope remains partial or not started
 Date: 2026-07-29  
 Owner: Undelete Master maintainers  
 Parent source of truth: `UNDELETE_MASTER_CODEX_MASTER_SPEC.md`
@@ -512,7 +512,9 @@ CI uses only repository fixtures, memory images, and temporary regular files.
 - **Error behavior:** any warning, lint issue, type error, failing test, or build
   failure blocks the workflow.
 - **Security implications:** CI never accesses real devices.
-- **Observability:** GitHub Actions retains command logs.
+- **Observability:** GitHub Actions retains command logs. Draft PR #2
+  `quality` run #9 retained successful conclusions for pushed commit
+  `41b06d790d47699994a82c41eba44a0a314cc9ab`.
 - **Acceptance criteria:** all required commands exit zero on the final tree.
 - **Test IDs:** `CI-SAFETY-INLINE-001`,
   `CI-SAFETY-PACKAGE-LIFECYCLE-001`, `CI-SAFETY-SHEBANG-001`,
@@ -529,7 +531,7 @@ CI uses only repository fixtures, memory images, and temporary regular files.
 - **Implementation links:** `.github/workflows/quality.yml`,
   `.github/scripts/validate_ci_safety.py`,
   `.github/scripts/validate_docs.py`.
-- **Status:** Partial.
+- **Status:** Verified.
 
 ## 6. Data flow
 

@@ -616,9 +616,11 @@ file is created. Completion requires:
 - a release build, not only a debug build, is produced for user validation.
 
 The implementation and deterministic/local portions of this gate pass. The
-release pair and inventory-only packaged launch also pass. Product acceptance
-does not yet pass because known deleted-file recovery on governed separate
-physical media, assistive-technology review, signing, endpoint-security
-disposition, clean-machine validation and remote CI are still outstanding.
-Accordingly this SDD remains `Implemented-unverified`, not `Verified`.
+release pair, inventory-only packaged launch and GitHub Actions `quality` run
+#9 for pushed commit `41b06d790d47699994a82c41eba44a0a314cc9ab` also pass.
+Product acceptance does not yet pass because known deleted-file recovery on
+governed separate physical media, assistive-technology review, signing,
+endpoint-security disposition and clean-machine validation are still
+outstanding. Accordingly this SDD remains `Implemented-unverified`, not
+`Verified`.
 
