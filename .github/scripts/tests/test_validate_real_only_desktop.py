@@ -82,7 +82,19 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             'export const query = (requestId: string, sessionId: string) => '
             'invoke("query_candidate_page", { requestId, sessionId });\n'
             'export const select = (requestId: string, sessionId: string) => '
-            'invoke("update_candidate_selection", { requestId, sessionId });\n',
+            'invoke("update_candidate_selection", { requestId, sessionId });\n'
+            'export const destination = (requestId: string, scanId: string) => '
+            'invoke("select_restore_destination", { requestId, scanId });\n'
+            'export const plan = (requestId: string, scanId: string) => '
+            'invoke("create_restore_plan", { requestId, scanId });\n'
+            'export const restore = (requestId: string, planId: string) => '
+            'invoke("start_restore", { requestId, planId });\n'
+            'export const job = (requestId: string, jobId: string) => '
+            'invoke("get_restore_job", { requestId, jobId });\n'
+            'export const cancel = (requestId: string, jobId: string) => '
+            'invoke("cancel_restore", { requestId, jobId });\n'
+            'export const open = (requestId: string, jobId: string) => '
+            'invoke("open_restore_destination", { requestId, jobId });\n',
             encoding="utf-8",
         )
         (source / "App.tsx").write_text(
@@ -108,8 +120,173 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "      storage::get_candidate_page,\n"
             "      storage::query_candidate_page,\n"
             "      storage::update_candidate_selection,\n"
+            "      restore::select_restore_destination,\n"
+            "      restore::create_restore_plan,\n"
+            "      restore::start_restore,\n"
+            "      restore::get_restore_job,\n"
+            "      restore::cancel_restore,\n"
+            "      restore::open_restore_destination,\n"
             "    ]);\n"
             "}\n",
+            encoding="utf-8",
+        )
+        (tauri / "src" / "restore.rs").write_text(
+            "use serde::{Deserialize, Serialize};\n"
+            "use crate::storage::DesktopStorageState;\n"
+            "struct RestoreCoordinator {}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct DesktopRestoreError { code: &'static str, message: &'static str }\n"
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "enum CollisionPolicyDto {\n"
+            "  Rename,\n"
+            "}\n"
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "enum PartialFilePolicyDto {\n"
+            "  CompleteOnly,\n"
+            "  ZeroFillAndMap,\n"
+            "}\n"
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "enum RestoreJobStatusDto {\n"
+            "  Queued,\n"
+            "  Running,\n"
+            "  Cancelling,\n"
+            "  Completed,\n"
+            "  Failed,\n"
+            "  Cancelled,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct DestinationSummaryDto {\n"
+            "  schema_version: u32,\n"
+            "  destination_id: String,\n"
+            "  label: String,\n"
+            "  volume_label: String,\n"
+            "  file_system: String,\n"
+            "  free_bytes: String,\n"
+            "  relation: &'static str,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestorePlanSummaryDto {\n"
+            "  schema_version: u32,\n"
+            "  plan_id: String,\n"
+            "  plan_digest: String,\n"
+            "  scan_id: String,\n"
+            "  destination_id: String,\n"
+            "  selection_revision: String,\n"
+            "  collision_policy: CollisionPolicyDto,\n"
+            "  partial_file_policy: PartialFilePolicyDto,\n"
+            "  items_total: String,\n"
+            "  files_total: String,\n"
+            "  directories_total: String,\n"
+            "  logical_bytes: String,\n"
+            "  best_effort_items: String,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestoreCurrentItemDto {\n"
+            "  ordinal: String,\n"
+            "  candidate_id: String,\n"
+            "  kind: &'static str,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestoreManifestSummaryDto {\n"
+            "  manifest_sha256: String,\n"
+            "  completion_status: &'static str,\n"
+            "  published_items: String,\n"
+            "  partial_items: String,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestoreJobSnapshotDto {\n"
+            "  schema_version: u32,\n"
+            "  job_id: String,\n"
+            "  plan_id: String,\n"
+            "  status: RestoreJobStatusDto,\n"
+            "  items_total: String,\n"
+            "  items_completed: String,\n"
+            "  items_failed: String,\n"
+            "  items_cancelled: String,\n"
+            "  bytes_total: String,\n"
+            "  bytes_completed: String,\n"
+            "  current_item: Option<RestoreCurrentItemDto>,\n"
+            "  warnings: Vec<String>,\n"
+            "  manifest: Option<RestoreManifestSummaryDto>,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct OpenRestoreDestinationDto { schema_version: u32, opened: bool }\n"
+            "#[tauri::command]\n"
+            "pub(crate) fn select_restore_destination(\n"
+            "  app: tauri::AppHandle,\n"
+            "  storage: tauri::State<'_, DesktopStorageState>,\n"
+            "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+            "  request_id: String,\n"
+            "  scan_id: String,\n"
+            ") -> Result<Option<DestinationSummaryDto>, DesktopRestoreError> {\n"
+            "  storage.restore_scan_binding(&scan_id);\n"
+            "  app.dialog().blocking_pick_folder();\n"
+            "  storage.restore_scan_binding(&scan_id);\n"
+            "  restore.admit_destination_binding();\n"
+            "  loop {}\n"
+            "}\n"
+            "#[tauri::command]\n"
+            "pub(crate) async fn create_restore_plan(\n"
+            "  storage: tauri::State<'_, DesktopStorageState>,\n"
+            "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+            "  request_id: String,\n"
+            "  scan_id: String,\n"
+            "  selection_revision: String,\n"
+            "  destination_id: String,\n"
+            "  collision_policy: CollisionPolicyDto,\n"
+            "  partial_file_policy: PartialFilePolicyDto,\n"
+            ") -> Result<RestorePlanSummaryDto, DesktopRestoreError> {\n"
+            "  tauri::async_runtime::spawn_blocking(move || {\n"
+            "    let scan = storage.restore_snapshot(&scan_id, None);\n"
+            "    restore.create_restore_plan(&scan);\n"
+            "  }).await;\n"
+            "  loop {}\n"
+            "}\n"
+            "#[tauri::command]\n"
+            "pub(crate) async fn start_restore(\n"
+            "  storage: tauri::State<'_, DesktopStorageState>,\n"
+            "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+            "  request_id: String,\n"
+            "  plan_id: String,\n"
+            ") -> Result<RestoreJobSnapshotDto, DesktopRestoreError> {\n"
+            "  tauri::async_runtime::spawn_blocking(move || {\n"
+            "    restore.plan_binding(&plan_id);\n"
+            "    restore.preflight_restore_start(&plan_id);\n"
+            "    storage.with_restore_start_selection(&scan_id, revision, |selection| {\n"
+            "      restore.commit_prepared_restore_start(selection, prepared);\n"
+            "    });\n"
+            "    restore.launch_restore(committed);\n"
+            "  }).await;\n"
+            "  loop {}\n"
+            "}\n"
+            "#[tauri::command]\n"
+            "pub(crate) fn get_restore_job(\n"
+            "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+            "  request_id: String,\n"
+            "  job_id: String,\n"
+            ") -> Result<RestoreJobSnapshotDto, DesktopRestoreError> { loop {} }\n"
+            "#[tauri::command]\n"
+            "pub(crate) fn cancel_restore(\n"
+            "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+            "  request_id: String,\n"
+            "  job_id: String,\n"
+            ") -> Result<RestoreJobSnapshotDto, DesktopRestoreError> { loop {} }\n"
+            "#[tauri::command]\n"
+            "pub(crate) fn open_restore_destination(\n"
+            "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+            "  request_id: String,\n"
+            "  job_id: String,\n"
+            ") -> Result<OpenRestoreDestinationDto, DesktopRestoreError> { loop {} }\n",
             encoding="utf-8",
         )
         (tauri / "Cargo.toml").write_text(
@@ -122,6 +299,8 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "sha2 = { workspace = true }\n"
             "hex = { workspace = true }\n"
             "getrandom = { workspace = true }\n"
+            "cap-std = { workspace = true }\n"
+            "cap-fs-ext = { workspace = true }\n"
             'tauri = { version = "=2.11.5", features = [] }\n'
             'tauri-plugin-dialog = { version = "=2.7.2" }\n'
             "um-broker-client = { workspace = true }\n"
@@ -130,11 +309,13 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "um-fs-common = { workspace = true }\n"
             "um-fs-ntfs = { workspace = true }\n"
             "um-io-windows = { workspace = true }\n"
+            "um-restore = { workspace = true }\n"
             "\n"
             "[dev-dependencies]\n"
             "crc32fast = { workspace = true }\n"
             "tempfile = { workspace = true }\n"
-            "um-fixture-builder = { workspace = true }\n",
+            "um-fixture-builder = { workspace = true }\n"
+            "um-io-common = { workspace = true }\n",
             encoding="utf-8",
         )
         (tauri / "capabilities" / "main.json").write_text(
@@ -180,7 +361,11 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
         (io_windows / "src" / "lib.rs").write_text(
             "#![deny(unsafe_op_in_unsafe_fn)]\n"
             "#[cfg(windows)] mod windows;\n"
-            "mod transport_config;\n",
+            "mod transport_config;\n"
+            "pub fn open_retained_directory_in_shell(retained_directory: std::fs::File) "
+            "-> Result<(), StorageError> {\n"
+            "  windows::open_retained_directory_in_shell(retained_directory)\n"
+            "}\n",
             encoding="utf-8",
         )
         read_access = token("GENERIC_", "READ")
@@ -190,6 +375,9 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             f"{read_access}, {pipe_write_access}"
             "};\n"
             "use windows_sys::Win32::Storage::FileSystem::CreateFileW;\n"
+            "use windows_sys::Win32::System::Com::{"
+            "CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, "
+            "COINIT_DISABLE_OLE1DDE};\n"
             '#[link(name = "shell32")]\n'
             "// SAFETY: declaration-only exact ShellExecuteExW ABI.\n"
             'unsafe extern "system" {\n'
@@ -313,6 +501,91 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "  }\n"
             "  parse_storage_bus_type(&descriptor, bytes_returned as usize)\n"
             "}\n"
+            "const SEE_MASK_NOASYNC: u32 = 0x0000_0100;\n"
+            "const SHELL_COM_STA_FLAGS: u32 = "
+            "(COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32;\n"
+            "struct RetainedDirectoryShellRequest { target: OsString }\n"
+            "impl RetainedDirectoryShellRequest {\n"
+            "  fn new(target: OsString) -> Self { Self { target } }\n"
+            "  fn target(&self) -> &OsStr { &self.target }\n"
+            "  fn verb(&self) -> &'static str { \"explore\" }\n"
+            "  fn mask(&self) -> u32 { SEE_MASK_NOASYNC }\n"
+            "}\n"
+            "fn initialize_retained_directory_shell_com(flags: u32) -> i32 {\n"
+            "  // SAFETY: fixed COM initialization flags on the dedicated shell thread.\n"
+            "  unsafe { CoInitializeEx(null(), flags) }\n"
+            "}\n"
+            "fn execute_fixed_retained_directory_explore("
+            "request: &RetainedDirectoryShellRequest) {\n"
+            "  let verb = wide_string(OsStr::new(request.verb()));\n"
+            "  let final_path = wide_string(request.target());\n"
+            "  let mut execution = ShellExecuteInfoW {\n"
+            "    mask: request.mask(),\n"
+            "    verb: verb.as_ptr(),\n"
+            "    file: final_path.as_ptr(),\n"
+            "    parameters: null(),\n"
+            "    directory: null(),\n"
+            "  };\n"
+            "  // SAFETY: fixed explore request for a retained handle-derived target.\n"
+            "  unsafe { ShellExecuteExW(&mut execution); }\n"
+            "}\n"
+            "fn uninitialize_retained_directory_shell_com() {\n"
+            "  // SAFETY: balances a successful COM initialization on this thread.\n"
+            "  unsafe { CoUninitialize(); }\n"
+            "}\n"
+            "trait RetainedDirectoryShellPlatform {\n"
+            "  fn initialize_com(&mut self, flags: u32) -> i32;\n"
+            "  fn execute(&mut self, request: &RetainedDirectoryShellRequest) "
+            "-> Result<(), StorageError>;\n"
+            "  fn uninitialize_com(&mut self);\n"
+            "}\n"
+            "struct WindowsRetainedDirectoryShellPlatform;\n"
+            "impl RetainedDirectoryShellPlatform for WindowsRetainedDirectoryShellPlatform {\n"
+            "  fn initialize_com(&mut self, flags: u32) -> i32 {\n"
+            "    initialize_retained_directory_shell_com(flags)\n"
+            "  }\n"
+            "  fn execute(&mut self, request: &RetainedDirectoryShellRequest) "
+            "-> Result<(), StorageError> {\n"
+            "    execute_fixed_retained_directory_explore(request); Ok(())\n"
+            "  }\n"
+            "  fn uninitialize_com(&mut self) {\n"
+            "    uninitialize_retained_directory_shell_com();\n"
+            "  }\n"
+            "}\n"
+            "struct InitializedShellComApartment<'a, P: RetainedDirectoryShellPlatform> {\n"
+            "  platform: &'a mut P,\n"
+            "}\n"
+            "impl<P: RetainedDirectoryShellPlatform> Drop "
+            "for InitializedShellComApartment<'_, P> {\n"
+            "  fn drop(&mut self) { self.platform.uninitialize_com(); }\n"
+            "}\n"
+            "fn execute_retained_directory_shell_request"
+            "<P: RetainedDirectoryShellPlatform>(\n"
+            "  request: &RetainedDirectoryShellRequest,\n"
+            "  platform: &mut P,\n"
+            ") -> Result<(), StorageError> {\n"
+            "  let hresult = platform.initialize_com(SHELL_COM_STA_FLAGS);\n"
+            "  if hresult < 0 { return Err(StorageError::ComInitializationFailed { hresult }); }\n"
+            "  let apartment = InitializedShellComApartment { platform };\n"
+            "  apartment.platform.execute(request)\n"
+            "}\n"
+            "fn run_retained_directory_shell_thread(retained_directory: File) {\n"
+            "  let _root = query_destination_root_information(&retained_directory);\n"
+            "  let target = query_final_guid_path(&retained_directory);\n"
+            "  let request = RetainedDirectoryShellRequest::new(target.into());\n"
+            "  let mut platform = WindowsRetainedDirectoryShellPlatform;\n"
+            "  let result = execute_retained_directory_shell_request(&request, &mut platform);\n"
+            "  drop(retained_directory);\n"
+            "  let _ = result;\n"
+            "}\n"
+            "fn open_retained_directory_in_shell(retained_directory: File) {\n"
+            "  std::thread::Builder::new()\n"
+            "    .name(\"undelete-master-shell-open\".to_owned())\n"
+            "    .spawn(move || run_retained_directory_shell_thread(retained_directory))\n"
+            "    .unwrap()\n"
+            "    .join()\n"
+            "    .unwrap();\n"
+            "}\n"
             "fn launch_elevated_broker() {\n"
             "  let current = std::env::current_exe().unwrap();\n"
             "  let candidate = broker_executable_from_current(&current).unwrap();\n"
@@ -359,6 +632,7 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             '  "Win32_Security",\n'
             '  "Win32_Security_Authorization",\n'
             '  "Win32_Storage_FileSystem",\n'
+            '  "Win32_System_Com",\n'
             '  "Win32_System_IO",\n'
             '  "Win32_System_Ioctl",\n'
             '  "Win32_System_Pipes",\n'
@@ -418,7 +692,7 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
         api = root / "apps" / "desktop" / "src" / "api" / "storageDesktop.ts"
         api.write_text(
             api.read_text(encoding="utf-8")
-            + 'export const restore = () => invoke("start_restore");\n',
+            + 'export const destructive = () => invoke("erase_scan_source");\n',
             encoding="utf-8",
         )
 
@@ -698,7 +972,7 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
         backend.write_text(
             backend.read_text(encoding="utf-8").replace(
                 "storage::get_candidate_page,",
-                "storage::get_candidate_page,\n      storage::start_restore,",
+                "storage::get_candidate_page,\n      storage::pause_scan,",
             ),
             encoding="utf-8",
         )
@@ -796,7 +1070,7 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             any("storage bus query must use the fixed device property" in error for error in errors)
         )
 
-    def test_desktop_real_only_026_allows_exactly_six_production_commands(self) -> None:
+    def test_desktop_real_only_026_allows_exactly_twelve_production_commands(self) -> None:
         temporary, root = self.make_repo()
         self.addCleanup(temporary.cleanup)
 
@@ -809,6 +1083,12 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
             "get_candidate_page",
             "query_candidate_page",
             "update_candidate_selection",
+            "select_restore_destination",
+            "create_restore_plan",
+            "start_restore",
+            "get_restore_job",
+            "cancel_restore",
+            "open_restore_destination",
         }
         self.assertEqual(validator.ALLOWED_COMMANDS, expected)
         self.assertFalse(any("Tauri command" in error for error in errors))
@@ -1955,6 +2235,774 @@ class RealOnlyDesktopValidatorTests(unittest.TestCase):
 
         self.assertTrue(
             any("workspace dependencies must match" in error for error in errors)
+        )
+
+    def test_desktop_real_only_073_rejects_shell_verb_drift(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                'fn verb(&self) -> &\'static str { "explore" }',
+                'fn verb(&self) -> &\'static str { "open" }',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell request must be fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_074_rejects_shell_noasync_drift(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "fn mask(&self) -> u32 { SEE_MASK_NOASYNC }",
+                "fn mask(&self) -> u32 { 0 }",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell request must be fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_075_rejects_shell_parameter_input(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "parameters: null(),",
+                "parameters: caller_parameters,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell request must be fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_076_rejects_extra_shell_execute_callsite(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  unsafe { ShellExecuteExW(&mut execution); }\n"
+                "}\n"
+                "fn uninitialize_retained_directory_shell_com",
+                "  unsafe { ShellExecuteExW(&mut execution); }\n"
+                "  // SAFETY: regression-only duplicate shell dispatch.\n"
+                "  unsafe { ShellExecuteExW(&mut execution); }\n"
+                "}\n"
+                "fn uninitialize_retained_directory_shell_com",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("ShellExecuteExW callsites must remain closed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_077_rejects_shell_com_flag_drift(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "platform.initialize_com(SHELL_COM_STA_FLAGS)",
+                "platform.initialize_com(0)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell COM lifecycle must be fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_078_rejects_missing_shell_com_cleanup(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  fn drop(&mut self) { self.platform.uninitialize_com(); }\n",
+                "  fn drop(&mut self) { }\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell COM lifecycle must be fixed" in error for error in errors)
+        )
+
+    def test_desktop_real_only_079_rejects_inline_shell_dispatch(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "  std::thread::Builder::new()\n",
+                "  run_retained_directory_shell_thread(retained_directory);\n"
+                "  std::thread::Builder::new()\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell dispatch must use one dedicated thread" in error for error in errors)
+        )
+
+    def test_desktop_real_only_080_rejects_path_bearing_shell_api(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        crate_root = root / "crates" / "io-windows" / "src" / "lib.rs"
+        crate_root.write_text(
+            crate_root.read_text(encoding="utf-8").replace(
+                "open_retained_directory_in_shell(retained_directory: std::fs::File)",
+                "open_retained_directory_in_shell(path: &Path, retained_directory: std::fs::File)",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("retained-directory shell API must remain handle-only" in error for error in errors)
+        )
+
+    def test_desktop_real_only_081_rejects_duplicate_runas_literal(self) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        boundary = root / "crates" / "io-windows" / "src" / "windows.rs"
+        boundary.write_text(
+            boundary.read_text(encoding="utf-8").replace(
+                "fn launch_elevated_broker() {\n",
+                'const UNREVIEWED_SHELL_VERB: &str = "runas";\n'
+                "fn launch_elevated_broker() {\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "elevated launch must preserve one fixed runas verb" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_082_rejects_path_bearing_restore_command_signature(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "  scan_id: String,\n"
+                ") -> Result<Option<DestinationSummaryDto>, DesktopRestoreError>",
+                "  scan_id: String,\n"
+                "  destination_path: String,\n"
+                ") -> Result<Option<DestinationSummaryDto>, DesktopRestoreError>",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("restore command signature must remain exact" in error for error in errors)
+        )
+
+    def test_desktop_real_only_083_rejects_native_identity_in_restore_dto(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "  relation: &'static str,\n",
+                "  relation: &'static str,\n"
+                "  physical_disk_number: u32,\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("restore DTO fields must remain exact" in error for error in errors)
+        )
+
+    def test_desktop_real_only_084_rejects_every_sensitive_restore_dto_field(
+        self,
+    ) -> None:
+        mutations = (
+            "  source_path: String,\n",
+            "  destination_path: String,\n",
+            "  destination_root: String,\n",
+            "  volume_id: String,\n",
+            "  physical_disk_number: u32,\n",
+            "  extents: Vec<(u64, u64)>,\n",
+            "  source_offset: u64,\n",
+            "  destination_handle: usize,\n",
+            "  desired_access: u32,\n",
+            "  control_code: u32,\n",
+            "  executable: String,\n",
+            "  recovered_bytes: Vec<u8>,\n",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation.strip()):
+                temporary, root = self.make_repo()
+                self.addCleanup(temporary.cleanup)
+                restore = (
+                    root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+                )
+                restore.write_text(
+                    restore.read_text(encoding="utf-8").replace(
+                        "  relation: &'static str,\n",
+                        "  relation: &'static str,\n" + mutation,
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+
+                errors = self.validate(root)
+
+                self.assertTrue(
+                    any(
+                        "restore DTO fields must remain exact" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_desktop_real_only_085_rejects_drift_in_each_restore_command(
+        self,
+    ) -> None:
+        mutations = (
+            (
+                "  scan_id: String,\n"
+                ") -> Result<Option<DestinationSummaryDto>, DesktopRestoreError>",
+                "  scan_id: String,\n"
+                "  source_path: String,\n"
+                ") -> Result<Option<DestinationSummaryDto>, DesktopRestoreError>",
+            ),
+            (
+                "  partial_file_policy: PartialFilePolicyDto,\n"
+                ") -> Result<RestorePlanSummaryDto, DesktopRestoreError>",
+                "  partial_file_policy: PartialFilePolicyDto,\n"
+                "  destination_path: String,\n"
+                ") -> Result<RestorePlanSummaryDto, DesktopRestoreError>",
+            ),
+            (
+                "  plan_id: String,\n"
+                ") -> Result<RestoreJobSnapshotDto, DesktopRestoreError>",
+                "  plan_id: String,\n"
+                "  volume_id: String,\n"
+                ") -> Result<RestoreJobSnapshotDto, DesktopRestoreError>",
+            ),
+            (
+                "pub(crate) fn get_restore_job(\n"
+                "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+                "  request_id: String,\n"
+                "  job_id: String,\n",
+                "pub(crate) fn get_restore_job(\n"
+                "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+                "  request_id: String,\n"
+                "  job_id: String,\n"
+                "  physical_disk_number: u32,\n",
+            ),
+            (
+                "pub(crate) fn cancel_restore(\n"
+                "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+                "  request_id: String,\n"
+                "  job_id: String,\n",
+                "pub(crate) fn cancel_restore(\n"
+                "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+                "  request_id: String,\n"
+                "  job_id: String,\n"
+                "  source_offset: u64,\n",
+            ),
+            (
+                "pub(crate) fn open_restore_destination(\n"
+                "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+                "  request_id: String,\n"
+                "  job_id: String,\n",
+                "pub(crate) fn open_restore_destination(\n"
+                "  restore: tauri::State<'_, RestoreCoordinator>,\n"
+                "  request_id: String,\n"
+                "  job_id: String,\n"
+                "  recovered_bytes: Vec<u8>,\n",
+            ),
+        )
+        for old, new in mutations:
+            with self.subTest(mutation=new.splitlines()[-1].strip()):
+                temporary, root = self.make_repo()
+                self.addCleanup(temporary.cleanup)
+                restore = (
+                    root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+                )
+                original = restore.read_text(encoding="utf-8")
+                mutated = original.replace(old, new, 1)
+                self.assertNotEqual(mutated, original)
+                restore.write_text(mutated, encoding="utf-8")
+
+                errors = self.validate(root)
+
+                self.assertTrue(
+                    any(
+                        "restore command signature must remain exact" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_desktop_real_only_086_accepts_equivalent_restore_formatting(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        text = restore.read_text(encoding="utf-8")
+        text = text.replace("String", "std::string::String")
+        text = text.replace("Option<", "std::option::Option <")
+        text = text.replace("Vec<", "std::vec::Vec <")
+        text = text.replace("Result<", "std::result::Result <")
+        text = text.replace("tauri::State", "::tauri :: State")
+        text = text.replace("tauri::AppHandle", "::tauri :: AppHandle")
+        text = text.replace(
+            "struct DestinationSummaryDto {\n"
+            "  schema_version: u32,\n",
+            "struct\nDestinationSummaryDto\n{\n"
+            "  schema_version : u32,\n",
+            1,
+        )
+        text = text.replace(
+            "pub(crate) fn get_restore_job(",
+            "pub ( crate )\nfn get_restore_job (",
+            1,
+        )
+        text = "use std::{collections::HashMap};\n" + text
+        restore.write_text(text, encoding="utf-8")
+
+        errors = self.validate(root)
+
+        self.assertFalse(
+            any(
+                "restore command signature must remain exact" in error
+                or "restore DTO fields must remain exact" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_desktop_real_only_087_rejects_restore_policy_variant_drift(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "enum CollisionPolicyDto {\n"
+                "  Rename,\n",
+                "enum CollisionPolicyDto {\n"
+                "  Rename,\n"
+                "  Overwrite,\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("restore DTO variants must remain exact" in error for error in errors)
+        )
+
+    def test_desktop_real_only_088_rejects_macro_hidden_restore_dto_fixture(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        original = restore.read_text(encoding="utf-8")
+        text = original
+        text = text.replace(
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct DestinationSummaryDto {\n",
+            "macro_rules! hidden_restore_dto {\n"
+            "  () => {\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct DestinationSummaryDto {\n",
+            1,
+        )
+        text = text.replace(
+            "  relation: &'static str,\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestorePlanSummaryDto {\n",
+            "  relation: &'static str,\n"
+            "}\n"
+            "  }\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestorePlanSummaryDto {\n",
+            1,
+        )
+        self.assertNotEqual(
+            text,
+            original,
+        )
+        self.assertIn(
+            "  }\n"
+            "}\n"
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+            '#[serde(rename_all = "camelCase")]\n'
+            "struct RestorePlanSummaryDto",
+            text,
+        )
+        restore.write_text(text, encoding="utf-8")
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("restore DTO fields must remain exact" in error for error in errors)
+        )
+
+    def test_desktop_real_only_089_rejects_restore_type_alias_rebinding(
+        self,
+    ) -> None:
+        mutations = (
+            "type String = std::path::PathBuf;\n",
+            "type Option<T> = std::path::PathBuf;\n",
+            "type Vec<T> = std::path::PathBuf;\n",
+            "type Result<T, E> = std::path::PathBuf;\n",
+            "type u32 = std::path::PathBuf;\n",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation.strip()):
+                temporary, root = self.make_repo()
+                self.addCleanup(temporary.cleanup)
+                restore = (
+                    root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+                )
+                restore.write_text(
+                    mutation + restore.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+
+                errors = self.validate(root)
+
+                self.assertTrue(
+                    any(
+                        "restore boundary types must not be rebound" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_desktop_real_only_090_rejects_restore_import_alias_rebinding(
+        self,
+    ) -> None:
+        mutations = (
+            "use std::path::PathBuf as String;\n",
+            "use crate::storage::OtherState as DesktopStorageState;\n",
+            "use crate::evil::u32;\n",
+            "use crate::evil::{Deserialize, Serialize};\n",
+            "use crate::evil::*;\n",
+            "mod serde {}\n",
+            "extern crate evil_runtime as tauri;\n",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation.strip()):
+                temporary, root = self.make_repo()
+                self.addCleanup(temporary.cleanup)
+                restore = (
+                    root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+                )
+                restore.write_text(
+                    mutation + restore.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+
+                errors = self.validate(root)
+
+                self.assertTrue(
+                    any(
+                        "restore boundary types must not be rebound" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_desktop_real_only_091_rejects_restore_serde_case_drift(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                '#[serde(rename_all = "camelCase")]\n'
+                "struct DestinationSummaryDto",
+                '#[serde(rename_all = "snake_case")]\n'
+                "struct DestinationSummaryDto",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "restore serialization contract must remain exact" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_092_rejects_restore_derive_drift(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+                '#[serde(rename_all = "camelCase")]\n'
+                "struct DesktopRestoreError",
+                "#[derive(Debug, Clone, PartialEq, Eq)]\n"
+                '#[serde(rename_all = "camelCase")]\n'
+                "struct DesktopRestoreError",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "restore serialization contract must remain exact" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_093_rejects_manual_restore_serialization(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8")
+            + "\nimpl serde::Serialize for DestinationSummaryDto {}\n",
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "restore serialization contract must remain exact" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_094_rejects_qualified_type_root_rebinding(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        text = restore.read_text(encoding="utf-8").replace(
+            "  label: String,\n",
+            "  label: std::string::String,\n",
+            1,
+        )
+        restore.write_text(
+            "mod std { mod string { type String = crate::SensitivePath; } }\n"
+            + text,
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "restore boundary types must not be rebound" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_095_rejects_restore_execution_boundary_drift(
+        self,
+    ) -> None:
+        mutations = (
+            (
+                "storage.restore_scan_binding(&scan_id);",
+                "storage.restore_snapshot(&scan_id, None);",
+            ),
+            (
+                "tauri::async_runtime::spawn_blocking(move || {",
+                "run_inline(move || {",
+            ),
+            (
+                "tauri::async_runtime::spawn_blocking(move || {",
+                "evil::spawn_blocking(move || {",
+            ),
+            (
+                "  tauri::async_runtime::spawn_blocking(move || {\n"
+                "    let scan = storage.restore_snapshot(&scan_id, None);\n"
+                "    restore.create_restore_plan(&scan);\n"
+                "  }).await;\n",
+                "  let scan = storage.restore_snapshot(&scan_id, None);\n"
+                "  tauri::async_runtime::spawn_blocking(move || {\n"
+                "    restore.create_restore_plan(&scan);\n"
+                "  }).await;\n",
+            ),
+            (
+                "    storage.with_restore_start_selection(",
+                "    storage.restore_snapshot(&scan_id, None);\n"
+                "    storage.with_restore_start_selection(",
+            ),
+            (
+                "storage.with_restore_start_selection(",
+                "storage.copy_restore_start_selection(",
+            ),
+        )
+        for old, new in mutations:
+            with self.subTest(mutation=new.splitlines()[0].strip()):
+                temporary, root = self.make_repo()
+                self.addCleanup(temporary.cleanup)
+                restore = (
+                    root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+                )
+                original = restore.read_text(encoding="utf-8")
+                mutated = original.replace(old, new, 1)
+                self.assertNotEqual(mutated, original)
+                restore.write_text(mutated, encoding="utf-8")
+
+                errors = self.validate(root)
+
+                self.assertTrue(
+                    any(
+                        "restore command execution boundary must remain fixed"
+                        in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_desktop_real_only_096_rejects_generic_restore_dto_defaults(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "struct DestinationSummaryDto {",
+                "struct DestinationSummaryDto<String = std::path::PathBuf> {",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any("restore DTO fields must remain exact" in error for error in errors)
+        )
+
+    def test_desktop_real_only_097_rejects_qualified_untrusted_derive(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n"
+                '#[serde(rename_all = "camelCase")]\n'
+                "struct DestinationSummaryDto",
+                "#[derive(Debug, Clone, PartialEq, Eq, evil::Serialize)]\n"
+                '#[serde(rename_all = "camelCase")]\n'
+                "struct DestinationSummaryDto",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "restore serialization contract must remain exact" in error
+                for error in errors
+            )
+        )
+
+    def test_desktop_real_only_098_rejects_storage_state_import_drift(
+        self,
+    ) -> None:
+        temporary, root = self.make_repo()
+        self.addCleanup(temporary.cleanup)
+        restore = root / "apps" / "desktop" / "src-tauri" / "src" / "restore.rs"
+        restore.write_text(
+            restore.read_text(encoding="utf-8").replace(
+                "use crate::storage::DesktopStorageState;",
+                "use crate::evil::storage::DesktopStorageState;",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        errors = self.validate(root)
+
+        self.assertTrue(
+            any(
+                "restore boundary types must not be rebound" in error
+                for error in errors
+            )
         )
 
 

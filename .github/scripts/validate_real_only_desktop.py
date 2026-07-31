@@ -21,7 +21,300 @@ ALLOWED_COMMANDS = {
     "get_candidate_page",
     "query_candidate_page",
     "update_candidate_selection",
+    "select_restore_destination",
+    "create_restore_plan",
+    "start_restore",
+    "get_restore_job",
+    "cancel_restore",
+    "open_restore_destination",
 }
+RESTORE_COMMAND_SIGNATURES = {
+    "select_restore_destination": (
+        False,
+        (
+            ("app", "tauri::AppHandle"),
+            (
+                "storage",
+                "tauri::State<'_,DesktopStorageState>",
+            ),
+            (
+                "restore",
+                "tauri::State<'_,RestoreCoordinator>",
+            ),
+            ("request_id", "String"),
+            ("scan_id", "String"),
+        ),
+        "Result<Option<DestinationSummaryDto>,DesktopRestoreError>",
+    ),
+    "create_restore_plan": (
+        True,
+        (
+            (
+                "storage",
+                "tauri::State<'_,DesktopStorageState>",
+            ),
+            (
+                "restore",
+                "tauri::State<'_,RestoreCoordinator>",
+            ),
+            ("request_id", "String"),
+            ("scan_id", "String"),
+            ("selection_revision", "String"),
+            ("destination_id", "String"),
+            ("collision_policy", "CollisionPolicyDto"),
+            ("partial_file_policy", "PartialFilePolicyDto"),
+        ),
+        "Result<RestorePlanSummaryDto,DesktopRestoreError>",
+    ),
+    "start_restore": (
+        True,
+        (
+            (
+                "storage",
+                "tauri::State<'_,DesktopStorageState>",
+            ),
+            (
+                "restore",
+                "tauri::State<'_,RestoreCoordinator>",
+            ),
+            ("request_id", "String"),
+            ("plan_id", "String"),
+        ),
+        "Result<RestoreJobSnapshotDto,DesktopRestoreError>",
+    ),
+    "get_restore_job": (
+        False,
+        (
+            (
+                "restore",
+                "tauri::State<'_,RestoreCoordinator>",
+            ),
+            ("request_id", "String"),
+            ("job_id", "String"),
+        ),
+        "Result<RestoreJobSnapshotDto,DesktopRestoreError>",
+    ),
+    "cancel_restore": (
+        False,
+        (
+            (
+                "restore",
+                "tauri::State<'_,RestoreCoordinator>",
+            ),
+            ("request_id", "String"),
+            ("job_id", "String"),
+        ),
+        "Result<RestoreJobSnapshotDto,DesktopRestoreError>",
+    ),
+    "open_restore_destination": (
+        False,
+        (
+            (
+                "restore",
+                "tauri::State<'_,RestoreCoordinator>",
+            ),
+            ("request_id", "String"),
+            ("job_id", "String"),
+        ),
+        "Result<OpenRestoreDestinationDto,DesktopRestoreError>",
+    ),
+}
+RESTORE_DTO_FIELDS = {
+    "DesktopRestoreError": (
+        ("code", "&'staticstr"),
+        ("message", "&'staticstr"),
+    ),
+    "DestinationSummaryDto": (
+        ("schema_version", "u32"),
+        ("destination_id", "String"),
+        ("label", "String"),
+        ("volume_label", "String"),
+        ("file_system", "String"),
+        ("free_bytes", "String"),
+        ("relation", "&'staticstr"),
+    ),
+    "RestorePlanSummaryDto": (
+        ("schema_version", "u32"),
+        ("plan_id", "String"),
+        ("plan_digest", "String"),
+        ("scan_id", "String"),
+        ("destination_id", "String"),
+        ("selection_revision", "String"),
+        ("collision_policy", "CollisionPolicyDto"),
+        ("partial_file_policy", "PartialFilePolicyDto"),
+        ("items_total", "String"),
+        ("files_total", "String"),
+        ("directories_total", "String"),
+        ("logical_bytes", "String"),
+        ("best_effort_items", "String"),
+    ),
+    "RestoreCurrentItemDto": (
+        ("ordinal", "String"),
+        ("candidate_id", "String"),
+        ("kind", "&'staticstr"),
+    ),
+    "RestoreManifestSummaryDto": (
+        ("manifest_sha256", "String"),
+        ("completion_status", "&'staticstr"),
+        ("published_items", "String"),
+        ("partial_items", "String"),
+    ),
+    "RestoreJobSnapshotDto": (
+        ("schema_version", "u32"),
+        ("job_id", "String"),
+        ("plan_id", "String"),
+        ("status", "RestoreJobStatusDto"),
+        ("items_total", "String"),
+        ("items_completed", "String"),
+        ("items_failed", "String"),
+        ("items_cancelled", "String"),
+        ("bytes_total", "String"),
+        ("bytes_completed", "String"),
+        ("current_item", "Option<RestoreCurrentItemDto>"),
+        ("warnings", "Vec<String>"),
+        ("manifest", "Option<RestoreManifestSummaryDto>"),
+    ),
+    "OpenRestoreDestinationDto": (
+        ("schema_version", "u32"),
+        ("opened", "bool"),
+    ),
+}
+RESTORE_DTO_VARIANTS = {
+    "CollisionPolicyDto": ("Rename",),
+    "PartialFilePolicyDto": ("CompleteOnly", "ZeroFillAndMap"),
+    "RestoreJobStatusDto": (
+        "Queued",
+        "Running",
+        "Cancelling",
+        "Completed",
+        "Failed",
+        "Cancelled",
+    ),
+}
+RESTORE_DTO_DERIVES = {
+    "DesktopRestoreError": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "CollisionPolicyDto": (
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize",
+    ),
+    "PartialFilePolicyDto": (
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize",
+    ),
+    "DestinationSummaryDto": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "RestorePlanSummaryDto": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "RestoreJobStatusDto": (
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "RestoreCurrentItemDto": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "RestoreManifestSummaryDto": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "RestoreJobSnapshotDto": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+    "OpenRestoreDestinationDto": (
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+    ),
+}
+RESTORE_BOUNDARY_TYPE_NAMES = {
+    "AppHandle",
+    "CollisionPolicyDto",
+    "DesktopRestoreError",
+    "DesktopStorageState",
+    "DestinationSummaryDto",
+    "OpenRestoreDestinationDto",
+    "Option",
+    "PartialFilePolicyDto",
+    "RestoreCoordinator",
+    "RestoreCurrentItemDto",
+    "RestoreJobSnapshotDto",
+    "RestoreJobStatusDto",
+    "RestoreManifestSummaryDto",
+    "RestorePlanSummaryDto",
+    "Result",
+    "Serialize",
+    "State",
+    "String",
+    "Vec",
+    "alloc",
+    "bool",
+    "core",
+    "std",
+    "str",
+    "serde",
+    "tauri",
+    "u32",
+    "Deserialize",
+}
+RESTORE_EXTERNAL_BINDING_NAMES = {
+    "AppHandle",
+    "Option",
+    "Result",
+    "State",
+    "String",
+    "Vec",
+    "alloc",
+    "bool",
+    "core",
+    "std",
+    "str",
+    "serde",
+    "tauri",
+    "u32",
+}
+RESTORE_SERIALIZATION_BINDING_NAMES = {"Deserialize", "Serialize"}
 ALLOWED_CAPABILITIES = {"core:default", "dialog:allow-open"}
 FORBIDDEN_PRODUCTION_FILES = {
     "api/mock.ts",
@@ -49,6 +342,8 @@ ALLOWED_TAURI_DEPENDENCIES = {
     "sha2": {"workspace": True},
     "hex": {"workspace": True},
     "getrandom": {"workspace": True},
+    "cap-std": {"workspace": True},
+    "cap-fs-ext": {"workspace": True},
     "tauri": {"version": "=2.11.5", "features": []},
     "tauri-plugin-dialog": {"version": "=2.7.2"},
     "um-broker-client": {"workspace": True},
@@ -57,11 +352,13 @@ ALLOWED_TAURI_DEPENDENCIES = {
     "um-fs-common": {"workspace": True},
     "um-fs-ntfs": {"workspace": True},
     "um-io-windows": {"workspace": True},
+    "um-restore": {"workspace": True},
 }
 ALLOWED_TAURI_DEV_DEPENDENCIES = {
     "crc32fast": {"workspace": True},
     "tempfile": {"workspace": True},
     "um-fixture-builder": {"workspace": True},
+    "um-io-common": {"workspace": True},
 }
 PRODUCTION_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 TEST_FILE = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$", re.IGNORECASE)
@@ -105,6 +402,7 @@ ALLOWED_WINDOWS_SYS_FEATURES = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_Pipes",
@@ -933,6 +1231,679 @@ def compact(value: str) -> str:
     return re.sub(r"\s+", "", value)
 
 
+def canonical_rust_type(value: str) -> str:
+    """Normalize only spelling variants that name the same audited Rust type."""
+
+    normalized = compact(value)
+    while normalized.startswith("::"):
+        normalized = normalized[2:]
+    for qualified, short in (
+        ("std::string::String", "String"),
+        ("alloc::string::String", "String"),
+        ("std::option::Option", "Option"),
+        ("core::option::Option", "Option"),
+        ("std::vec::Vec", "Vec"),
+        ("alloc::vec::Vec", "Vec"),
+        ("std::result::Result", "Result"),
+        ("core::result::Result", "Result"),
+    ):
+        normalized = normalized.replace(qualified, short)
+    return normalized
+
+
+def rust_balanced_end(
+    code: str,
+    opening: int,
+    opening_character: str,
+    closing_character: str,
+) -> int | None:
+    """Return the exclusive end of a balanced Rust delimiter pair."""
+
+    depth = 0
+    for index in range(opening, len(code)):
+        character = code[index]
+        if character == opening_character:
+            depth += 1
+        elif character == closing_character:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def split_rust_top_level(value: str) -> list[str] | None:
+    """Split a Rust field/argument list without splitting nested generic types."""
+
+    closing_for = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    stack: list[str] = []
+    parts: list[str] = []
+    start = 0
+    for index, character in enumerate(value):
+        if character in closing_for:
+            stack.append(closing_for[character])
+        elif stack and character == stack[-1]:
+            stack.pop()
+        elif character in {")", "]", "}"} or (
+            character == ">" and (index == 0 or value[index - 1] != "-")
+        ):
+            return None
+        elif character == "," and not stack:
+            parts.append(value[start:index])
+            start = index + 1
+    if stack:
+        return None
+    parts.append(value[start:])
+    return parts
+
+
+def rust_token_is_top_level(
+    code: str,
+    position: int,
+    expected_token: str,
+) -> bool:
+    """Reject audited declarations hidden in an impl, block, or macro body."""
+
+    tokens = rust_significant_tokens(code)
+    contexts = rust_token_contexts(tokens)
+    return any(
+        start == position
+        and token == expected_token
+        and depth == 0
+        and not inside_macro
+        for (
+            (token, start, _),
+            (depth, inside_macro),
+        ) in zip(tokens, contexts)
+    )
+
+
+def rust_named_braced_body(
+    code: str,
+    item_kind: str,
+    item_name: str,
+) -> str | None:
+    """Return one named struct/enum body, rejecting aliases and duplicates."""
+
+    definitions = [
+        definition
+        for definition in re.finditer(
+            rf"\b{re.escape(item_kind)}\s+{re.escape(item_name)}\b",
+            code,
+        )
+        if rust_token_is_top_level(
+            code,
+            definition.start(),
+            item_kind,
+        )
+    ]
+    if len(definitions) != 1:
+        return None
+    definition = definitions[0]
+    opening = code.find("{", definition.end())
+    if opening < 0 or code[definition.end() : opening].strip():
+        return None
+    end = rust_balanced_end(code, opening, "{", "}")
+    if end is None:
+        return None
+    return code[opening + 1 : end - 1]
+
+
+def parse_rust_struct_fields(
+    code: str,
+    struct_name: str,
+) -> tuple[tuple[str, str], ...] | None:
+    """Parse a plain named-field DTO struct without accepting field attributes."""
+
+    body = rust_named_braced_body(code, "struct", struct_name)
+    if body is None:
+        return None
+    entries = split_rust_top_level(body)
+    if entries is None:
+        return None
+    fields: list[tuple[str, str]] = []
+    for entry in entries:
+        stripped = entry.strip()
+        if not stripped:
+            continue
+        stripped = re.sub(
+            r"^pub\s*\(\s*crate\s*\)\s+",
+            "",
+            stripped,
+            count=1,
+        )
+        field = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)",
+            stripped,
+            flags=re.DOTALL,
+        )
+        if field is None:
+            return None
+        fields.append(
+            (
+                field.group(1),
+                canonical_rust_type(field.group(2)),
+            )
+        )
+    if len({name for name, _ in fields}) != len(fields):
+        return None
+    return tuple(fields)
+
+
+def parse_rust_enum_variants(
+    code: str,
+    enum_name: str,
+) -> tuple[str, ...] | None:
+    """Parse a fieldless DTO enum so policy/status expansion is fail-closed."""
+
+    body = rust_named_braced_body(code, "enum", enum_name)
+    if body is None:
+        return None
+    entries = split_rust_top_level(body)
+    if entries is None:
+        return None
+    variants: list[str] = []
+    for entry in entries:
+        stripped = entry.strip()
+        if not stripped:
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", stripped) is None:
+            return None
+        variants.append(stripped)
+    return tuple(variants)
+
+
+def parse_restore_command_signature(
+    code: str,
+    command_name: str,
+) -> tuple[bool, tuple[tuple[str, str], ...], str] | None:
+    """Parse one public Tauri command signature without following type aliases."""
+
+    declarations = [
+        declaration
+        for declaration in re.finditer(
+            rf"#\s*\[\s*tauri\s*::\s*command\s*\]\s*"
+            rf"(?:#\s*\[[^\]]*\]\s*)*"
+            rf"pub\s*\(\s*crate\s*\)\s+"
+            rf"(?P<async>async\s+)?fn\s+{re.escape(command_name)}\b",
+            code,
+        )
+        if rust_token_is_top_level(
+            code,
+            code.find("fn", declaration.start(), declaration.end()),
+            "fn",
+        )
+    ]
+    if len(declarations) != 1:
+        return None
+    declaration = declarations[0]
+    opening = code.find("(", declaration.end())
+    if opening < 0 or code[declaration.end() : opening].strip():
+        return None
+    end = rust_balanced_end(code, opening, "(", ")")
+    if end is None:
+        return None
+    entries = split_rust_top_level(code[opening + 1 : end - 1])
+    if entries is None:
+        return None
+    arguments: list[tuple[str, str]] = []
+    for entry in entries:
+        stripped = entry.strip()
+        if not stripped:
+            continue
+        argument = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)",
+            stripped,
+            flags=re.DOTALL,
+        )
+        if argument is None:
+            return None
+        arguments.append(
+            (
+                argument.group(1),
+                canonical_rust_type(argument.group(2)),
+            )
+        )
+    body_opening = code.find("{", end)
+    if body_opening < 0:
+        return None
+    result = code[end:body_opening].strip()
+    if not result.startswith("->"):
+        return None
+    return (
+        declaration.group("async") is not None,
+        tuple(arguments),
+        canonical_rust_type(result[2:]),
+    )
+
+
+def restore_command_body(code: str, command_name: str) -> str | None:
+    """Return one top-level Tauri command body, excluding same-name methods."""
+
+    declarations = [
+        declaration
+        for declaration in re.finditer(
+            rf"#\s*\[\s*tauri\s*::\s*command\s*\]\s*"
+            rf"(?:#\s*\[[^\]]*\]\s*)*"
+            rf"pub\s*\(\s*crate\s*\)\s+"
+            rf"(?:async\s+)?fn\s+{re.escape(command_name)}\b",
+            code,
+        )
+        if rust_token_is_top_level(
+            code,
+            code.find("fn", declaration.start(), declaration.end()),
+            "fn",
+        )
+    ]
+    if len(declarations) != 1:
+        return None
+    declaration = declarations[0]
+    parameters_opening = code.find("(", declaration.end())
+    if parameters_opening < 0:
+        return None
+    parameters_end = rust_balanced_end(
+        code,
+        parameters_opening,
+        "(",
+        ")",
+    )
+    if parameters_end is None:
+        return None
+    body_opening = code.find("{", parameters_end)
+    if body_opening < 0:
+        return None
+    body_end = rust_balanced_end(code, body_opening, "{", "}")
+    if body_end is None:
+        return None
+    return code[body_opening + 1 : body_end - 1]
+
+
+def restore_execution_boundary_is_exact(code: str) -> bool:
+    """Keep destination and retained-selection work on their audited paths."""
+
+    select_body = restore_command_body(code, "select_restore_destination")
+    create_body = restore_command_body(code, "create_restore_plan")
+    start_body = restore_command_body(code, "start_restore")
+    if select_body is None or create_body is None or start_body is None:
+        return False
+
+    select_code = compact(select_body)
+    if (
+        select_code.count("storage.restore_scan_binding(&scan_id)") != 2
+        or "restore_snapshot" in select_code
+        or not contains_in_order(
+            select_code,
+            (
+                "storage.restore_scan_binding(&scan_id)",
+                ".blocking_pick_folder()",
+                "storage.restore_scan_binding(&scan_id)",
+                "restore.admit_destination_binding(",
+            ),
+        )
+    ):
+        return False
+
+    create_calls = rust_call_arguments(create_body, "spawn_blocking")
+    if len(create_calls) != 1:
+        return False
+    _, _, create_arguments = create_calls[0]
+    if len(create_arguments) != 1:
+        return False
+    create_worker = compact(create_arguments[0])
+    create_code = compact(create_body)
+    if (
+        create_code.count("tauri::async_runtime::spawn_blocking(") != 1
+        or create_code.count("storage.restore_snapshot(") != 1
+        or create_worker.count("storage.restore_snapshot(") != 1
+        or create_code.count("coordinator.create_restore_plan(")
+        + create_code.count("restore.create_restore_plan(")
+        != 1
+        or (
+            "coordinator.create_restore_plan(" not in create_worker
+            and "restore.create_restore_plan(" not in create_worker
+        )
+    ):
+        return False
+
+    start_calls = rust_call_arguments(start_body, "spawn_blocking")
+    if len(start_calls) != 1:
+        return False
+    _, _, start_arguments = start_calls[0]
+    if len(start_arguments) != 1:
+        return False
+    start_worker = compact(start_arguments[0])
+    start_code = compact(start_body)
+    required_start_calls = (
+        ".plan_binding(",
+        ".preflight_restore_start(",
+        "storage.with_restore_start_selection(",
+        ".commit_prepared_restore_start(",
+        ".launch_restore(",
+    )
+    if (
+        start_code.count("tauri::async_runtime::spawn_blocking(") != 1
+        or "restore_snapshot" in start_code
+        or any(start_worker.count(token) != 1 for token in required_start_calls)
+        or start_code.count("storage.with_restore_start_selection(") != 1
+        or not contains_in_order(start_worker, required_start_calls)
+    ):
+        return False
+    return True
+
+
+def top_level_rust_use_statements(code: str) -> list[tuple[str, ...]]:
+    """Return tokenized top-level use statements for binding provenance checks."""
+
+    tokens = rust_significant_tokens(code)
+    contexts = rust_token_contexts(tokens)
+    statements: list[tuple[str, ...]] = []
+    for start_index, ((token, _, _), context) in enumerate(
+        zip(tokens, contexts)
+    ):
+        if token != "use" or context != (0, False):
+            continue
+        statement: list[str] = []
+        for index in range(start_index, len(tokens)):
+            current, _, _ = tokens[index]
+            current_context = contexts[index]
+            statement.append(current)
+            if current == ";" and current_context == (0, False):
+                statements.append(tuple(statement))
+                break
+    return statements
+
+
+def rust_use_bound_names(statement: tuple[str, ...]) -> set[str]:
+    """Return names introduced by a tokenized Rust use tree."""
+
+    return {
+        token[2:] if token.startswith("r#") else token
+        for index, token in enumerate(statement[:-1])
+        if re.fullmatch(
+            r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*",
+            token,
+        )
+        is not None
+        and statement[index + 1] in {",", "}", ";"}
+    }
+
+
+def imports_desktop_storage_state_from_fixed_module(
+    statement: tuple[str, ...],
+) -> bool:
+    """Accept only a direct `crate::storage` import of the command state."""
+
+    if statement[:3] != ("use", "crate", "::"):
+        return False
+    for index, token in enumerate(statement):
+        if token != "storage" or index + 2 >= len(statement):
+            continue
+        direct_root_tree = (
+            index == 3 or statement[index - 1] in {"{", ","}
+        )
+        if not direct_root_tree or statement[index + 1] != "::":
+            continue
+        child = statement[index + 2]
+        if child == "DesktopStorageState":
+            return (
+                index + 3 < len(statement)
+                and statement[index + 3] in {",", "}", ";"}
+            )
+        if child != "{":
+            continue
+        depth = 1
+        for child_index in range(index + 3, len(statement) - 1):
+            child_token = statement[child_index]
+            if child_token == "{":
+                depth += 1
+            elif child_token == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif (
+                depth == 1
+                and child_token == "DesktopStorageState"
+                and statement[child_index + 1] in {",", "}"}
+            ):
+                return True
+    return False
+
+
+def restore_boundary_types_are_unbound(code: str) -> bool:
+    """Reject aliases or local items that can change an audited type's meaning."""
+
+    tokens = rust_significant_tokens(code)
+    contexts = rust_token_contexts(tokens)
+    logical = [
+        token[2:] if token.startswith("r#") else token
+        for token, _, _ in tokens
+    ]
+    for index, (token, _, _) in enumerate(tokens):
+        depth, inside_macro = contexts[index]
+        if depth != 0 or inside_macro:
+            continue
+        if logical[index] == "macro_rules":
+            return False
+        if (
+            re.fullmatch(r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*", token)
+            is not None
+            and index + 2 < len(tokens)
+            and tokens[index + 1][0] == "!"
+            and tokens[index + 2][0] in {"(", "[", "{"}
+        ):
+            return False
+    for index, token in enumerate(logical[:-1]):
+        rebound = logical[index + 1]
+        if (
+            token in {"type", "as"}
+            and rebound in RESTORE_BOUNDARY_TYPE_NAMES
+        ):
+            return False
+        if token in {"enum", "mod", "struct", "trait", "union"} and (
+            rebound in RESTORE_EXTERNAL_BINDING_NAMES
+            or rebound in RESTORE_SERIALIZATION_BINDING_NAMES
+        ):
+            return False
+
+    use_statements = top_level_rust_use_statements(code)
+    for statement in use_statements:
+        if "*" in statement:
+            return False
+        bound_names = rust_use_bound_names(statement)
+        if RESTORE_EXTERNAL_BINDING_NAMES.intersection(bound_names):
+            return False
+    serialization_imports = [
+        statement
+        for statement in use_statements
+        if RESTORE_SERIALIZATION_BINDING_NAMES.intersection(
+            rust_use_bound_names(statement)
+        )
+    ]
+    if (
+        len(serialization_imports) != 1
+        or serialization_imports[0][:3] != ("use", "serde", "::")
+        or not RESTORE_SERIALIZATION_BINDING_NAMES.issubset(
+            rust_use_bound_names(serialization_imports[0])
+        )
+    ):
+        return False
+    storage_imports = [
+        statement
+        for statement in use_statements
+        if "DesktopStorageState" in statement
+    ]
+    if (
+        len(storage_imports) != 1
+        or not imports_desktop_storage_state_from_fixed_module(
+            storage_imports[0]
+        )
+    ):
+        return False
+    return rust_named_braced_body(code, "struct", "RestoreCoordinator") is not None
+
+
+def guarded_restore_item_attributes(
+    comments_masked: str,
+    code: str,
+    item_name: str,
+) -> tuple[str, ...] | None:
+    """Read the exact attributes attached to one top-level guarded DTO item."""
+
+    matches = [
+        match
+        for match in re.finditer(
+            rf"(?P<attributes>(?:#\s*\[[^\]]*\]\s*)+)"
+            rf"(?:pub\s*\(\s*crate\s*\)\s+)?"
+            rf"(?P<item>struct|enum)\s+{re.escape(item_name)}\b",
+            comments_masked,
+        )
+        if rust_token_is_top_level(
+            code,
+            match.start("item"),
+            match.group("item"),
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    return tuple(
+        attribute.strip()
+        for attribute in re.findall(
+            r"#\s*\[\s*(.*?)\s*\]",
+            matches[0].group("attributes"),
+            flags=re.DOTALL,
+        )
+    )
+
+
+def restore_serialization_contract_is_exact(
+    text: str,
+    code: str,
+) -> bool:
+    """Pin derives/casing and forbid hand-written serialization bypasses."""
+
+    comments_masked = mask_rust_comments(text)
+    for item_name, expected_derives in RESTORE_DTO_DERIVES.items():
+        attributes = guarded_restore_item_attributes(
+            comments_masked,
+            code,
+            item_name,
+        )
+        if attributes is None or len(attributes) != 2:
+            return False
+        derive_attribute = next(
+            (
+                attribute
+                for attribute in attributes
+                if compact(attribute).startswith("derive(")
+            ),
+            None,
+        )
+        serde_attribute = next(
+            (
+                attribute
+                for attribute in attributes
+                if compact(attribute).startswith("serde(")
+            ),
+            None,
+        )
+        if derive_attribute is None or serde_attribute is None:
+            return False
+        compact_derive = compact(derive_attribute)
+        if not compact_derive.endswith(")"):
+            return False
+        derive_entries = split_rust_top_level(
+            compact_derive[len("derive(") : -1]
+        )
+        if derive_entries is None:
+            return False
+        observed_derives = tuple(
+            compact(entry) for entry in derive_entries if entry
+        )
+        if observed_derives != expected_derives:
+            return False
+        if compact(serde_attribute) != 'serde(rename_all="camelCase")':
+            return False
+
+        manual_impl = re.search(
+            rf"\bimpl\s*(?:<[^{{}};]*>\s*)?"
+            rf"(?:[A-Za-z_][A-Za-z0-9_]*::)*"
+            rf"(?:Serialize|Deserialize)\s+for\s+"
+            rf"{re.escape(item_name)}\b",
+            code,
+        )
+        if manual_impl is not None:
+            return False
+    return True
+
+
+def validate_restore_webview_boundary(
+    root: Path,
+    restore_path: Path,
+    errors: list[str],
+) -> int:
+    """Pin path-free restore commands and their complete serialized DTO shape."""
+
+    text = read_text(root, restore_path, errors)
+    if text is None:
+        errors.append(
+            f"{relative(root, restore_path)}: missing restore command boundary"
+        )
+        return 0
+    code = mask_rust_comments_and_literals(text)
+    command_drift = any(
+        parse_restore_command_signature(code, command_name) != expected
+        for command_name, expected in RESTORE_COMMAND_SIGNATURES.items()
+    )
+    if command_drift:
+        errors.append(
+            f"{relative(root, restore_path)}: restore command signature "
+            "must remain exact"
+        )
+
+    dto_drift = False
+    for dto_name, expected_fields in RESTORE_DTO_FIELDS.items():
+        observed_fields = parse_rust_struct_fields(code, dto_name)
+        if observed_fields is None:
+            dto_drift = True
+            break
+        if (
+            len(observed_fields) != len(expected_fields)
+            or dict(observed_fields) != dict(expected_fields)
+        ):
+            dto_drift = True
+            break
+    if dto_drift:
+        errors.append(
+            f"{relative(root, restore_path)}: restore DTO fields must remain "
+            "exact"
+        )
+
+    variant_drift = any(
+        parse_rust_enum_variants(code, dto_name) != expected_variants
+        for dto_name, expected_variants in RESTORE_DTO_VARIANTS.items()
+    )
+    if variant_drift:
+        errors.append(
+            f"{relative(root, restore_path)}: restore DTO variants must "
+            "remain exact"
+        )
+    if not restore_boundary_types_are_unbound(code):
+        errors.append(
+            f"{relative(root, restore_path)}: restore boundary types must "
+            "not be rebound"
+        )
+    if not restore_serialization_contract_is_exact(text, code):
+        errors.append(
+            f"{relative(root, restore_path)}: restore serialization contract "
+            "must remain exact"
+        )
+    if not restore_execution_boundary_is_exact(code):
+        errors.append(
+            f"{relative(root, restore_path)}: restore command execution "
+            "boundary must remain fixed"
+        )
+    return 1
+
+
 def contains_in_order(value: str, tokens: tuple[str, ...]) -> bool:
     cursor = 0
     for token in tokens:
@@ -989,6 +1960,232 @@ def validate_windows_extern_inventory(
         )
 
 
+def validate_retained_directory_shell_boundary(
+    name: str,
+    text: str,
+    code: str,
+    errors: list[str],
+) -> None:
+    """Pin the only non-elevated shell request to a retained directory handle."""
+
+    comments_masked = mask_rust_comments(text)
+    compact_code = compact(code)
+    execute_span = rust_item_span(
+        code,
+        "execute_fixed_retained_directory_explore",
+    )
+    launch_span = rust_item_span(code, "launch_elevated_broker")
+    verb_span = rust_item_span(code, "verb")
+    mask_span = rust_item_span(code, "mask")
+
+    request_shape = (
+        "structRetainedDirectoryShellRequest{target:OsString}"
+        in compact_code
+        or "structRetainedDirectoryShellRequest{target:OsString,}"
+        in compact_code
+    )
+    verb_is_fixed = (
+        verb_span is not None
+        and comments_masked[verb_span[0] : verb_span[1]].count('"explore"')
+        == 1
+        and '"open"' not in comments_masked[verb_span[0] : verb_span[1]]
+    )
+    mask_is_fixed = (
+        mask_span is not None
+        and "fnmask(&self)->u32{SEE_MASK_NOASYNC}"
+        in compact(code[mask_span[0] : mask_span[1]])
+        and "constSEE_MASK_NOASYNC:u32=0x0000_0100;" in compact_code
+    )
+    execute_code = (
+        compact(code[execute_span[0] : execute_span[1]])
+        if execute_span is not None
+        else ""
+    )
+    execute_signature = re.search(
+        r"\bfn\s+execute_fixed_retained_directory_explore\s*\(\s*"
+        r"request\s*:\s*&\s*RetainedDirectoryShellRequest\s*,?\s*\)",
+        code,
+    )
+    fixed_execute_tokens = (
+        "letverb=wide_string(OsStr::new(request.verb()));",
+        "letfinal_path=wide_string(request.target());",
+        "mask:request.mask(),",
+        "verb:verb.as_ptr(),",
+        "file:final_path.as_ptr(),",
+        "parameters:null(),",
+        "directory:null(),",
+    )
+    if (
+        not request_shape
+        or not verb_is_fixed
+        or not mask_is_fixed
+        or execute_span is None
+        or execute_signature is None
+        or any(token not in execute_code for token in fixed_execute_tokens)
+        or any(
+            token in execute_code
+            for token in (
+                "std::process::Command",
+                "caller_parameters",
+                "caller_verb",
+                "caller_executable",
+            )
+        )
+    ):
+        errors.append(
+            f"{name}: retained-directory shell request must be fixed"
+        )
+
+    shell_calls = rust_call_arguments(code, "ShellExecuteExW")
+    execute_shell_calls = sum(
+        1 for position, _, _ in shell_calls if within(position, execute_span)
+    )
+    launch_shell_calls = sum(
+        1 for position, _, _ in shell_calls if within(position, launch_span)
+    )
+    if (
+        len(shell_calls) != 3
+        or execute_shell_calls != 1
+        or launch_shell_calls != 1
+    ):
+        errors.append(
+            f"{name}: ShellExecuteExW callsites must remain closed"
+        )
+
+    significant_tokens = rust_significant_tokens(code)
+    initialize_span = rust_item_span(
+        code,
+        "initialize_retained_directory_shell_com",
+    )
+    uninitialize_span = rust_item_span(
+        code,
+        "uninitialize_retained_directory_shell_com",
+    )
+    lifecycle_span = rust_item_span(
+        code,
+        "execute_retained_directory_shell_request",
+    )
+    initialize_calls = rust_call_arguments(code, "CoInitializeEx")
+    uninitialize_calls = rust_call_arguments(code, "CoUninitialize")
+    lifecycle_code = (
+        compact(code[lifecycle_span[0] : lifecycle_span[1]])
+        if lifecycle_span is not None
+        else ""
+    )
+    fixed_drop = (
+        "impl<P:RetainedDirectoryShellPlatform>Dropfor"
+        "InitializedShellComApartment<'_,P>{"
+        "fndrop(&mutself){self.platform.uninitialize_com();}}"
+    )
+    com_token_counts = {
+        token: sum(
+            1
+            for observed, _, _ in significant_tokens
+            if observed == token
+        )
+        for token in (
+            "CoInitializeEx",
+            "CoUninitialize",
+            "COINIT_APARTMENTTHREADED",
+            "COINIT_DISABLE_OLE1DDE",
+        )
+    }
+    com_lifecycle_is_fixed = (
+        "constSHELL_COM_STA_FLAGS:u32="
+        "(COINIT_APARTMENTTHREADED|COINIT_DISABLE_OLE1DDE)asu32;"
+        in compact_code
+        and all(count == 2 for count in com_token_counts.values())
+        and len(initialize_calls) == 1
+        and within(initialize_calls[0][0], initialize_span)
+        and compact(",".join(initialize_calls[0][2])) == "null(),flags"
+        and len(uninitialize_calls) == 1
+        and within(uninitialize_calls[0][0], uninitialize_span)
+        and not uninitialize_calls[0][2]
+        and contains_in_order(
+            lifecycle_code,
+            (
+                "lethresult=platform.initialize_com(SHELL_COM_STA_FLAGS);",
+                "ifhresult<0",
+                "StorageError::ComInitializationFailed{hresult}",
+                "letapartment=InitializedShellComApartment{platform};",
+                "apartment.platform.execute(request)",
+            ),
+        )
+        and fixed_drop in compact_code
+        and compact_code.count("self.platform.uninitialize_com()") == 1
+    )
+    if not com_lifecycle_is_fixed:
+        errors.append(
+            f"{name}: retained-directory shell COM lifecycle must be fixed"
+        )
+
+    open_span = rust_item_span(code, "open_retained_directory_in_shell")
+    worker_span = rust_item_span(
+        code,
+        "run_retained_directory_shell_thread",
+    )
+    open_code = (
+        compact(code[open_span[0] : open_span[1]])
+        if open_span is not None
+        else ""
+    )
+    open_text = (
+        comments_masked[open_span[0] : open_span[1]]
+        if open_span is not None
+        else ""
+    )
+    worker_code = (
+        compact(code[worker_span[0] : worker_span[1]])
+        if worker_span is not None
+        else ""
+    )
+    dedicated_thread_is_fixed = (
+        open_span is not None
+        and worker_span is not None
+        and "std::thread::Builder::new()" in open_code
+        and open_text.count('"undelete-master-shell-open"') == 1
+        and (
+            ".spawn(move||"
+            "run_retained_directory_shell_thread(retained_directory))"
+            in open_code
+        )
+        and ".join()" in open_code
+        and open_code.count(
+            "run_retained_directory_shell_thread(retained_directory)"
+        )
+        == 1
+        and contains_in_order(
+            worker_code,
+            (
+                "query_destination_root_information(&retained_directory)",
+                "query_final_guid_path(&retained_directory)",
+                "RetainedDirectoryShellRequest::new(",
+                "execute_retained_directory_shell_request(&request,&mutplatform)",
+                "drop(retained_directory)",
+            ),
+        )
+        and "ShellExecuteExW" not in open_code
+        and "ShellExecuteExW" not in worker_code
+    )
+    if not dedicated_thread_is_fixed:
+        errors.append(
+            f"{name}: retained-directory shell dispatch must use one "
+            "dedicated thread"
+        )
+
+    runas_literals = list(
+        re.finditer(r'"runas"', comments_masked, flags=re.IGNORECASE)
+    )
+    if (
+        launch_span is None
+        or len(runas_literals) != 1
+        or not within(runas_literals[0].start(), launch_span)
+    ):
+        errors.append(
+            f"{name}: elevated launch must preserve one fixed runas verb"
+        )
+
+
 def validate_windows_ffi_boundary(
     root: Path,
     path: Path,
@@ -1007,6 +2204,7 @@ def validate_windows_ffi_boundary(
         )
 
     validate_windows_extern_inventory(name, text, code, errors)
+    validate_retained_directory_shell_boundary(name, text, code, errors)
 
     if MUTATING_WINDOWS_API.search(code):
         errors.append(f"{name}: mutating Windows API is forbidden")
@@ -1433,10 +2631,43 @@ def validate_rust_safety_boundary(root: Path, errors: list[str]) -> int:
     crate_text = read_text(root, crate_root, errors) if crate_root.is_file() else None
     if crate_text is None:
         errors.append(f"{IO_WINDOWS_CRATE_ROOT.as_posix()}: missing crate root")
-    elif "#![deny(unsafe_op_in_unsafe_fn)]" not in crate_text:
-        errors.append(
-            f"{IO_WINDOWS_CRATE_ROOT.as_posix()}: unsafe operations must be denied in unsafe fn"
+    else:
+        if "#![deny(unsafe_op_in_unsafe_fn)]" not in crate_text:
+            errors.append(
+                f"{IO_WINDOWS_CRATE_ROOT.as_posix()}: unsafe operations must "
+                "be denied in unsafe fn"
+            )
+        crate_code = mask_rust_comments_and_literals(crate_text)
+        shell_api_span = rust_item_span(
+            crate_code,
+            "open_retained_directory_in_shell",
         )
+        shell_api_code = (
+            compact(crate_code[shell_api_span[0] : shell_api_span[1]])
+            if shell_api_span is not None
+            else ""
+        )
+        shell_api_definitions = re.findall(
+            r"\bpub\s+fn\s+open_retained_directory_in_shell\b",
+            crate_code,
+        )
+        fixed_shell_api = re.fullmatch(
+            r"fnopen_retained_directory_in_shell"
+            r"\(retained_directory:std::fs::File,?\)"
+            r"->Result<\(\),StorageError>\{"
+            r"(?:platform|windows)::open_retained_directory_in_shell"
+            r"\(retained_directory\)\}",
+            shell_api_code,
+        )
+        if (
+            len(shell_api_definitions) != 1
+            or shell_api_span is None
+            or fixed_shell_api is None
+        ):
+            errors.append(
+                f"{IO_WINDOWS_CRATE_ROOT.as_posix()}: retained-directory "
+                "shell API must remain handle-only"
+            )
     return inspected
 
 
@@ -1644,6 +2875,11 @@ def validate_tauri_sources(root: Path, tauri: Path, errors: list[str]) -> int:
         text = read_text(root, path, errors)
         if text is not None:
             combined += "\n" + text
+    inspected += validate_restore_webview_boundary(
+        root,
+        source_root / "restore.rs",
+        errors,
+    )
     if "#![forbid(unsafe_code)]" not in combined:
         errors.append("apps/desktop/src-tauri/src: unsafe code is not forbidden")
     registrations = re.findall(
@@ -1674,7 +2910,6 @@ def validate_tauri_sources(root: Path, tauri: Path, errors: list[str]) -> int:
         "pause_scan",
         "resume_scan",
         "cancel_scan",
-        "start_restore",
         "open_path",
     ):
         if forbidden_command in combined:

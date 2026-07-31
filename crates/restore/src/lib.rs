@@ -29,7 +29,8 @@ pub use stream::{
     ZeroFilledRange, MAX_ZERO_FILLED_RANGES,
 };
 pub use transaction::{
-    job_directory_component, DestinationRoot, FileRestorePlan, RestoreJobPlan,
-    MAX_COLLISION_ATTEMPTS, MAX_PATH_EVIDENCE_BYTES_PER_JOB, MAX_RESTORE_JOB_ITEMS,
-    MAX_RESTORE_PATH_COMPONENTS_PER_JOB, RESTORE_SCRATCH_BYTES,
+    job_directory_component, DestinationRoot, FileRestorePlan, RestoreItemKind, RestoreItemOutcome,
+    RestoreJobEvent, RestoreJobObserver, RestoreJobPlan, MAX_COLLISION_ATTEMPTS,
+    MAX_PATH_EVIDENCE_BYTES_PER_JOB, MAX_RESTORE_JOB_ITEMS, MAX_RESTORE_PATH_COMPONENTS_PER_JOB,
+    RESTORE_SCRATCH_BYTES,
 };

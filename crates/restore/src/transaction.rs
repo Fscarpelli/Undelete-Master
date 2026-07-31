@@ -19,7 +19,7 @@ use um_core::SourceReader;
 
 pub const RESTORE_SCRATCH_BYTES: usize = 1024 * 1024;
 pub const MAX_COLLISION_ATTEMPTS: usize = 10_000;
-pub const MAX_RESTORE_JOB_ITEMS: usize = 100_000;
+pub const MAX_RESTORE_JOB_ITEMS: usize = 110_000;
 pub const MAX_RESTORE_PATH_COMPONENTS_PER_JOB: usize = 1_000_000;
 pub const MAX_PATH_EVIDENCE_BYTES_PER_JOB: usize = 8 * 1024 * 1024;
 const MAX_JOB_ID_CHARS: usize = 128;
@@ -139,6 +139,49 @@ struct ProductionRuntime;
 
 impl TransactionRuntime for ProductionRuntime {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreItemKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreItemOutcome {
+    Published,
+    DirectoryCreated,
+    DirectoryNeedsReconciliation,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreJobEvent {
+    ItemStarted {
+        item_index: usize,
+        candidate_id: u64,
+        item_kind: RestoreItemKind,
+        logical_size: u64,
+    },
+    ItemFinished {
+        item_index: usize,
+        candidate_id: u64,
+        item_kind: RestoreItemKind,
+        outcome: RestoreItemOutcome,
+    },
+}
+
+pub trait RestoreJobObserver {
+    fn observe(&mut self, event: RestoreJobEvent);
+
+    fn manifest_published(&mut self, _summary: &RestoreSummary) {}
+}
+
+struct NoopRestoreJobObserver;
+
+impl RestoreJobObserver for NoopRestoreJobObserver {
+    fn observe(&mut self, _event: RestoreJobEvent) {}
+}
+
 #[derive(Debug, Clone)]
 pub struct FileRestorePlan {
     path: SafeRelativePath,
@@ -206,6 +249,20 @@ impl FileRestorePlan {
         match &self.item {
             RestorePlanItem::File(_) => "file",
             RestorePlanItem::Directory { .. } => "directory",
+        }
+    }
+
+    fn observer_kind(&self) -> RestoreItemKind {
+        match &self.item {
+            RestorePlanItem::File(_) => RestoreItemKind::File,
+            RestorePlanItem::Directory { .. } => RestoreItemKind::Directory,
+        }
+    }
+
+    fn logical_size(&self) -> u64 {
+        match &self.item {
+            RestorePlanItem::File(content) => content.logical_size,
+            RestorePlanItem::Directory { .. } => 0,
         }
     }
 }
@@ -308,15 +365,55 @@ impl DestinationRoot {
         cancel: &dyn CancellationProbe,
         progress: &mut dyn ProgressSink,
     ) -> Result<RestoreSummary, RestoreError> {
-        self.restore_job_with_runtime(source, plan, cancel, progress, &ProductionRuntime)
+        let mut observer = NoopRestoreJobObserver;
+        self.restore_job_observed(source, plan, cancel, progress, &mut observer)
     }
 
+    pub fn restore_job_observed(
+        &self,
+        source: &dyn SourceReader,
+        plan: &RestoreJobPlan,
+        cancel: &dyn CancellationProbe,
+        progress: &mut dyn ProgressSink,
+        observer: &mut dyn RestoreJobObserver,
+    ) -> Result<RestoreSummary, RestoreError> {
+        self.restore_job_observed_with_runtime(
+            source,
+            plan,
+            cancel,
+            progress,
+            observer,
+            &ProductionRuntime,
+        )
+    }
+
+    #[cfg(test)]
     fn restore_job_with_runtime(
         &self,
         source: &dyn SourceReader,
         plan: &RestoreJobPlan,
         cancel: &dyn CancellationProbe,
         progress: &mut dyn ProgressSink,
+        runtime: &dyn TransactionRuntime,
+    ) -> Result<RestoreSummary, RestoreError> {
+        let mut observer = NoopRestoreJobObserver;
+        self.restore_job_observed_with_runtime(
+            source,
+            plan,
+            cancel,
+            progress,
+            &mut observer,
+            runtime,
+        )
+    }
+
+    fn restore_job_observed_with_runtime(
+        &self,
+        source: &dyn SourceReader,
+        plan: &RestoreJobPlan,
+        cancel: &dyn CancellationProbe,
+        progress: &mut dyn ProgressSink,
+        observer: &mut dyn RestoreJobObserver,
         runtime: &dyn TransactionRuntime,
     ) -> Result<RestoreSummary, RestoreError> {
         self.revalidate()?;
@@ -341,8 +438,20 @@ impl DestinationRoot {
 
         let mut results = Vec::with_capacity(plan.items.len());
         for (item_index, item) in plan.items.iter().enumerate() {
+            observer.observe(RestoreJobEvent::ItemStarted {
+                item_index,
+                candidate_id: item.candidate_id(),
+                item_kind: item.observer_kind(),
+                logical_size: item.logical_size(),
+            });
             if cancel.is_cancelled() {
                 let error = RestoreError::Cancelled { bytes_written: 0 };
+                observer.observe(RestoreJobEvent::ItemFinished {
+                    item_index,
+                    candidate_id: item.candidate_id(),
+                    item_kind: item.observer_kind(),
+                    outcome: RestoreItemOutcome::Cancelled,
+                });
                 record_item_failure(&mut journal, item.candidate_id(), &error)?;
                 let outcomes = build_manifest_outcomes(
                     plan,
@@ -355,16 +464,16 @@ impl DestinationRoot {
                         published: None,
                     }),
                 )?;
-                publish_final_manifest(
+                let summary = publish_final_manifest(
                     &job_dir,
                     &job_directory_name,
                     plan,
-                    &results,
                     &outcomes,
                     &mut journal,
                     runtime,
                     JobTerminal::Cancelled,
                 )?;
+                observer.manifest_published(&summary);
                 return Err(error);
             }
             match restore_item(
@@ -379,7 +488,27 @@ impl DestinationRoot {
                 item,
                 item_index,
             ) {
-                Ok(result) => results.push(result),
+                Ok(result) => {
+                    let outcome = match item.observer_kind() {
+                        RestoreItemKind::File => RestoreItemOutcome::Published,
+                        RestoreItemKind::Directory
+                            if result.completion_status()
+                                == RestoreCompletionStatus::CompletedDurable =>
+                        {
+                            RestoreItemOutcome::DirectoryCreated
+                        }
+                        RestoreItemKind::Directory => {
+                            RestoreItemOutcome::DirectoryNeedsReconciliation
+                        }
+                    };
+                    observer.observe(RestoreJobEvent::ItemFinished {
+                        item_index,
+                        candidate_id: item.candidate_id(),
+                        item_kind: item.observer_kind(),
+                        outcome,
+                    });
+                    results.push(result);
+                }
                 Err(failure) => {
                     let ItemRestoreFailure {
                         error,
@@ -393,6 +522,21 @@ impl DestinationRoot {
                     let failure_kind = error_kind(&error);
                     let cancelled = matches!(error, RestoreError::Cancelled { .. });
                     let published = published.map(|result| *result);
+                    let observer_outcome = if published.is_some()
+                        && matches!(&item.item, RestorePlanItem::Directory { .. })
+                    {
+                        RestoreItemOutcome::DirectoryNeedsReconciliation
+                    } else if cancelled {
+                        RestoreItemOutcome::Cancelled
+                    } else {
+                        RestoreItemOutcome::Failed
+                    };
+                    observer.observe(RestoreJobEvent::ItemFinished {
+                        item_index,
+                        candidate_id: item.candidate_id(),
+                        item_kind: item.observer_kind(),
+                        outcome: observer_outcome,
+                    });
                     if published.is_none() {
                         record_item_failure(&mut journal, item.candidate_id(), &error)?;
                     }
@@ -415,11 +559,10 @@ impl DestinationRoot {
                             published,
                         }),
                     )?;
-                    publish_final_manifest(
+                    let summary = publish_final_manifest(
                         &job_dir,
                         &job_directory_name,
                         plan,
-                        &results,
                         &outcomes,
                         &mut journal,
                         runtime,
@@ -431,22 +574,24 @@ impl DestinationRoot {
                             }
                         },
                     )?;
+                    observer.manifest_published(&summary);
                     return Err(error);
                 }
             }
         }
 
         let outcomes = build_manifest_outcomes(plan, &results, None)?;
-        publish_final_manifest(
+        let summary = publish_final_manifest(
             &job_dir,
             &job_directory_name,
             plan,
-            &results,
             &outcomes,
             &mut journal,
             runtime,
             JobTerminal::Completed,
-        )
+        )?;
+        observer.manifest_published(&summary);
+        Ok(summary)
     }
 
     fn revalidate(&self) -> Result<(), RestoreError> {
@@ -573,7 +718,6 @@ fn publish_final_manifest(
     job_dir: &Dir,
     job_directory_name: &str,
     plan: &RestoreJobPlan,
-    results: &[RestoreItemResult],
     outcomes: &[ManifestItemOutcome],
     journal: &mut JobJournal,
     runtime: &dyn TransactionRuntime,
@@ -632,8 +776,12 @@ fn publish_final_manifest(
         ));
     }
 
+    let published_items = outcomes
+        .iter()
+        .filter_map(|outcome| outcome.published.clone())
+        .collect::<Vec<_>>();
     let overall_status = if manifest_status == RestoreCompletionStatus::NeedsReconciliation
-        || results
+        || published_items
             .iter()
             .any(|item| item.completion_status == RestoreCompletionStatus::NeedsReconciliation)
     {
@@ -677,7 +825,7 @@ fn publish_final_manifest(
         manifest_name: MANIFEST_NAME.to_owned(),
         journal_name: JOURNAL_NAME.to_owned(),
         manifest_sha256,
-        items: results.to_vec(),
+        items: published_items,
         completion_status: overall_status,
     })
 }
@@ -2368,6 +2516,31 @@ mod tests {
     }
 
     #[test]
+    fn restore_job_plan_accepts_native_selection_limit_and_rejects_the_next_item() {
+        let path = SafeRelativePath::derive_for_recovery(&[] as &[&str], "d").unwrap();
+        let item = FileRestorePlan::directory(1, path).unwrap();
+
+        let accepted = RestoreJobPlan::new(
+            "native-selection-boundary",
+            vec![item.clone(); MAX_RESTORE_JOB_ITEMS],
+        )
+        .unwrap();
+        assert_eq!(accepted.items.len(), 110_000);
+        drop(accepted);
+
+        assert!(matches!(
+            RestoreJobPlan::new(
+                "native-selection-overflow",
+                vec![item; MAX_RESTORE_JOB_ITEMS + 1]
+            ),
+            Err(RestoreError::InvalidJobItemCount {
+                actual: 110_001,
+                maximum: 110_000,
+            })
+        ));
+    }
+
+    #[test]
     fn restore_job_plan_rejects_more_than_one_million_sanitized_components() {
         let parents = (0..(crate::MAX_SAFE_PATH_COMPONENTS - 1))
             .map(|index| format!("p{index}"))
@@ -2509,13 +2682,15 @@ mod tests {
         let job_id = "directory-created-before-bind-fault";
         let job = directory_item_job(job_id, 91, &["selected"], "only-directory");
         let job_dir = temp.path().join(job_directory_component(job_id));
+        let mut observer = RecordingJobObserver::default();
 
         let error = destination
-            .restore_job_with_runtime(
+            .restore_job_observed_with_runtime(
                 &MemoryReader::new(b""),
                 &job,
                 &NeverCancel,
                 &mut NoProgress,
+                &mut observer,
                 &FailFinalDirectoryTransitionAfterCollision {
                     job_dir: job_dir.clone(),
                     parent_name: "selected",
@@ -2525,6 +2700,13 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, RestoreError::NeedsReconciliation { .. }));
+        assert_eq!(observer.manifests.len(), 1);
+        assert_eq!(
+            observer.manifests[0].completion_status(),
+            RestoreCompletionStatus::NeedsReconciliation
+        );
+        assert_eq!(observer.manifests[0].items().len(), 1);
+        assert_eq!(observer.manifests[0].items()[0].candidate_id(), 91);
         assert!(
             job_dir
                 .join("selected")
@@ -3503,5 +3685,174 @@ mod tests {
         let audit = crate::audit_journal(&std::fs::read(job_dir.join(JOURNAL_NAME)).unwrap())
             .expect("the manifest collision journal remains complete");
         assert_eq!(audit.kinds().last(), Some(&"jobFailed"));
+    }
+
+    #[derive(Default)]
+    struct RecordingJobObserver {
+        events: Vec<RestoreJobEvent>,
+        manifests: Vec<RestoreSummary>,
+    }
+
+    impl RestoreJobObserver for RecordingJobObserver {
+        fn observe(&mut self, event: RestoreJobEvent) {
+            self.events.push(event);
+        }
+
+        fn manifest_published(&mut self, summary: &RestoreSummary) {
+            self.manifests.push(summary.clone());
+        }
+    }
+
+    fn zero_length_file_item(candidate_id: u64, name: &str) -> FileRestorePlan {
+        let candidate = Candidate {
+            id: candidate_id,
+            kind: CandidateKind::File,
+            method: DiscoveryMethod::NtfsMetadata,
+            state: CandidateState::CompleteUnvalidated,
+            name: name.into(),
+            name_certain: true,
+            parent_path: Vec::new(),
+            metadata_confidence: MetadataConfidence::High,
+            size: 0,
+            timestamps: Timestamps::default(),
+            extents: Vec::new(),
+            record_ref: candidate_id,
+            sequence: Some(1),
+            warnings: Vec::new(),
+        };
+        let content = crate::plan_candidate(
+            &candidate,
+            1,
+            None,
+            crate::PartialPolicy::CompleteOnly,
+            crate::PlanLimits::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let path = SafeRelativePath::derive_for_recovery(&[] as &[&str], name).unwrap();
+        FileRestorePlan::file(path, content).unwrap()
+    }
+
+    #[test]
+    fn transaction_job_observer_reports_published_file_zero_byte_and_directory_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let bytes = b"observer bytes";
+        let file = one_item_job("observer-source", bytes)
+            .items
+            .into_iter()
+            .next()
+            .unwrap();
+        let empty = zero_length_file_item(42, "empty.bin");
+        let directory_path =
+            SafeRelativePath::derive_for_recovery(&[] as &[&str], "selected-directory").unwrap();
+        let directory = FileRestorePlan::directory(43, directory_path).unwrap();
+        let job = RestoreJobPlan::new("observer-success", vec![file, empty, directory]).unwrap();
+        let mut observer = RecordingJobObserver::default();
+
+        destination
+            .restore_job_observed_with_runtime(
+                &MemoryReader::new(bytes),
+                &job,
+                &NeverCancel,
+                &mut NoProgress,
+                &mut observer,
+                &AlwaysSynced,
+            )
+            .unwrap();
+
+        assert_eq!(
+            observer.events,
+            vec![
+                RestoreJobEvent::ItemStarted {
+                    item_index: 0,
+                    candidate_id: 41,
+                    item_kind: RestoreItemKind::File,
+                    logical_size: bytes.len() as u64,
+                },
+                RestoreJobEvent::ItemFinished {
+                    item_index: 0,
+                    candidate_id: 41,
+                    item_kind: RestoreItemKind::File,
+                    outcome: RestoreItemOutcome::Published,
+                },
+                RestoreJobEvent::ItemStarted {
+                    item_index: 1,
+                    candidate_id: 42,
+                    item_kind: RestoreItemKind::File,
+                    logical_size: 0,
+                },
+                RestoreJobEvent::ItemFinished {
+                    item_index: 1,
+                    candidate_id: 42,
+                    item_kind: RestoreItemKind::File,
+                    outcome: RestoreItemOutcome::Published,
+                },
+                RestoreJobEvent::ItemStarted {
+                    item_index: 2,
+                    candidate_id: 43,
+                    item_kind: RestoreItemKind::Directory,
+                    logical_size: 0,
+                },
+                RestoreJobEvent::ItemFinished {
+                    item_index: 2,
+                    candidate_id: 43,
+                    item_kind: RestoreItemKind::Directory,
+                    outcome: RestoreItemOutcome::DirectoryCreated,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn transaction_job_observer_reports_cooperative_cancellation_once() {
+        struct AlreadyCancelled;
+
+        impl CancellationProbe for AlreadyCancelled {
+            fn is_cancelled(&self) -> bool {
+                true
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let retained = Dir::open_ambient_dir(temp.path(), ambient_authority())
+            .unwrap()
+            .into_std_file();
+        let destination = DestinationRoot::from_retained_file(retained).unwrap();
+        let bytes = b"cancel observer";
+        let job = one_item_job("observer-cancel", bytes);
+        let mut observer = RecordingJobObserver::default();
+
+        let error = destination
+            .restore_job_observed(
+                &MemoryReader::new(bytes),
+                &job,
+                &AlreadyCancelled,
+                &mut NoProgress,
+                &mut observer,
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, RestoreError::Cancelled { .. }));
+        assert_eq!(
+            observer.events,
+            vec![
+                RestoreJobEvent::ItemStarted {
+                    item_index: 0,
+                    candidate_id: 41,
+                    item_kind: RestoreItemKind::File,
+                    logical_size: bytes.len() as u64,
+                },
+                RestoreJobEvent::ItemFinished {
+                    item_index: 0,
+                    candidate_id: 41,
+                    item_kind: RestoreItemKind::File,
+                    outcome: RestoreItemOutcome::Cancelled,
+                },
+            ]
+        );
     }
 }

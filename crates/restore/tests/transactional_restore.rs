@@ -209,6 +209,7 @@ fn transaction_success_prepares_then_publishes_and_hashes_manifest() {
 
     let job_dir = temp.path().join(summary.job_directory_name());
     assert_eq!(fs::read(job_dir.join("report.bin")).unwrap(), b"recover me");
+    assert!(!summary.items()[0].is_partial());
     let has_temporary = fs::read_dir(&job_dir).unwrap().any(|entry| {
         entry
             .unwrap()
@@ -287,7 +288,6 @@ fn transaction_collisions_are_atomic_and_never_replace_the_first_file() {
         .restore_job(&source, &job, &NeverCancel, &mut Progress::default())
         .unwrap();
     let job_dir = temp.path().join(summary.job_directory_name());
-
     assert_eq!(fs::read(job_dir.join("same.txt")).unwrap(), b"first");
     assert_eq!(
         fs::read(job_dir.join("same (recovered 1).txt")).unwrap(),
@@ -413,6 +413,7 @@ fn transaction_partial_file_emits_exact_versioned_range_sidecar() {
         )
         .unwrap();
     let job_dir = temp.path().join(summary.job_directory_name());
+    assert!(summary.items()[0].is_partial());
 
     assert_eq!(
         fs::read(job_dir.join("partial.bin")).unwrap(),

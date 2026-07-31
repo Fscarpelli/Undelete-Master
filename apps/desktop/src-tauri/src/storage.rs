@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use serde::Serialize;
@@ -24,6 +24,7 @@ use um_io_windows::{
     BusType, FolderScope, FolderScopeError, StorageError, StorageInventory, StorageVolume,
 };
 
+use crate::restore::{RestoreScanBinding, RestoreScanSnapshot, RestoreSelectedCandidate};
 use crate::results::{
     self, BoundCandidateQuery, CandidateQuery, CandidateQueryContext, CandidateQueryPageDto,
     CandidateRowDto, CandidateSelectionUpdateDto, CandidateSort, ResultAuthorityError,
@@ -225,9 +226,9 @@ struct CandidateContentEvidence {
     validator: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DesktopStorageState {
-    inner: Mutex<DesktopStorageStateInner>,
+    inner: Arc<Mutex<DesktopStorageStateInner>>,
 }
 
 #[derive(Default)]
@@ -236,6 +237,36 @@ struct DesktopStorageStateInner {
     scope_order: VecDeque<String>,
     scans: HashMap<String, ScanSession>,
     scan_order: VecDeque<String>,
+}
+
+pub(crate) struct RestoreStartSelectionView<'a> {
+    scan_id: &'a str,
+    source: &'a ScanSourceBinding,
+    selection_revision: u64,
+    candidates: &'a [StoredCandidate],
+    selected: &'a HashSet<um_core::CandidateId>,
+}
+
+impl RestoreStartSelectionView<'_> {
+    pub(crate) const fn scan_id(&self) -> &str {
+        self.scan_id
+    }
+
+    pub(crate) const fn source(&self) -> &ScanSourceBinding {
+        self.source
+    }
+
+    pub(crate) const fn selection_revision(&self) -> u64 {
+        self.selection_revision
+    }
+
+    pub(crate) fn matches_ordered_candidate_ids(&self, expected: &[um_core::CandidateId]) -> bool {
+        self.candidates
+            .iter()
+            .filter(|stored| self.selected.contains(&stored.candidate.id))
+            .map(|stored| stored.candidate.id)
+            .eq(expected.iter().copied())
+    }
 }
 
 struct StoredFolderScope {
@@ -403,6 +434,108 @@ impl DesktopStorageState {
             selection_revision,
         )
         .map_err(map_result_error)
+    }
+
+    pub(crate) fn restore_snapshot(
+        &self,
+        scan_id: &str,
+        expected_selection_revision: Option<u64>,
+    ) -> Result<RestoreScanSnapshot, DesktopStorageError> {
+        if !valid_opaque_id(scan_id) {
+            return Err(DesktopStorageError::incompatible());
+        }
+        let state = self.inner.lock().map_err(|_| {
+            DesktopStorageError::new("SCAN_INTERNAL", "The scanner state is unavailable.")
+        })?;
+        let session = state
+            .scans
+            .get(scan_id)
+            .ok_or_else(DesktopStorageError::incompatible)?;
+        if expected_selection_revision
+            .is_some_and(|expected| expected != session.selection_revision)
+        {
+            return Err(DesktopStorageError::new(
+                "RESULT_SELECTION_STALE",
+                "The recovery selection changed. Review it and create a new plan.",
+            ));
+        }
+
+        let candidates = session
+            .candidates
+            .iter()
+            .filter(|stored| session.selected.contains(&stored.candidate.id))
+            .map(|stored| RestoreSelectedCandidate {
+                candidate: stored.candidate.clone(),
+                expected_sha256: stored.expected_sha256,
+                warnings: stored.row.warnings.clone(),
+            })
+            .collect();
+
+        Ok(RestoreScanSnapshot {
+            scan_id: scan_id.to_owned(),
+            source: session.source.clone(),
+            selection_revision: session.selection_revision,
+            candidates,
+        })
+    }
+
+    pub(crate) fn restore_scan_binding(
+        &self,
+        scan_id: &str,
+    ) -> Result<RestoreScanBinding, DesktopStorageError> {
+        if !valid_opaque_id(scan_id) {
+            return Err(DesktopStorageError::incompatible());
+        }
+        let state = self.inner.lock().map_err(|_| {
+            DesktopStorageError::new("SCAN_INTERNAL", "The scanner state is unavailable.")
+        })?;
+        let session = state
+            .scans
+            .get(scan_id)
+            .ok_or_else(DesktopStorageError::incompatible)?;
+        Ok(RestoreScanBinding {
+            scan_id: scan_id.to_owned(),
+            source: session.source.clone(),
+        })
+    }
+
+    /// Runs a short, allocation-free authorization step while the retained
+    /// selection remains locked. The callback must not perform I/O or launch
+    /// work.
+    ///
+    /// Restore start uses this as its linearization point: destination I/O is
+    /// completed first, then the exact selection revision and scan order are
+    /// compared by borrow while the coordinator atomically consumes the plan.
+    pub(crate) fn with_restore_start_selection<T>(
+        &self,
+        scan_id: &str,
+        expected_selection_revision: u64,
+        authorize: impl FnOnce(RestoreStartSelectionView<'_>) -> T,
+    ) -> Result<T, DesktopStorageError> {
+        if !valid_opaque_id(scan_id) {
+            return Err(DesktopStorageError::incompatible());
+        }
+        let state = self.inner.lock().map_err(|_| {
+            DesktopStorageError::new("SCAN_INTERNAL", "The scanner state is unavailable.")
+        })?;
+        let session = state
+            .scans
+            .get(scan_id)
+            .ok_or_else(DesktopStorageError::incompatible)?;
+        if expected_selection_revision != session.selection_revision {
+            return Err(DesktopStorageError::new(
+                "RESULT_SELECTION_STALE",
+                "The recovery selection changed. Review it and create a new plan.",
+            ));
+        }
+
+        Ok(authorize(RestoreStartSelectionView {
+            scan_id,
+            source: &session.source,
+            selection_revision: session.selection_revision,
+            candidates: &session.candidates,
+            selected: &session.selected,
+        }))
     }
 }
 
@@ -2268,5 +2401,96 @@ mod tests {
         assert!(validate_request_id("").is_err());
         assert!(validate_request_id("bad\nrequest").is_err());
         assert!(validate_request_id(&"x".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn restore_storage_snapshot_preserves_revision_candidate_order_and_native_only_authority() {
+        let candidates = vec![
+            candidate(91, 91, Some(1), "first.bin", CandidateKind::File),
+            candidate(92, 92, Some(1), "second.bin", CandidateKind::File),
+            candidate(93, 93, Some(1), "third.bin", CandidateKind::File),
+        ];
+        let mut session = build_scan_session(
+            "scan-restore-snapshot",
+            "Fixture",
+            details(
+                candidates,
+                NtfsNamespace {
+                    paths: Vec::new(),
+                    directories: Vec::new(),
+                    is_complete: true,
+                },
+            ),
+            SessionScope::Volume,
+        )
+        .unwrap();
+        session.selected.extend([93, 91]);
+        session.selection_revision = 7;
+        let state = DesktopStorageState::default();
+        state.store_session(session).unwrap();
+
+        let snapshot = state
+            .restore_snapshot("scan-restore-snapshot", Some(7))
+            .unwrap();
+
+        assert_eq!(snapshot.selection_revision, 7);
+        assert_eq!(
+            snapshot
+                .candidates
+                .iter()
+                .map(|item| item.candidate.id)
+                .collect::<Vec<_>>(),
+            vec![91, 93],
+            "selection must follow immutable scan order, never HashSet order"
+        );
+        assert_eq!(snapshot.source.physical_disk_number, 7);
+        assert_eq!(
+            snapshot.source.volume_id,
+            "test-volume-scan-restore-snapshot"
+        );
+        let shared_state = state.clone();
+        let ordered_selection_matches = shared_state
+            .with_restore_start_selection("scan-restore-snapshot", 7, |selection| {
+                assert_eq!(selection.scan_id(), "scan-restore-snapshot");
+                assert_eq!(selection.selection_revision(), 7);
+                assert_eq!(selection.source(), &snapshot.source);
+                selection.matches_ordered_candidate_ids(&[91, 93])
+                    && !selection.matches_ordered_candidate_ids(&[93, 91])
+            })
+            .unwrap();
+        assert!(
+            ordered_selection_matches,
+            "the cheaply cloned storage authority must compare borrowed IDs in immutable scan order"
+        );
+        assert_eq!(
+            shared_state
+                .with_restore_start_selection("scan-restore-snapshot", 6, |_| ())
+                .unwrap_err()
+                .code,
+            "RESULT_SELECTION_STALE"
+        );
+        assert_eq!(
+            shared_state
+                .restore_scan_binding("scan-restore-snapshot")
+                .unwrap(),
+            RestoreScanBinding::from(&snapshot),
+            "destination selection must clone only the scan/source binding, never candidate payloads"
+        );
+        assert_eq!(
+            state
+                .restore_snapshot("scan-restore-snapshot", Some(6))
+                .unwrap_err()
+                .code,
+            "RESULT_SELECTION_STALE"
+        );
+
+        let public_summary = serde_json::to_string(
+            &state
+                .candidate_page("scan-restore-snapshot", None, 100)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!public_summary.contains("physicalDisk"));
+        assert!(!public_summary.contains("test-volume-scan-restore-snapshot"));
     }
 }

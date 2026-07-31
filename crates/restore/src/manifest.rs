@@ -109,6 +109,16 @@ impl RestoreItemResult {
         self.output_sha256
     }
 
+    /// Returns true only when the published file has a durable range-map
+    /// sidecar for at least one non-sparse zero-filled range.
+    pub fn is_partial(&self) -> bool {
+        self.sidecar_name.is_some()
+            && self
+                .zero_filled_ranges
+                .iter()
+                .any(|range| range.reason != ZeroFillReason::Sparse)
+    }
+
     pub fn temporary_disposition(&self) -> Option<TemporaryFileDisposition> {
         self.temporary_disposition
     }

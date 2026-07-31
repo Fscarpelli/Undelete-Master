@@ -41,6 +41,7 @@ subject to independent review.
 | [0025](0025-native-result-query-and-selection-authority.md) | Backend-owned candidate query, cursor binding, and durable native selection | Accepted |
 | [0026](0026-bounded-content-plan-and-partial-recovery.md) | Bounded logical content planning, explicit partial policy, and streaming extraction | Accepted |
 | [0027](0027-destination-capability-and-disk-separation.md) | Opaque query-only destination capability, protocol-v3 source disk identity, direct-bus admission, and fail-closed physical-disk separation | Accepted |
+| [0028](0028-restore-plan-job-and-manifest-lifecycle.md) | Opaque immutable restore plans, bounded native job lifecycles, real progress/cancellation, and manifest-bound completion | Accepted |
 
 A new ADR supersedes an accepted decision; accepted history is never silently
 rewritten. Proposed records must be reviewed and moved to Accepted before their

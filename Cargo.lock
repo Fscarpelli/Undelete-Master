@@ -3887,6 +3887,8 @@ dependencies = [
 name = "um-desktop"
 version = "0.1.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "crc32fast",
  "getrandom 0.3.4",
  "hex",
@@ -3903,7 +3905,9 @@ dependencies = [
  "um-fixture-builder",
  "um-fs-common",
  "um-fs-ntfs",
+ "um-io-common",
  "um-io-windows",
+ "um-restore",
 ]
 
 [[package]]

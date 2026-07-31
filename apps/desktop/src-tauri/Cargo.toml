@@ -24,6 +24,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
+cap-std = { workspace = true }
+cap-fs-ext = { workspace = true }
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-dialog = { version = "=2.7.2" }
 um-broker-client = { workspace = true }
@@ -32,8 +34,10 @@ um-core = { workspace = true }
 um-fs-common = { workspace = true }
 um-fs-ntfs = { workspace = true }
 um-io-windows = { workspace = true }
+um-restore = { workspace = true }
 
 [dev-dependencies]
 crc32fast = { workspace = true }
 tempfile = { workspace = true }
 um-fixture-builder = { workspace = true }
+um-io-common = { workspace = true }

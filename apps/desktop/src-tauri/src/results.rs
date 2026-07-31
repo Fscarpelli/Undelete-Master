@@ -754,7 +754,7 @@ fn canonical_extension(value: &str) -> Option<String> {
     }
 }
 
-fn candidate_eligibility(candidate: &Candidate) -> RecoveryEligibility {
+pub(crate) fn candidate_eligibility(candidate: &Candidate) -> RecoveryEligibility {
     if candidate.kind == CandidateKind::Directory || candidate.size == 0 {
         return RecoveryEligibility::Complete;
     }
