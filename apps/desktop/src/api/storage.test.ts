@@ -327,6 +327,36 @@ describe("real storage contracts", () => {
     ).toThrow(StorageContractError);
   });
 
+  it("accepts completed only after all planned bytes are processed", () => {
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        bytesCompleted: "9007199254740992",
+      }),
+    ).toThrow(StorageContractError);
+  });
+
+  it("accepts completed only when its manifest covers every plan item", () => {
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        manifest: {
+          ...completedRestoreJob.manifest,
+          publishedItems: "2",
+        },
+      }),
+    ).toThrow(StorageContractError);
+  });
+
+  it("rejects a drive prefix in warnings even when whitespace follows it", () => {
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...runningRestoreJob,
+        warnings: ["Restore failed at E: deleted.txt"],
+      }),
+    ).toThrow(StorageContractError);
+  });
+
   it("keeps current-item identity and ordinal monotone across real progress", () => {
     const current = parseRestoreJobSnapshot(runningRestoreJob);
     const next = parseRestoreJobSnapshot(
@@ -351,9 +381,23 @@ describe("real storage contracts", () => {
       },
       current,
     );
+    const afterBetweenItems = parseRestoreJobSnapshot(
+      {
+        ...runningRestoreJob,
+        itemsCompleted: "2",
+        bytesCompleted: "84",
+        currentItem: {
+          ordinal: "2",
+          candidateId: "43",
+          kind: "directory",
+        },
+      },
+      betweenItems,
+    );
 
     expect(next.currentItem?.ordinal).toBe("2");
     expect(betweenItems.currentItem).toBeNull();
+    expect(afterBetweenItems.currentItem?.ordinal).toBe("2");
     expect(() =>
       parseRestoreJobSnapshot(
         {
@@ -400,6 +444,23 @@ describe("real storage contracts", () => {
         {
           ...runningRestoreJob,
           currentItem: null,
+        },
+        current,
+      ),
+    ).toThrow(StorageContractError);
+  });
+
+  it("rejects an active ordinal that skips an undisposed plan item", () => {
+    const current = parseRestoreJobSnapshot(runningRestoreJob);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        {
+          ...runningRestoreJob,
+          currentItem: {
+            ordinal: "2",
+            candidateId: "43",
+            kind: "directory",
+          },
         },
         current,
       ),

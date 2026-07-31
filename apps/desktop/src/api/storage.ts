@@ -1060,7 +1060,7 @@ function restoreWarningList(value: unknown): string[] {
       (warning) =>
         warning.includes("/") ||
         warning.includes("\\") ||
-        /(?:^|[^A-Za-z])[A-Za-z]:(?:\S|$)/u.test(warning),
+        /(?:^|[^A-Za-z])[A-Za-z]:/u.test(warning),
     )
   ) {
     throw new StorageContractError();
@@ -1318,7 +1318,7 @@ export function parseRestoreJobSnapshot(
     (!isTerminalRestoreStatus(status) && manifest !== null) ||
     ((status === "queued" || isTerminalRestoreStatus(status)) &&
       currentItem !== null) ||
-    (currentItem !== null && BigInt(currentItem.ordinal) < dispositions) ||
+    (currentItem !== null && BigInt(currentItem.ordinal) !== dispositions) ||
     (status === "queued" &&
       (completed !== 0n ||
         failed !== 0n ||
@@ -1328,7 +1328,9 @@ export function parseRestoreJobSnapshot(
       (completed !== total ||
         failed !== 0n ||
         cancelled !== 0n ||
-        manifest === null))
+        completedBytes !== BigInt(bytesTotal) ||
+        manifest === null ||
+        BigInt(manifest.publishedItems) !== total))
   ) {
     throw new StorageContractError();
   }

@@ -388,6 +388,12 @@ describe("native connected-storage commands", () => {
     expect(
       normalizeRestoreError({ code: "RESTORE_DESTINATION_LIMIT" }),
     ).toMatchObject({ code: "RESTORE_DESTINATION_LIMIT" });
+    expect(
+      normalizeRestoreError({ code: "RESTORE_PLAN_LIMIT" }),
+    ).toMatchObject({ code: "RESTORE_PLAN_LIMIT" });
+    expect(
+      normalizeRestoreError({ code: "RESTORE_JOB_LIMIT" }),
+    ).toMatchObject({ code: "RESTORE_JOB_LIMIT" });
   });
 });
 
