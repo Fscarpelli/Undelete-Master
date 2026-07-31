@@ -316,7 +316,9 @@ export function useResultsWorkspace(
     (code: StorageErrorCode) => {
       commitState((current) => ({
         ...current,
-        phase: "error",
+        // A failed refresh must not make an already displayed page inert. The
+        // native selection authority is still bound to that page/query id.
+        phase: current.page === null ? "error" : "ready",
         selectionPhase: "idle",
         error: code,
       }));
