@@ -385,6 +385,9 @@ describe("native connected-storage commands", () => {
     expect(
       normalizeRestoreError({ code: "RESTORE_DIFFERENT_DISK_REQUIRED" }),
     ).toMatchObject({ code: "RESTORE_DIFFERENT_DISK_REQUIRED" });
+    expect(
+      normalizeRestoreError({ code: "RESTORE_DESTINATION_LIMIT" }),
+    ).toMatchObject({ code: "RESTORE_DESTINATION_LIMIT" });
   });
 });
 

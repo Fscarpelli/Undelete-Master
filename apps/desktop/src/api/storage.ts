@@ -1058,7 +1058,9 @@ function restoreWarningList(value: unknown): string[] {
   if (
     warnings.some(
       (warning) =>
-        warning.includes("\\") || /(?:^|[^A-Za-z])[A-Za-z]:\//u.test(warning),
+        warning.includes("/") ||
+        warning.includes("\\") ||
+        /(?:^|[^A-Za-z])[A-Za-z]:(?:\S|$)/u.test(warning),
     )
   ) {
     throw new StorageContractError();
@@ -1300,11 +1302,12 @@ export function parseRestoreJobSnapshot(
   const completed = BigInt(itemsCompleted);
   const failed = BigInt(itemsFailed);
   const cancelled = BigInt(itemsCancelled);
+  const dispositions = completed + failed + cancelled;
   const completedBytes = BigInt(bytesCompleted);
   if (
     total === 0n ||
     total > BigInt(MAX_RETAINED_CANDIDATES_PER_SCAN) ||
-    completed + failed + cancelled > total ||
+    dispositions > total ||
     completedBytes > BigInt(bytesTotal)
   ) {
     throw new StorageContractError();
@@ -1315,11 +1318,17 @@ export function parseRestoreJobSnapshot(
     (!isTerminalRestoreStatus(status) && manifest !== null) ||
     ((status === "queued" || isTerminalRestoreStatus(status)) &&
       currentItem !== null) ||
+    (currentItem !== null && BigInt(currentItem.ordinal) < dispositions) ||
     (status === "queued" &&
       (completed !== 0n ||
         failed !== 0n ||
         cancelled !== 0n ||
-        completedBytes !== 0n))
+        completedBytes !== 0n)) ||
+    (status === "completed" &&
+      (completed !== total ||
+        failed !== 0n ||
+        cancelled !== 0n ||
+        manifest === null))
   ) {
     throw new StorageContractError();
   }
@@ -1349,6 +1358,21 @@ export function parseRestoreJobSnapshot(
       BigInt(previous.itemsFailed) > failed ||
       BigInt(previous.itemsCancelled) > cancelled ||
       BigInt(previous.bytesCompleted) > completedBytes ||
+      (previous.currentItem !== null &&
+        parsed.currentItem !== null &&
+        (BigInt(parsed.currentItem.ordinal) <
+          BigInt(previous.currentItem.ordinal) ||
+          (parsed.currentItem.ordinal === previous.currentItem.ordinal &&
+            (parsed.currentItem.candidateId !==
+              previous.currentItem.candidateId ||
+              parsed.currentItem.kind !== previous.currentItem.kind)))) ||
+      (previous.currentItem !== null &&
+        parsed.currentItem === null &&
+        !isTerminalRestoreStatus(parsed.status) &&
+        dispositions <=
+          BigInt(previous.itemsCompleted) +
+            BigInt(previous.itemsFailed) +
+            BigInt(previous.itemsCancelled)) ||
       (isTerminalRestoreStatus(previous.status) &&
         !sameTerminalRestoreSnapshot(previous, parsed)))
   ) {

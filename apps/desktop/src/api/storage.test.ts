@@ -280,6 +280,132 @@ describe("real storage contracts", () => {
     }
   });
 
+  it("rejects every path-shaped restore warning before it reaches the WebView", () => {
+    for (const warning of [
+      "Restore failed at folder/deleted.txt",
+      "Restore failed at E:deleted.txt",
+      "Restore failed at E:",
+      "Restore failed at E:/Recovered/deleted.txt",
+      "Restore failed at \\\\server\\share\\deleted.txt",
+    ]) {
+      expect(() =>
+        parseRestoreJobSnapshot({
+          ...runningRestoreJob,
+          warnings: [warning],
+        }),
+      ).toThrow(StorageContractError);
+    }
+  });
+
+  it("accepts completed only for all-success coverage with a manifest", () => {
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        itemsCompleted: "2",
+        manifest: {
+          ...completedRestoreJob.manifest,
+          publishedItems: "2",
+        },
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        manifest: null,
+      }),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot({
+        ...completedRestoreJob,
+        itemsCompleted: "2",
+        itemsFailed: "1",
+        manifest: {
+          ...completedRestoreJob.manifest,
+          publishedItems: "2",
+        },
+      }),
+    ).toThrow(StorageContractError);
+  });
+
+  it("keeps current-item identity and ordinal monotone across real progress", () => {
+    const current = parseRestoreJobSnapshot(runningRestoreJob);
+    const next = parseRestoreJobSnapshot(
+      {
+        ...runningRestoreJob,
+        itemsCompleted: "2",
+        bytesCompleted: "84",
+        currentItem: {
+          ordinal: "2",
+          candidateId: "43",
+          kind: "directory",
+        },
+      },
+      current,
+    );
+    const betweenItems = parseRestoreJobSnapshot(
+      {
+        ...runningRestoreJob,
+        itemsCompleted: "2",
+        bytesCompleted: "84",
+        currentItem: null,
+      },
+      current,
+    );
+
+    expect(next.currentItem?.ordinal).toBe("2");
+    expect(betweenItems.currentItem).toBeNull();
+    expect(() =>
+      parseRestoreJobSnapshot(
+        {
+          ...runningRestoreJob,
+          currentItem: {
+            ordinal: "1",
+            candidateId: "99",
+            kind: "file",
+          },
+        },
+        current,
+      ),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        {
+          ...runningRestoreJob,
+          currentItem: {
+            ordinal: "1",
+            candidateId: "42",
+            kind: "directory",
+          },
+        },
+        current,
+      ),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        {
+          ...runningRestoreJob,
+          itemsCompleted: "2",
+          bytesCompleted: "84",
+          currentItem: {
+            ordinal: "1",
+            candidateId: "42",
+            kind: "file",
+          },
+        },
+        betweenItems,
+      ),
+    ).toThrow(StorageContractError);
+    expect(() =>
+      parseRestoreJobSnapshot(
+        {
+          ...runningRestoreJob,
+          currentItem: null,
+        },
+        current,
+      ),
+    ).toThrow(StorageContractError);
+  });
+
   it("enforces legal restore status transitions and immutable job bindings", () => {
     const queued = parseRestoreJobSnapshot(queuedRestoreJob);
     expect(parseRestoreJobSnapshot(completedRestoreJob, queued).status).toBe(
