@@ -34,7 +34,7 @@ subject to independent review.
 | [0003](0003-regular-image-only-cli.md) | Current CLI accepts one regular contiguous image file only | Accepted |
 | [0005](0005-pull-request-ci-excludes-devices.md) | Pull-request CI excludes devices and elevation | Accepted |
 | [0007](0007-demo-provider-trust-state.md) | Demonstration-provider proposal | Superseded by [0021](0021-real-only-image-desktop.md) |
-| [0021](0021-real-only-image-desktop.md) | Unelevated Tauri image desktop uses only the real scanner and fails closed without it | Accepted |
+| [0021](0021-real-only-image-desktop.md) | Historical image-desktop slice; real-only/fail-closed rules retained, workflow superseded by 0023-0028 | Partially superseded |
 | [0022](0022-windows-locality-boundary-and-path-identity.md) | Minimal read-only Windows locality FFI with explicit residual path-identity races | Accepted |
 | [0023](0023-windows-read-only-broker-and-folder-scope.md) | Mounted local volumes grouped under display-only disks, fixed read-only broker v3, and identity-bound NTFS folder scope; no `PhysicalDriveN` scan | Accepted |
 | [0024](0024-streaming-mft-and-bounded-content-carving.md) | Batched/retention-bounded MFT enumeration plus explicit allocation-gated whole-NTFS JPEG deep mode | Accepted |

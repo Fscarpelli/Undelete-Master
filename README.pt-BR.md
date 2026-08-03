@@ -16,6 +16,68 @@ evidências.
 
 [English](README.md)
 
+Documentação: [portal](docs/README.md) · [catálogo de funcionalidades](docs/FEATURES.md) ·
+[galeria de capturas reais do desktop](docs/screenshots/README.md)
+
+![Desktop real do Undelete Master detectando volumes conectados no Windows](docs/screenshots/01-connected-volumes.png)
+
+*Executável empacotado atual, inventário real de volumes montados, sem dados
+mock. Consulte a [proveniência das capturas](docs/screenshots/README.md).*
+
+## Início rápido no Windows
+
+### Pré-requisitos
+
+- Windows 10 22H2 ou Windows 11 x64, com Microsoft Edge WebView2 disponível.
+- Um volume local real, montado e em NTFS ou FAT12/16/32. NTFS é obrigatório
+  para limitar a análise a uma pasta e para o destino da recuperação.
+- Permissão para aprovar o UAC do Windows ao iniciar a análise. O desktop
+  continua sem elevação; somente o broker fixo e apenas de leitura é elevado.
+- Para recuperar arquivos, uma pasta NTFS local e gravável em exatamente um
+  disco físico comprovadamente diferente de todos os discos da origem.
+
+Antes da análise, pare de usar a origem tanto quanto for possível. Qualquer
+gravação posterior do Windows ou de outro aplicativo pode sobrescrever o
+conteúdo apagado, embora o Undelete Master abra a origem somente para leitura.
+
+### Analisar e recuperar
+
+1. Inicie `undelete-master-desktop.exe` com o irmão fixo
+   `undelete-master-broker.exe` na mesma pasta. Não execute o desktop como
+   Administrador.
+2. Em **Análise**, atualize o inventário real, selecione o volume montado e, em
+   NTFS, escolha opcionalmente uma pasta. O caminho permanece no código nativo
+   e funciona como filtro de resultados com ancestralidade comprovada.
+3. Use **Metadados** para a varredura do sistema de arquivos compatível ou
+   **Profunda para JPEG** para a análise mais lenta do volume NTFS inteiro nas
+   regiões que o bitmap comprova estarem livres.
+4. Inicie a tarefa e aprove o UAC do broker. Durante a enumeração mensurável da
+   MFT, a tela mostra contagens reais, percentual, tempo decorrido e estimativa
+   baseada no ritmo observado. Fases sem total confiável permanecem claramente
+   indeterminadas; o aplicativo não inventa progresso.
+5. Pesquise, filtre e ordene os resultados limitados. Marque um candidato pelo
+   checkbox da linha ou use a opção do cabeçalho/seleção de correspondências.
+6. Confira o resumo e clique em **Recuperar selecionados**. Autorize uma pasta
+   NTFS em outro disco físico, confirme eventual recuperação de melhor esforço
+   e acompanhe o progresso nativo por itens/bytes até o manifesto final.
+
+O desktop não possui seletor de arquivo-imagem por decisão de produto. A CLI
+separada aceita arquivos-imagem locais comuns para fluxos headless e de
+engenharia.
+
+## Mapa de capacidades
+
+| Área | Comportamento atual |
+| --- | --- |
+| Descoberta | Volumes locais reais e montados no Windows; inventário sem elevação |
+| Metadados | NTFS e FAT12/16/32, com limites e evidência parcial explícita |
+| Escopo de pasta | Opcional em NTFS; inclui somente candidatos de ancestralidade comprovada |
+| Carving profundo | Somente JPEG contíguo estruturalmente válido, no volume NTFS inteiro e apenas em regiões que o `$Bitmap` comprova livres |
+| Resultados | Busca nativa, filtros por extensão/evidência, ordenação estável, páginas por cursor e seleção individual/em massa |
+| Recuperação | Planos de conteúdo elegíveis e evidência JPEG implementada; saída transacional preservando a árvore em outro disco físico NTFS |
+| CLI headless | Análise somente leitura de arquivo-imagem local comum com JSON sanitizado |
+| Sem suporte | exFAT, ReFS, carving de todos os formatos ou fragmentado, RAW de sistema danificado, partição desmontada e disco físico inteiro |
+
 ## O que está implementado
 
 - Abstração Rust `SourceReader` sem operação de escrita.
@@ -45,6 +107,10 @@ evidências.
   facets dinâmicas de extensão, filtros de evidência, ordenação estável, páginas
   limitadas por cursor e seleção nativa preservada entre páginas, consultas,
   filtros e ordenações durante o processo atual.
+- Eventos nativos das fases e cronômetro decorrido. A enumeração da MFT
+  fornece contagens concluído/total, percentual medido e ETA baseada no ritmo
+  quando o total é confiável; reconstrução de namespace, classificação de
+  candidatos e carving continuam indeterminados quando não há total seguro.
 - Fluxo transacional nativo para restaurar somente candidatos selecionados. Ele
   exige uma pasta NTFS autorizada em um único disco físico diferente e
   comprovado, preserva a árvore recuperada, renomeia colisões sem substituir
@@ -77,10 +143,12 @@ de sistema danificado e carving de pasta ainda não existem. A restauração nã
 pode usar o disco de origem, o caminho original nem um destino não NTFS ou sem
 identidade comprovada, e não preserva ACLs, EFS, alternate data streams ou
 compressão transparente. Prévia, execução de conteúdo, sessões persistentes,
-retomada após reiniciar, layouts alternativos de destino,
-progresso/ETA/cancelamento da análise e instalador assinado também estão
-ausentes. Trabalhos de restauração possuem progresso nativo e cancelamento
-cooperativo; esses controles não se aplicam à análise de metadados ou profunda.
+retomada após reiniciar, layouts alternativos de destino, pausar/retomar ou
+cancelar cooperativamente a análise e instalador assinado também estão
+ausentes. Fases nativas, tempo decorrido e percentual/ETA medidos da MFT estão
+implementados; fases posteriores sem total seguro permanecem indeterminadas.
+Trabalhos de restauração possuem, separadamente, progresso nativo por
+itens/bytes e cancelamento cooperativo.
 Consulte as
 [limitações conhecidas](docs/specs/015-known-limitations.md).
 
@@ -100,6 +168,36 @@ Consulte as
   nunca no broker da origem.
 
 Consulte [SECURITY.md](SECURITY.md) e [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Configurações e Ajuda no aplicativo
+
+**Configurações** altera imediatamente o idioma (`pt-BR` ou `en-US`), o tema
+(sistema, escuro ou claro) e a preferência de movimento reduzido. As escolhas
+ficam no dispositivo quando o armazenamento local está disponível; a tela avisa
+se elas valem somente para o processo atual. Essas opções não mudam a evidência
+da análise ou recuperação.
+
+**Ajuda** explica os modos de análise, a fronteira somente leitura/UAC, as
+regras do destino, operações ausentes e a interpretação da ancestralidade de
+pasta. Para evidência técnica e o estado exato dos requisitos, consulte o
+[portal da documentação](docs/README.md) e a
+[matriz de rastreabilidade](docs/traceability-matrix.md).
+
+## Solução de problemas
+
+| Sintoma ou código | Significado e ação segura |
+| --- | --- |
+| UAC cancelado / `UAC_CANCELLED` | Nenhuma origem foi aberta. Inicie de novo e aprove somente o broker irmão fixo, assinado ou compilado por você e confiável. Não execute o desktop como Administrador. |
+| `SOURCE_GONE` | A revalidação nativa não encontra mais a identidade escolhida. Reconecte, espere o Windows montar, atualize a lista e selecione novamente. Isso não significa que a unidade tenha zero candidatos. |
+| `SOURCE_IO` | O volume continuou identificado, mas uma leitura limitada ou consulta obrigatória somente leitura falhou. Confira cabo, case USB, estado da unidade no Windows e erros de leitura; tente novamente somente com a origem estável. Bridges USB antigos usam fallback restrito apenas quando o Windows declara a consulta de alinhamento não suportada; outros erros de I/O continuam falhando de forma fechada. |
+| `SOURCE_IDENTITY_CHANGED` | A identidade montada mudou. Atualize e selecione conscientemente o volume outra vez. |
+| `SCAN_INTERNAL` | O scanner real interrompeu por estado indisponível ou invariável interna e não fabricou candidatos. Atualize e tente uma vez; se repetir, guarde o código, modo, sistema de arquivos e avisos não sensíveis para o relato do bug. |
+| Destino recusado | Escolha pasta NTFS local e gravável em exatamente um disco físico conhecido e diferente da origem. Outra letra não basta quando duas partições estão no mesmo disco; destinos de rede, virtuais, compostos ou incertos são recusados. |
+| Antivírus colocou o `.exe` em quarentena | Builds locais atuais não são assinados e podem não ter reputação. Não desative a proteção permanentemente nem presuma falso positivo. Restaure/autorize somente artefato compilado por você ou verificado de modo independente, mantenha os dois executáveis irmãos juntos e prefira uma futura versão assinada. |
+
+Um candidato ou pontuação alta é evidência, não promessa. Bytes
+sobrescritos, descartados por TRIM, criptografados sem chave ou fisicamente
+ilegíveis não podem ser recriados pelo aplicativo.
 
 ## Desenvolvimento
 
@@ -152,6 +250,10 @@ volumes montados conectados descrito acima e não oferece seleção de imagem.
 
 ## Documentação orientada por especificação
 
+- [Portal da documentação](docs/README.md)
+- [Catálogo completo de funcionalidades](docs/FEATURES.md)
+- [Galeria de capturas reais do desktop](docs/screenshots/README.md) — uma
+  captura atual empacotada e evidências históricas de defeitos bem identificadas
 - [Especificação mestre](UNDELETE_MASTER_CODEX_MASTER_SPEC.md)
 - [SDD-018 — volumes e pastas no Windows](docs/specs/018-windows-volume-and-folder-scan.md)
 - [SDD-019 — cobertura NTFS e análise JPEG profunda limitada](docs/specs/019-ntfs-coverage-and-jpeg-deep-scan.md)
@@ -172,5 +274,6 @@ volumes montados conectados descrito acima e não oferece seleção de imagem.
 
 ## Integração Git
 
-O histórico remoto de `main` é preservado. Branches de desenvolvimento são
-integradas sem force-push nem substituição de `main`.
+`main` é a única branch canônica publicada no GitHub. O histórico concluído
+é integrado em `main` por fast-forward sempre que possível; nenhum README ou
+captura deve direcionar o usuário para branch temporária.

@@ -5,6 +5,8 @@ gates and unsigned release pair are implemented and recorded; governed
 deleted-file recovery on separate physical NTFS media remains unverified
 Decision date: 2026-07-30
 
+Usability/compatibility corrections recorded: 2026-08-03
+
 This increment turns the connected-volume desktop from a discovery-only report
 into a usable recovery workflow. It implements backend-owned query, selection,
 destination authority, restore planning, bounded extraction, transactional
@@ -146,6 +148,14 @@ final-volume and disk-identity queries. Production restore code never reopens
 the picker path. On Windows the root is opened without delete sharing, so it
 cannot be renamed or substituted while the authority exists.
 
+The retained root's final volume-GUID path is also the only root accepted for
+destination filesystem, label and serial metadata. Native code calls
+`GetVolumeInformationW` with that GUID root. The desired-access-zero volume
+handle remains query-only and is used for storage bus and volume-extents
+queries; it is not passed to a metadata API that requires different access.
+This compatibility correction adds no caller-controlled path and does not
+weaken same-physical-disk rejection.
+
 The queried destination filesystem must be NTFS. ReFS, FAT, exFAT, and unknown
 filesystems are rejected during admission. Hard-link support is not probed
 during destination admission; if an otherwise admitted NTFS destination
@@ -227,6 +237,11 @@ Supported operations are:
 - clear every candidate matching the canonical query;
 - clear the complete selection.
 
+For `setIds`, the nested IPC member is exactly `candidateIds` in camelCase.
+Serde renaming applies to both the tagged enum variant and its fields; a
+frontend payload with `candidate_ids`, a missing field or an unknown field is
+not accepted as an alternate contract.
+
 Every mutation carries a selection revision. Stale revisions are rejected.
 Selecting all matching candidates is evaluated natively and does not send all
 IDs through the WebView.
@@ -242,6 +257,13 @@ The selection summary reports:
 Each query-page response additionally reports `matchingSelectedCandidates` so
 the filtered-set checkbox can distinguish none, some, and all without
 enumerating selected IDs in the WebView.
+
+A transient refresh/query error does not erase or disable a previously retained
+valid page. The structured error remains visible, but selection can continue
+against the still-bound scan/query authority. The controller rejects a new
+selection dispatch while a page replacement is loading, and row controls are
+disabled while a native selection mutation is in flight; an error alone does
+not make a retained page inert.
 
 ## 6. Restore planning
 
@@ -460,7 +482,8 @@ The results screen retains the current visual language and adds:
 - extension multi-select facets with counts;
 - confidence, score, method, state, and eligibility filters;
 - sortable column headers with `aria-sort`;
-- one checkbox per row;
+- one checkbox per row, plus equivalent single-candidate toggling from the
+  non-input portion of that row;
 - an accessible tri-state checkbox for the current filtered set;
 - bounded previous/next page navigation;
 - selected-only filter;
@@ -472,8 +495,11 @@ The results screen retains the current visual language and adds:
 - real progress, cancel, completion, partial, and failure states;
 - a final `Open destination folder` action only; no recovered file is executed.
 
-The table renders a bounded page, preserves keyboard focus, exposes row counts,
-and keeps recovered text directionally isolated.
+The report shell and results workspace consume the available application width.
+The responsive grid permits the filter rail and bounded page to reflow, while
+the table uses fixed layout and wraps long untrusted display text rather than
+forcing the former fixed minimum width. The table preserves keyboard focus,
+exposes row counts, and keeps recovered text directionally isolated.
 
 ## 11. Performance and bounds
 
@@ -508,6 +534,7 @@ structured partial/error state and is never described as complete.
 - `RESULT-QUERY-SORT-002`
 - `RESULT-CURSOR-BINDING-003`
 - `RESULT-SELECTION-PERSIST-004`
+- `RESULT-SELECTION-CONTRACT-030`
 - `RESULT-SELECT-ALL-005`
 - `RESULT-SELECTION-STALE-006`
 - `RESULT-PAGE-BOUND-007`
@@ -549,6 +576,15 @@ structured partial/error state and is never described as complete.
 - `DESKTOP-RESTORE-FLOW-024`
 - `DESKTOP-RESTORE-A11Y-025`
 - `DESKTOP-RESTORE-OPEN-DESTINATION-026`
+
+### Post-baseline usability and compatibility evidence
+
+The corrections from commit `da57f7e` through `a426b1c` are reconciled in
+[the 2026-08-03 focused evidence record](../evidence/usability-and-compatibility-2026-08-03.md).
+That record includes focused React, selection-contract, destination-contract
+and legacy-alignment tests. It explicitly distinguishes automated assertions
+from source-inspected layout, row-click and refresh-failure behavior, and does
+not claim a real-device scan or restore.
 
 Tests use deterministic in-repository images and temporary destination
 directories only. No test writes to a real scan source or performs destructive

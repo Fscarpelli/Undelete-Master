@@ -54,7 +54,7 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-020 | Select disk/volume | Require a source and permit bounded recognized partition selection. Mounted-volume selection is implemented; recognized partition selection inside a volume remains absent. | Partial |
+| FR-020 | Select disk/volume | Require a source and permit bounded recognized partition selection. Mounted-volume selection is implemented. A read-only logical-sector fallback admits legacy direct-attached volumes only when the Windows alignment query returns `ERROR_INVALID_FUNCTION` or `ERROR_NOT_SUPPORTED`; every other alignment failure still fails closed. Recognized partition selection inside a volume and governed legacy-device acceptance remain absent. | Partial |
 | FR-021 | Working folder | Select a working location for DB, checkpoints, thumbnails, temporary files, and reports. | Not started |
 | FR-022 | Physical destination mapping | Resolve working/restore paths to physical disks, not drive letters alone. Restore destinations are mapped from retained native authority; working-folder mapping remains absent. | Partial |
 | FR-023 | Overwrite prevention | Block same-physical-disk work by default and apply the post-scan advanced override policy. Restore is blocked on the same or unproven physical disk with no override; the broader working-folder and post-scan override policy remains absent. | Partial |
@@ -65,7 +65,7 @@ criteria**, and **Status** fields.
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
 | FR-030 | Quick scan | Scan deleted filesystem metadata, reconstruct extents, and assess allocation evidence. NTFS now enumerates beyond the former 64 MiB MFT prefix in bounded batches, and quantitative MFT counters reach the report and desktop; machine-readable partial reasons and the broader compatibility matrix remain incomplete. | Partial |
-| FR-031 | Deep scan | Add bounded raw metadata, unallocated carving, slack, and prioritized validation. An explicit whole-volume NTFS mode now submits only hardened `$Bitmap`-proven free regions to an incremental contiguous-JPEG validator with structured budgets/coverage; slack, fragments, broader formats, progress/cancellation and final validation remain absent. | Partial |
+| FR-031 | Deep scan | Add bounded raw metadata, unallocated carving, slack, and prioritized validation. An explicit whole-volume NTFS mode now submits only hardened `$Bitmap`-proven free regions to an incremental contiguous-JPEG validator with structured budgets/coverage. Native phase and elapsed-time feedback are present, and the preceding MFT-enumeration phase exposes measured percentage and a rate-based ETA; carving phases without a trustworthy total remain indeterminate. Slack, fragments, broader formats, cooperative scan cancellation and final validation remain absent. | Partial |
 | FR-032 | Image first | Create a resumable, hashed, error-mapped image on another disk without writing the source. | Not started |
 | FR-033 | Open existing image | Open regular `.img/.dd/.raw` without UAC and pass it through the same bounded parsers. | Partial |
 | FR-034 | Analysis regions | Advanced mode selects valid metadata, unallocated, slack, whole-partition, or explicit ranges. | Not started |
@@ -74,7 +74,7 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-040 | Live dashboard | Show phase, bytes, throughput, candidate quality, errors, elapsed time, and honest ETA. | Not started |
+| FR-040 | Live dashboard | Show phase, bytes, throughput, candidate quality, errors, elapsed time, and honest ETA. The desktop receives real native phase events, starts an elapsed timer with the scan, and shows measured MFT percentage plus a rate-based ETA only while a trustworthy MFT total exists. Byte throughput, live candidate/error counters and determinate progress for later phases remain absent. | Partial |
 | FR-041 | Pause/resume/cancel | Cooperatively pause, checkpoint, resume without duplication, and cancel safely. | Not started |
 | FR-042 | Results during scan | Query already persisted results without blocking the pipeline. | Not started |
 | FR-043 | Resource profiles | Provide economy, balanced, maximum, and gentle bounded profiles. | Not started |
@@ -99,7 +99,7 @@ criteria**, and **Status** fields.
 | FR-062 | Extension filter | Build multi-select extension facets dynamically with counts. Native dynamic extension facets and multi-select filtering are implemented; packaged deleted-file acceptance remains pending. | Implemented-unverified |
 | FR-063 | Other filters | Combine category, quality, method, size/date/path, validation, partial, preview, and selection filters. Kind, confidence, method, state, score range, eligibility and selected-only filters compose natively; date, size and preview filters remain absent. | Partial |
 | FR-064 | Search | Search name, path, extension, type, record ID, and available hashes. Case-insensitive path/name search is native; dedicated type, record-ID and hash search remain absent. | Partial |
-| FR-065 | Persistent selection | Preserve selection across pages, sorting, filters, and session resume. Native selection persists across pages, sorting and filters for one process; durable session resume is absent. | Partial |
+| FR-065 | Persistent selection | Preserve selection across pages, sorting, filters, and session resume. Native selection persists across pages, sorting and filters for one process. Individual row mutations use the exact camelCase `candidateIds` contract, and a valid retained page remains selectable when a later refresh fails and its structured error is shown. Durable session resume and packaged deleted-file interaction acceptance are absent. | Partial |
 | FR-066 | Selection bar | Show exact count, estimated/readable size, space, partial count, and conflicts. The native summary supplies selected counts, logical bytes, best-effort and conflict counts; readable-byte and destination-space comparison are incomplete. | Partial |
 | FR-067 | Tree and list | Offer coherent tree/list navigation without fabricating parent relationships. | Not started |
 
@@ -117,7 +117,7 @@ criteria**, and **Status** fields.
 
 | ID | Title | Behavior and acceptance criteria | Status |
 | --- | --- | --- | --- |
-| FR-080 | Destinations | Recommend another physical disk and offer preserve-tree, flatten, or by-type layouts. | Partial |
+| FR-080 | Destinations | Recommend another physical disk and offer preserve-tree, flatten, or by-type layouts. The native picker retains an opaque root authority, derives its volume GUID from that handle, queries filesystem/serial metadata through the GUID root, and rejects same, unknown or non-NTFS backing; preserve-tree is implemented. Flatten/by-type layouts and governed different-physical-disk hardware acceptance remain absent. | Partial |
 | FR-081 | Minimal ancestors | Create only ancestors required by explicitly selected items. | Implemented-unverified |
 | FR-082 | Folder alone | Selecting only a folder restores an empty folder and no historical content. | Implemented-unverified |
 | FR-083 | Name collisions | Default to rename; never silently replace an active destination file. | Implemented-unverified |

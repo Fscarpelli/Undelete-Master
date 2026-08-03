@@ -28,15 +28,21 @@ no storage command. It never substitutes sample disks or candidates.
    dialog changes no scope.
 6. Starting a scan may open UAC for the read-only broker. Inventory and folder
    selection do not claim to require elevation.
-7. The pending state is indeterminate; there is no invented percentage or ETA.
+7. The pending state starts a real elapsed timer and names the latest native
+   phase. MFT enumeration is determinate when its native total is trustworthy,
+   with measured percentage and a rate-based ETA; phases without such a total
+   remain visibly indeterminate and never invent a percentage.
 8. A completed scan shows real filesystem/status/counts/warnings and the first
    page of at most 100 real candidates.
 9. Search, native facets and sortable headers re-query the complete retained
    result set. Previous/next navigation keeps a bounded three-page cache and
    renders no more than 100 rows at once.
 10. Native selection persists across pages, filters and sorting for the current
-    process. The sticky selection summary exposes exact native counts and
-    enables recovery only for an eligible explicit selection.
+    process. Each candidate can be toggled by its checkbox or row, using the
+    exact camelCase `candidateIds` IPC field. A failed refresh reports its error
+    without making an already retained valid page inert. The sticky selection
+    summary exposes exact native counts and enables recovery only for an
+    eligible explicit selection.
 11. Recovery uses a native destination picker, immutable plan review,
     explicit best-effort consent, native item/byte progress, cooperative
     cancellation, a terminal manifest summary and an opaque
@@ -45,6 +51,13 @@ no storage command. It never substitutes sample disks or candidates.
 Logical group cards are presentation only, not physical-disk maps or
 whole-disk controls. The UI never claims to scan unmounted partitions or all
 bytes of a physical disk.
+
+The scan/report shells use the available application width instead of a fixed
+centered maximum. The candidate workspace is a responsive grid; its table uses
+fixed layout and wraps hostile/long text within the bounded page. Horizontal
+or viewport clipping, row-click behavior, 200% zoom and assistive-technology
+behavior still require packaged acceptance rather than source inspection or a
+screenshot alone.
 
 ## Trust presentation
 
@@ -84,13 +97,21 @@ accessible label. The candidate table is inside a keyboard-focusable named
 region, includes an accessible caption and directionally isolates recovered
 paths. Focus does not depend only on shadow or color.
 
-Focused component and native-adapter tests cover volume-radio labels,
+Focused component and native-adapter tests cover `SCAN-PROGRESS-001`,
+volume-radio labels,
 candidate-table naming and the metadata-quality caveat, long-path
 disambiguation, unknown/partial truth, browser fail-closed behavior, real
 inventory, empty inventory, native folder cancellation, bounded
-query/page/selection flow, duplicate submission, sanitized errors, late
+query/page/selection flow (including the exact `candidateIds` payload),
+duplicate submission, sanitized errors, late
 unmount responses, restore review/progress/cancellation/tracking loss/open
 retry, heading/dialog/table focus and effective preferences.
+
+The 2026-08-03 focused verification confirms the existing progress and
+selection-contract tests. It does not add a dedicated automated assertion for
+CSS pixel width, row-click toggling, or retained-page behavior after a refresh
+failure; those code paths were inspected and remain packaged-acceptance and
+regression-test gaps.
 
 Native 150% bounds and clipping acceptance is verified. Native 200% zoom,
 forced-colors on Windows and assistive-technology acceptance remain pending. A
@@ -99,9 +120,11 @@ acceptance.
 
 ## Explicitly absent interactions
 
-No image picker, physical-disk scan control, scan pause/resume/cancellation,
-scan progress percentage or scan ETA is presented as functional. There is no
-persistent session history, recovery-job resume after restart, preview, repair,
-content execution, production exFAT workflow or multi-format deep carving.
-Whole-volume NTFS contiguous-JPEG carving and process-lifetime restore
-progress/cancellation are real, separately bounded features.
+No image picker, physical-disk scan control, or scan pause/resume/cancellation
+is presented as functional. Scan percentage and ETA are intentionally limited
+to the measurable MFT phase; no determinate value is claimed for later phases
+without a trustworthy total. There is no persistent session history,
+recovery-job resume after restart, preview, repair, content execution,
+production exFAT workflow or multi-format deep carving. Whole-volume NTFS
+contiguous-JPEG carving and process-lifetime restore progress/cancellation are
+real, separately bounded features.

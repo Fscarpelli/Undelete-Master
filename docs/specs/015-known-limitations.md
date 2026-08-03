@@ -1,6 +1,6 @@
 # SDD-015 — Known Limitations
 
-Status: Current as of 2026-07-31
+Status: Current as of 2026-08-03
 
 ## Product status
 
@@ -46,6 +46,14 @@ a whole NTFS mounted volume; metadata remains the default scan mode.
   independent broker enumeration still occur, but extents, canonical length
   and sector geometry are derived from the source currently mounted and become
   its later revalidation baseline. This is not a snapshot guarantee.
+- Some legacy direct-attached USB volumes do not implement the Windows storage
+  alignment query. The read-only source open now falls back to the already
+  enumerated logical sector size only for `ERROR_INVALID_FUNCTION` and
+  `ERROR_NOT_SUPPORTED`, records that fallback in the source identity baseline,
+  and requires the same mode on revalidation. Access-denied, malformed geometry
+  and every other error still fail closed. The focused synthetic unit test
+  passes; the reported G: device has not been rerun as governed hardware
+  acceptance.
 
 ## Folder-scope limitations
 
@@ -137,6 +145,12 @@ a whole NTFS mounted volume; metadata remains the default scan mode.
 - Restore destinations are NTFS-only, must resolve to exactly one proven
   physical disk, and must be disjoint from the source disk. Same, unknown,
   virtual, composite and multi-disk destinations fail closed with no override.
+- Destination filesystem, label and serial metadata are queried with
+  `GetVolumeInformationW` against the volume-GUID root derived from the retained
+  directory handle. The desired-access-zero volume handle remains limited to
+  bus/extents queries. This repairs an API-access mismatch without accepting a
+  caller path or weakening physical-disk separation; it is not evidence that a
+  real C:/E:/F: destination recovery completed.
 - The implemented layout is preserve-tree only. Flatten and by-type layouts
   are absent. Collision handling is deterministic rename plus atomic
   no-clobber publication; existing destination entries are never replaced.
@@ -166,6 +180,18 @@ a whole NTFS mounted volume; metadata remains the default scan mode.
 - The results workspace keeps at most three 100-row pages in the frontend.
   Search, facets, sorting, selection and selected-only state are authoritative
   in bounded native memory, not durable across application restart.
+- Individual selection uses the exact camelCase `candidateIds` nested IPC
+  field. The checkbox and non-input portion of a candidate row dispatch the
+  same single-candidate native mutation. When a later page refresh fails, a
+  previously retained valid page stays actionable while the structured error
+  remains visible. Focused contract/controller/component tests pass, but there
+  is not yet a dedicated automated regression for row-click toggling or the
+  retained-page-after-refresh-error branch, and packaged interaction remains
+  unverified.
+- The scan and report containers now consume the available application width,
+  and the candidate grid/table wraps bounded content instead of imposing the
+  former fixed 1,180-pixel minimum. Packaged multi-resolution, 200% zoom and
+  long-path visual acceptance remain pending.
 - Opening the destination is available only for a terminal job with a
   revalidated retained authority. It opens the recovery job directory through
   a fixed Windows shell operation; the WebView never supplies a path or
@@ -193,6 +219,12 @@ a whole NTFS mounted volume; metadata remains the default scan mode.
   mutable-volume campaigns remain incomplete.
 - Required same-revision Rust/frontend/static gates and the local release build
   are recorded in the Task 7 evidence. This proves the tested revision only.
+- A later focused 2026-08-03 check covers the scan-progress UI, result
+  controller/components, exact `candidateIds` deserialization, destination
+  contract tests and the narrow legacy-alignment fallback. It is documented in
+  [usability and compatibility evidence](../evidence/usability-and-compatibility-2026-08-03.md).
+  That focused check is not a replacement for the full required gates, a new
+  release build or hardware acceptance at the later revision.
 - The unsigned desktop/broker pair, hashes, extracted manifests and an actual
   inventory-only Tauri launch are recorded. A real scan, destination picker,
   deleted-file restore, open-destination action, screen reader, 200% zoom,

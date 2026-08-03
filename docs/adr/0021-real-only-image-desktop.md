@@ -1,6 +1,16 @@
 # ADR-0021 — Real-only Tauri Image Desktop
 
-Status: Accepted
+Status: Accepted historical slice; desktop workflow superseded by ADR-0023
+through ADR-0028
+
+> **Evolution notice:** the real-only, fail-closed and unelevated-WebView
+> decisions remain active. The image-picker desktop, absence of candidate
+> detail/restore and absence of measurable scan progress describe the
+> 2026-07-29 increment only. The current desktop uses connected mounted volumes,
+> exposes request-bound MFT progress and provides native selection and
+> transactional recovery under [ADR-0023](0023-windows-read-only-broker-and-folder-scope.md)
+> through [ADR-0028](0028-restore-plan-job-and-manifest-lifecycle.md). The
+> regular-image workflow remains available only in the CLI.
 
 ## Context
 

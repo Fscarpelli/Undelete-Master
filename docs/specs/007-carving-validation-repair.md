@@ -16,9 +16,13 @@ version.
 The CLI library, Tauri adapter and desktop now integrate one narrow product
 slice: an explicit `deepJpeg` mode for a whole mounted NTFS volume, using only
 coalesced `$Bitmap`-proven `FreeInSnapshot` ranges. Metadata remains the safe
-default. There is still no deep option in the `scan-image` process command, no
-folder deep scan, persistent result store, progress/cancellation path,
-extraction, or restore.
+default. The desktop receives real scan phases and elapsed time; MFT
+enumeration has measured percentage and a rate-based ETA, while carving phases
+remain indeterminate because they do not expose a trustworthy total. There is
+still no deep option in the `scan-image` process command, no folder deep scan,
+persistent result store, cooperative scan cancellation, or separate
+validation/repair pipeline. Eligible retained candidates can be extracted only
+through the transactional restore workflow specified by SDD-020.
 
 ## Carving
 
@@ -86,7 +90,8 @@ original bytes.
 | Explicit whole-NTFS deep-scan Tauri/UI path | Implemented-unverified |
 | Deep mode in the `scan-image` process command | Not started |
 | Folder carving | Intentionally unsupported |
-| Real-time progress and cooperative cancellation | Not started |
+| Real-time scan progress | Partial — native phase/elapsed feedback and measured MFT percentage/ETA exist; later carving phases remain indeterminate |
+| Cooperative scan cancellation | Not started |
 | Fragmented JPEG reconstruction | Not started |
 | Additional baseline formats | Not started |
 | Sandboxed validators/preview | Not started |
